@@ -144,12 +144,14 @@ function confirmButton(label, message, handler, classes = 'ghost small danger') 
  *  only fires on the second tap (within 3s of the first). */
 function decorateConfirm(node, message) {
   if (!node) return;
-  const label = node.textContent;
+  // Keep the markup, not just the text: an icon button has no text label, and
+  // restoring textContent would replace the SVG with a bare string.
+  const label = node.innerHTML;
   const inner = node.onclick;
   node.onclick = (event) => {
     if (node.dataset.armed === '1') {
       node.dataset.armed = '';
-      node.textContent = label;
+      node.innerHTML = label;
       node.classList.remove('armed');
       inner?.call(node, event);
       return;
@@ -160,7 +162,7 @@ function decorateConfirm(node, message) {
     setTimeout(() => {
       if (node.dataset.armed === '1') {
         node.dataset.armed = '';
-        node.textContent = label;
+        node.innerHTML = label;
         node.classList.remove('armed');
       }
     }, 3000);
@@ -1108,14 +1110,24 @@ async function loadPersonas(selectId) {
       loadPersonas(persona.id);
     };
 
+    const removable = !isDefault && personaState.list.length > 1;
+    if (!removable) {
+      // The default persona, and the last remaining one, cannot be deleted. A
+      // greyed-out button still read as "tap me later" and its tooltip was the
+      // only place the rule was explained, so the slot stays empty instead and
+      // the 默认 tag already says why.
+      item.append(pick, el('span', undefined, 'persona-del-slot'));
+      target.append(item);
+      continue;
+    }
+
     const del = el('button', undefined, 'persona-del');
     del.type = 'button';
-    del.textContent = '×';
-    del.title = isDefault ? '默认人格不能删除，请先把其他设为默认' : '删除「' + persona.name + '」';
+    del.innerHTML =
+      '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6"/>' +
+      '<path d="M6 7l1 12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-12"/><path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>';
+    del.title = '删除「' + persona.name + '」';
     del.setAttribute('aria-label', del.title);
-    // Mirroring the backend rules here keeps the button from being a trap: the
-    // server enforces both, and these just avoid a pointless round trip.
-    del.disabled = isDefault || personaState.list.length <= 1;
     del.onclick = () =>
       perform(async () => {
         await api('/api/personas/' + enc(persona.id), 'DELETE');
@@ -1126,7 +1138,7 @@ async function loadPersonas(selectId) {
     // After the handler, not before: decorateConfirm wraps whatever onclick it
     // finds, so assigning afterwards would overwrite the arm-to-confirm step
     // and a single tap would delete.
-    if (!del.disabled) decorateConfirm(del, '删除？');
+    decorateConfirm(del, '删除？');
 
     item.append(pick, del);
     target.append(item);

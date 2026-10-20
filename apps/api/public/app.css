@@ -522,6 +522,29 @@ svg {
   justify-content: flex-end;
 }
 
+/* ����ȫ������ and �����������ݿ� mirror each other: equal width, one pinned
+   left and one pinned right, so the card reads as a balanced pair instead of a
+   primary button with the backup trailing behind it. */
+.maintenance-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.maintenance-actions > .btn {
+  flex: 1 1 0;
+  justify-content: center;
+  min-width: 0;
+}
+
+/* Only allocates space once there is something to say; .hint has margin 0, so
+   an empty status line collapses instead of leaving a gap under the buttons. */
+.maintenance-actions + .hint:not(:empty) {
+  margin-top: 10px;
+}
+
 .badge {
   display: inline-flex;
   align-items: center;
@@ -1343,26 +1366,48 @@ svg {
   flex: none;
 }
 
+/* Sized for the glyph, not for text: the arm-to-confirm step below swaps the
+   label, so a fixed square turned "ɾ��?" into three stacked characters. It
+   stays a square while idle and grows to fit the confirmation. */
 .persona-del {
   flex: none;
-  width: 28px;
+  min-width: 28px;
   height: 28px;
-  display: grid;
-  place-items: center;
-  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 6px;
   border: 1px solid transparent;
   border-radius: 8px;
   background: none;
   color: var(--text-faint);
   font: inherit;
-  font-size: 15px;
+  font-size: 13px;
   line-height: 1;
+  white-space: nowrap;
   cursor: pointer;
+}
+
+.persona-del svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .persona-del:hover {
   border-color: var(--danger);
   color: var(--danger-ink);
+}
+
+.persona-del.armed {
+  background: var(--danger-soft);
+  border-color: var(--danger);
+  color: var(--danger-ink);
+  font-weight: 600;
 }
 
 .persona-del:focus-visible {
@@ -1373,6 +1418,13 @@ svg {
 .persona-del[disabled] {
   opacity: 0.35;
   cursor: not-allowed;
+}
+
+/* The default persona has no delete affordance at all �� showing a permanently
+   disabled button just invited taps. The slot is kept so rows stay aligned. */
+.persona-del-slot {
+  flex: none;
+  width: 28px;
 }
 
 .persona-item .tag {
