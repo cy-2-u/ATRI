@@ -35,7 +35,7 @@ node --check apps/api/public/app.js
 
 ## 尚未在本机验证
 
-- 本机没有 Docker，尚未完成实际镜像构建和 Compose 运行。仓库已包含 [GitHub Actions 工作流](../.github/workflows/check.yml)，在 push 到 main、提交拉取请求或手动触发时运行 `npm run check`；本次验证未等待远端 CI 结果。
+- 本机没有 Docker，未在本机完成实际镜像构建和 Compose 运行。仓库包含 [GitHub Actions 工作流](../.github/workflows/check.yml) 与 Docker 镜像工作流；本次推送的 `check` 和 `docker` 两项远端任务均已通过，其中 Docker 工作流完成了镜像构建。
 - 没有配置真实模型与 Tavily 密钥，外部服务的当前可用性和模型输出质量尚未验证。
 - 未使用真实微信账号扫码收发；协议测试和扫码流程使用本地替身，实际账号资格、媒体显示与会话限制需上线前检查。
 
