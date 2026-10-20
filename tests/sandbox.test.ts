@@ -127,6 +127,8 @@ test('读取 FIFO 不会卡死事件循环', { skip: !canRun }, async (t) => {
   const made = await sandbox.run('mkfifo pipe');
   assert.equal(made.ok, true, made.stderr);
   await assert.rejects(() => sandbox.read('pipe'), /只能读取普通文件/);
+  // Opening the same FIFO for writing also blocks until a reader appears.
+  await assert.rejects(() => sandbox.write('pipe', 'x'), /只能写入普通文件/);
 });
 
 test('配额统计包含 node_modules 等每个字节', async (t) => {

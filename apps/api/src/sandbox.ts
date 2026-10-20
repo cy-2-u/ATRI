@@ -225,6 +225,11 @@ export class Sandbox {
     this.assertWithinQuota(Buffer.byteLength(content));
     const target = this.safePath(path);
     mkdirSync(dirname(target), { recursive: true });
+    // A sandboxed command can plant a FIFO as the leaf. Opening it for writing
+    // would block the event loop forever, so refuse non-regular leaves before
+    // the open; O_NONBLOCK and the fstat below also close the race where the
+    // leaf is swapped between the check and the open.
+    if (existsSync(target) && !lstatSync(target).isFile()) throw new Error('只能写入普通文件');
     // O_NOFOLLOW closes the check-then-open race a sandboxed command could win
     // by replacing the leaf with a symlink between safePath() and the write.
     const fd = openSync(
@@ -232,10 +237,12 @@ export class Sandbox {
       fsConstants.O_WRONLY |
         fsConstants.O_CREAT |
         fsConstants.O_TRUNC |
-        (fsConstants.O_NOFOLLOW ?? 0),
+        (fsConstants.O_NOFOLLOW ?? 0) |
+        (fsConstants.O_NONBLOCK ?? 0),
       0o600,
     );
     try {
+      if (!fstatSync(fd).isFile()) throw new Error('只能写入普通文件');
       writeFileSync(fd, content, 'utf8');
     } finally {
       closeSync(fd);
@@ -247,10 +254,15 @@ export class Sandbox {
     if (!this.enabled) throw new Error('沙箱未启用');
     const target = this.safePath(path);
     if (!existsSync(target)) throw new Error('文件不存在');
-    // Open with O_NOFOLLOW and fstat the descriptor: lstat alone still let a
-    // sandboxed process swap in a FIFO or symlink after the check, which would
-    // block the event loop forever on readFileSync.
-    const fd = openSync(target, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+    // Opening a FIFO for reading blocks until a writer appears, which would
+    // freeze the whole API process before fstat ever runs. Reject non-regular
+    // leaves first, then keep O_NONBLOCK for the check-then-open race and
+    // fstat the descriptor for the same reason.
+    if (!lstatSync(target).isFile()) throw new Error('只能读取普通文件');
+    const fd = openSync(
+      target,
+      fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0) | (fsConstants.O_NONBLOCK ?? 0),
+    );
     try {
       const stat = fstatSync(fd);
       if (!stat.isFile()) throw new Error('只能读取普通文件');
