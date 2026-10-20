@@ -296,14 +296,14 @@ test('来源标注泄漏：剥除前缀，多来源块拆成独立气泡', () =>
   assert.deepEqual(json.parts, [{ type: 'text', text: '开场的回应' }]);
   // 与表情混排：剥掉来源前缀，表情照常转换
   const mixed = parseReply('[来源 a:0 | 10/18 00:24]好耶[表情：开心]！', stickers);
-  assert.ok(
-    mixed.parts.some((p) => p.type === 'sticker'),
-    '表情被转换',
-  );
   assert.deepEqual(
-    mixed.parts.filter((p) => p.type === 'text').map((p) => p.text),
-    ['好耶！'],
-    '正文剥掉来源前缀',
+    mixed.parts,
+    [
+      { type: 'text', text: '好耶' },
+      { type: 'sticker', slug: 'happy', description: '开心' },
+      { type: 'text', text: '！' },
+    ],
+    '正文剥掉来源前缀，并按原文顺序保留表情两侧的文字',
   );
   // 正常输出不受影响：没有标注时保持原样
   const clean = parseReply('普通的一句回复', stickers);

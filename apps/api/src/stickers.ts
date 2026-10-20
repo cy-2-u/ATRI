@@ -24,14 +24,22 @@ export class Stickers {
       .map((s) => ({ ...s, disabled: disabled.has(s.slug) }))
       .filter((s) => includeDisabled || !s.disabled);
   }
+  /** Resolve a catalog path and prove it stays inside its own base directory.
+   *  The catalog is normally written only by add(), but a restored or tampered
+   *  database must not be able to turn an image lookup into an arbitrary read. */
+  private resolveFile(file: string): { base: string; path: string } {
+    const base = file.startsWith('custom/')
+      ? join(this.dataDir, 'custom')
+      : join(this.root, 'assets', 'stickers');
+    const path = resolve(base, file.startsWith('custom/') ? file.slice('custom/'.length) : file);
+    if (path === resolve(base) || !path.startsWith(resolve(base) + sep))
+      throw new Error('表情路径无效');
+    return { base, path };
+  }
   bytes(slug: string): Buffer {
     const item = this.list(true).find((s) => s.slug === slug);
     if (!item) throw new Error('表情不存在');
-    const base = item.file.startsWith('custom/')
-      ? this.dataDir
-      : join(this.root, 'assets', 'stickers');
-    const path = resolve(base, item.file);
-    if (!path.startsWith(resolve(base) + sep)) throw new Error('表情路径无效');
+    const { path } = this.resolveFile(item.file);
     const bytes = readFileSync(path);
     if (bytes.length > 5 * 1024 * 1024) throw new Error('表情文件过大');
     return bytes;
@@ -85,7 +93,7 @@ export class Stickers {
     );
     // The file may already be gone; the setting is the source of truth.
     try {
-      rmSync(join(this.dataDir, item.file), { force: true });
+      rmSync(this.resolveFile(item.file).path, { force: true });
     } catch {
       // Losing the file is not worth failing the delete.
     }

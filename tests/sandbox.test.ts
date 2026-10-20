@@ -20,14 +20,19 @@ const make = (
     sizeLimitBytes: number;
     outputLimit: number;
     timeZone: string;
+    allowDirectoryFallback: boolean;
+    memoryLimitMb: number;
   }> = {},
 ) =>
   new Sandbox(join(dir, 'sandbox'), {
     enabled: () => patch.enabled ?? true,
     network: () => patch.network ?? false,
     sizeLimitBytes: () => patch.sizeLimitBytes ?? 0,
-    outputLimit: patch.outputLimit ?? 0,
+    // Mechanics tests run on hosts without nsjail; production leaves this off.
+    allowDirectoryFallback: patch.allowDirectoryFallback ?? true,
+    ...(patch.outputLimit !== undefined ? { outputLimit: patch.outputLimit } : {}),
     ...(patch.timeZone ? { timeZone: () => patch.timeZone! } : {}),
+    ...(patch.memoryLimitMb !== undefined ? { memoryLimitMb: () => patch.memoryLimitMb! } : {}),
   });
 
 test('沙箱关闭时不执行任何命令', async (t) => {
@@ -76,18 +81,61 @@ test('默认没有时间限制，长命令可以跑完', { skip: !canRun }, asyn
   assert.ok(Date.now() - started >= 3000, '命令应实际运行了完整时长');
 });
 
-test('默认输出不受长度限制', { skip: !canRun }, async (t) => {
+test('默认输出有上限，跑飞的命令不能撑爆进程内存', { skip: !canRun }, async (t) => {
   const sandbox = make(temporary(t));
-  const result = await sandbox.run('head -c 200000 /dev/zero | tr "\\0" "a"');
-  assert.equal(result.truncated, false);
-  assert.ok(result.stdout.length > 8000, '默认不应截断长输出');
+  const result = await sandbox.run('head -c 400000 /dev/zero | tr "\\0" "a"');
+  assert.ok(result.stdout.length <= 256 * 1024, `默认应截断，实际 ${result.stdout.length}`);
+  assert.equal(result.truncated, true);
 });
 
-test('设置输出上限后才会截断', { skip: !canRun }, async (t) => {
+test('显式 outputLimit: 0 才表示输出不限', { skip: !canRun }, async (t) => {
+  const sandbox = make(temporary(t), { outputLimit: 0 });
+  const result = await sandbox.run('head -c 200000 /dev/zero | tr "\\0" "a"');
+  assert.equal(result.truncated, false);
+  assert.ok(result.stdout.length > 8000);
+});
+
+test('设置输出上限后会截断', { skip: !canRun }, async (t) => {
   const sandbox = make(temporary(t), { outputLimit: 5000 });
   const result = await sandbox.run('head -c 100000 /dev/zero | tr "\\0" "a"');
   assert.ok(result.stdout.length <= 5000, `输出应被截断，实际 ${result.stdout.length}`);
   assert.equal(result.truncated, true);
+});
+
+test('默认拒绝无隔离回退，只有显式开发开关才允许', async (t) => {
+  const sandbox = new Sandbox(join(temporary(t), 'sandbox'), {
+    enabled: () => true,
+    network: () => false,
+    sizeLimitBytes: () => 0,
+  });
+  // Force the probe result so the assertion is platform-independent: this is
+  // exactly the "nsjail exists but cannot create namespaces" case.
+  (sandbox as unknown as { nsjailAvailable: () => Promise<boolean> }).nsjailAvailable = async () =>
+    false;
+  await assert.rejects(() => sandbox.run('echo hi'), /无法使用 nsjail|拒绝执行/);
+});
+
+test('读取普通文件有大小上限', async (t) => {
+  const sandbox = make(temporary(t));
+  const path = join(sandbox.root, 'large.txt');
+  writeFileSync(path, 'x'.repeat(2 * 1024 * 1024 + 1), 'utf8');
+  await assert.rejects(() => sandbox.read('large.txt'), /文件过大/);
+});
+
+test('读取 FIFO 不会卡死事件循环', { skip: !canRun }, async (t) => {
+  const sandbox = make(temporary(t));
+  const made = await sandbox.run('mkfifo pipe');
+  assert.equal(made.ok, true, made.stderr);
+  await assert.rejects(() => sandbox.read('pipe'), /只能读取普通文件/);
+});
+
+test('配额统计包含 node_modules 等每个字节', async (t) => {
+  const sandbox = make(temporary(t));
+  mkdirSync(join(sandbox.root, 'node_modules', 'pkg'), { recursive: true });
+  writeFileSync(join(sandbox.root, 'node_modules', 'pkg', 'index.js'), 'x'.repeat(64));
+  const { files, bytes } = sandbox.usage();
+  assert.equal(files, 1);
+  assert.equal(bytes, 64);
 });
 
 test('文件读写列表在沙箱目录内生效', async (t) => {
@@ -204,6 +252,16 @@ test('网络开关改变 nsjail 参数', async (t) => {
   };
   assert.ok(!offline.nsjailArgs('true').args.includes('--disable_clone_newnet'));
   assert.ok(online.nsjailArgs('true').args.includes('--disable_clone_newnet'));
+});
+
+test('内存上限按 nsjail 要求的 MiB 传入', async (t) => {
+  const sandbox = make(temporary(t), { memoryLimitMb: 2048 }) as unknown as {
+    nsjailArgs(c: string): { args: string[] };
+  };
+  const { args } = sandbox.nsjailArgs('true');
+  const at = args.indexOf('--rlimit_as');
+  assert.ok(at >= 0, '缺少 --rlimit_as');
+  assert.equal(args[at + 1], '2048', 'nsjail 的单位是 MiB，不能乘 1024');
 });
 
 test('沙箱命令拿到配置的时区，而不是 UTC', async (t) => {

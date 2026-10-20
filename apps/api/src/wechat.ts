@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { lstatSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 import {
   ILinkClient,
@@ -167,7 +167,16 @@ export class WeChatBridge implements Transport {
       } catch (error) {
         if (!this.running) return;
         if (this.session !== session) continue;
-        if (error instanceof ILinkError && (error.ret === -14 || error.errcode === -14)) {
+        if (
+          error instanceof ILinkError &&
+          (error.ret === -14 ||
+            error.errcode === -14 ||
+            // An expired bot token can surface as a plain HTTP auth failure.
+            // Treating it as a transient disconnect retried forever behind a
+            // "正在重试" label while the token could never recover.
+            error.httpStatus === 401 ||
+            error.httpStatus === 403)
+        ) {
           this.client = undefined;
           this.session = undefined;
           this.store.removeSetting('wechat:session');
@@ -246,21 +255,25 @@ export class WeChatBridge implements Transport {
         await this.client.sendImage({ ...params, image: this.stickers.bytes(part.slug!) });
       else await this.client.sendText({ ...params, text: part.text! });
     } catch (error) {
-      if (error instanceof ILinkError)
+      if (error instanceof ILinkError) {
+        const status = error.httpStatus;
+        // 408/429 are explicitly retryable. Treating every 4xx as permanent
+        // marked a rate-limited bubble failed and blocked the peer's queue.
+        const permanentStatus =
+          status !== undefined && status >= 400 && status < 500 && status !== 408 && status !== 429;
         throw new DeliveryError(
           error.message,
           (error.ret !== undefined && error.ret !== 0) ||
             (error.errcode !== undefined && error.errcode !== 0) ||
-            // A 4xx from the gateway/CDN is a permanent rejection. 5xx and
-            // transport failures stay uncertain: marking them `failed` blocked
-            // the peer's whole queue until an operator intervened.
-            (error.httpStatus !== undefined && error.httpStatus >= 400 && error.httpStatus < 500) ||
-            /^HTTP 4\d\d$/.test(error.message),
+            permanentStatus ||
+            /^HTTP (?!408|429)4\d\d$/.test(error.message),
         );
+      }
       throw error;
     }
   }
-  async images(message: Message): Promise<string[]> {
+  async images(message: Message, signal?: AbortSignal): Promise<string[]> {
+    signal?.throwIfAborted();
     if (!this.settings.config().vision) {
       // Say so instead of returning an empty list. The prompt tells the model to
       // understand this turn's image and to own up when it cannot; with the
@@ -280,6 +293,7 @@ export class WeChatBridge implements Transport {
       media = [...message.media];
     let changed = false;
     for (let i = 0; i < media.length && images.length < 2; i++) {
+      signal?.throwIfAborted();
       const item = { ...media[i] };
       if (item.kind !== 'image') continue;
       try {
@@ -288,11 +302,15 @@ export class WeChatBridge implements Transport {
           const path = resolve(this.settings.dataDir, item.path);
           if (!path.startsWith(resolve(this.settings.dataDir) + sep))
             throw new Error('附件路径无效');
+          const stat = lstatSync(path);
+          if (!stat.isFile() || stat.size > 5 * 1024 * 1024)
+            throw new Error('附件不是可读取的图片文件');
           bytes = readFileSync(path);
         } else {
           if (!this.client || !item.ref) throw new Error('当前无法读取图片');
           const downloaded = await this.client.downloadMedia(item.ref as InboundMediaRef, {
             maxBytes: 5 * 1024 * 1024,
+            signal,
           });
           if (!isVisionMime(downloaded.mime)) throw new Error('不支持的图片格式');
           bytes = downloaded.data;
@@ -305,7 +323,8 @@ export class WeChatBridge implements Transport {
         if (bytes.length > 5 * 1024 * 1024) throw new Error('图片过大');
         if (item.mime && isVisionMime(item.mime))
           images.push(`data:${item.mime};base64,${bytes.toString('base64')}`);
-      } catch {
+      } catch (error) {
+        if (signal?.aborted) throw error;
         if (!item.description) {
           item.description = '图片目前无法读取，尚未识别画面内容';
           changed = true;

@@ -56,7 +56,7 @@ test('新消息使尚未发送的旧草稿失效，按最新上下文重答', as
   assert.equal(f.delivered[0].part.text, '那就是周六。');
   assert.match(model.calls[1].messages.map((m) => m.content).join('\n'), /说错了，是周六/);
 });
-test('部分发送失败后恢复既有气泡，不重新生成或重发成功气泡', async (t) => {
+test('单个气泡失败不会截断后续气泡，恢复失败气泡也不重新生成', async (t) => {
   const model = new FakeModel(() =>
     completion({
       messages: ['第一句', { type: 'sticker', slug: 'happy' }, '最后一句'],
@@ -75,7 +75,9 @@ test('部分发送失败后恢复既有气泡，不重新生成或重发成功�
   };
   f.runtime.accept('p1', 'a', '今天挺开心');
   await f.runtime.drain();
-  assert.equal(sent.length, 1);
+  // The first and last text bubbles are delivered; only the broken sticker is
+  // left for the operator, instead of silently dropping the closing sentence.
+  assert.equal(sent.length, 2);
   assert.equal(model.calls.length, 1);
   const issue = f.store.issues().deliveries[0];
   assert.equal(issue.status, 'failed');
@@ -85,6 +87,28 @@ test('部分发送失败后恢复既有气泡，不重新生成或重发成功�
   assert.equal(new Set(sent).size, 3);
   assert.equal(model.calls.length, 1);
 });
+test('旧回复只发出第一段时，新消息会取消剩余气泡而不是反复卡住队列', async (t) => {
+  let reply = 0;
+  const model = new FakeModel(() => {
+    reply++;
+    return completion({
+      messages: reply === 1 ? ['旧回复第一段', '旧回复第二段', '旧回复第三段'] : ['新回复'],
+      memoryUpdates: [],
+    });
+  });
+  const f = fixture(t, model);
+  const delivered: string[] = [];
+  f.runtime.options.transport.send = async (_peer, part) => {
+    delivered.push(part.text ?? `[${part.slug}]`);
+    if (delivered.length === 1) f.runtime.accept('p1', 'b', '等等，我补充一句');
+  };
+  f.runtime.accept('p1', 'a', '先说一件事');
+  await f.runtime.drain();
+  assert.deepEqual(delivered, ['旧回复第一段', '新回复']);
+  assert.equal(model.calls.length, 2, '旧任务不应被反复执行');
+  assert.equal(f.store.pendingDeliveries('p1').length, 0, '旧气泡应被取消而不是永久挂在队列');
+});
+
 test('查询工具按需调用，来源和时间传回同一模型', async (t) => {
   const model = new FakeModel((messages) =>
     messages.some((m) => m.role === 'tool')

@@ -136,6 +136,14 @@ export class Runtime {
   private embedTimer?: ReturnType<typeof setInterval>;
   private embedding = false;
   private stopped = false;
+  /** Every in-flight backfill, not just the startup one. A periodic drip can
+   *  still be embedding when shutdown closes the database. */
+  private readonly backfills = new Set<Promise<void>>();
+  private backfillController = new AbortController();
+  /** Asked-state changes that must not become visible until a bubble has
+   *  actually left the process. Marking at save time lost a reminder forever
+   *  whenever the very first delivery failed permanently. */
+  private pendingEffects = new Map<string, { loops: string[]; threads: string[] }>();
   constructor(readonly options: RuntimeOptions) {
     this.agent = new Agent(options);
   }
@@ -167,8 +175,9 @@ export class Runtime {
     // rows must not take a day of 64-row drips to become searchable), then a
     // 5-minute drip keeps new content indexed without competing with chat.
     if (this.options.embedder) {
-      void this.backfillEmbeddings(false);
-      this.embedTimer = setInterval(() => void this.backfillEmbeddings(), 300000);
+      this.backfillController = new AbortController();
+      this.trackBackfill(false);
+      this.embedTimer = setInterval(() => this.trackBackfill(true), 300000);
     }
     this.schedule();
     this.pump();
@@ -178,8 +187,25 @@ export class Runtime {
     if (this.timer) clearInterval(this.timer);
     if (this.scheduleTimer) clearInterval(this.scheduleTimer);
     if (this.embedTimer) clearInterval(this.embedTimer);
+    this.backfillController.abort();
     for (const a of this.active.values()) a.controller.abort();
-    await Promise.allSettled([...this.active.values()].map((a) => a.promise));
+    // A backfill can still be holding the embedder / Store open when shutdown
+    // closes the database. Await every tracked run, not only the startup one.
+    await Promise.allSettled([
+      ...[...this.active.values()].map((a) => a.promise),
+      ...this.backfills,
+    ]);
+  }
+  private trackBackfill(quick: boolean): void {
+    let promise: Promise<void>;
+    promise = this.backfillEmbeddings(quick)
+      .catch((error) => {
+        this.options.log?.('向量索引更新失败，将在下个周期重试', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      })
+      .finally(() => this.backfills.delete(promise));
+    this.backfills.add(promise);
   }
   /** Index content that lacks vectors; best-effort, never blocks chat.
    *  `quick` caps the work per peer (periodic drip); a full pass at startup or
@@ -207,7 +233,15 @@ export class Runtime {
         for (;;) {
           const pending = this.store.pendingEmbeddings(peer.id, quick ? EMBED_BACKFILL_BATCH : 512);
           if (!pending.length) break;
-          const vectors = await embedder.embed(pending.map((p) => p.content));
+          const vectors = await embedder.embed(
+            pending.map((p) => p.content),
+            this.backfillController.signal,
+          );
+          if (this.stopped) return;
+          // A provider that silently drops rows would leave `pending` unchanged
+          // and the full pass would spin forever. Fail the batch, keep the rest.
+          if (vectors.length !== pending.length)
+            throw new Error(`嵌入返回条数不匹配：期望 ${pending.length}，收到 ${vectors.length}`);
           this.store.setEmbeddings(
             vectors.map((vector, i) => ({
               id: pending[i]!.id,
@@ -221,9 +255,10 @@ export class Runtime {
         }
       }
     } catch (error) {
-      this.options.log?.('向量索引更新失败，将在下个周期重试', {
-        error: error instanceof Error ? error.message : String(error),
-      });
+      if (!this.stopped && !this.backfillController.signal.aborted)
+        this.options.log?.('向量索引更新失败，将在下个周期重试', {
+          error: error instanceof Error ? error.message : String(error),
+        });
     } finally {
       this.embedding = false;
     }
@@ -298,25 +333,59 @@ export class Runtime {
           // orphaned bubbles instead of dereferencing undefined and killing the
           // whole peer's queue.
           this.store.markDelivery(deliveries[0].id, 'cancelled', '所属任务已被清理');
+          this.discardPendingEffects(deliveries[0].task_id);
           continue;
         }
-        if (task.version !== peer.version && this.store.cancelUnsent(task)) continue;
+        if (task.version !== peer.version && this.store.cancelUnsent(task)) {
+          this.discardPendingEffects(task.id);
+          continue;
+        }
         const own = deliveries.filter((d) => d.task_id === task.id);
+        let deliveredAny = false;
+        let failedDelivery: string | undefined;
         for (let i = 0; i < own.length; i++) {
+          // A new user message aborts the turn between bubbles. Without this
+          // check the remaining bubbles of the stale reply were still sent,
+          // because sleep() resolves early on abort and the loop continued.
+          if (entry.controller.signal.aborted) return;
+          const current = this.store.peer(peerId);
+          if (!current || current.version !== peer.version) {
+            this.store.cancelUnsent(task);
+            this.discardPendingEffects(task.id);
+            break;
+          }
           const delivery = own[i]!;
-          this.store.startDelivery(delivery.id);
+          // The row may have been confirmed/cancelled by the operator while the
+          // previous bubble was sending; never send a bubble that is no longer
+          // pending.
+          if (!this.store.startDelivery(delivery.id)) continue;
           try {
-            const target = this.store.peer(peerId);
-            if (!target) break;
-            await this.options.transport.send(target, delivery.part, delivery.id);
+            await this.options.transport.send(current, delivery.part, delivery.id);
             this.store.markDelivery(delivery.id, 'sent');
+            deliveredAny = true;
+            this.commitPendingEffects(task.id);
           } catch (error) {
-            this.store.markDelivery(
-              delivery.id,
-              error instanceof DeliveryError && error.certainFailure ? 'failed' : 'uncertain',
-              error instanceof Error ? error.message : '发送失败',
-            );
-            return;
+            const certain = error instanceof DeliveryError && error.certainFailure;
+            const message = error instanceof Error ? error.message : '发送失败';
+            this.store.markDelivery(delivery.id, certain ? 'failed' : 'uncertain', message);
+            if (!certain) {
+              // The bubble may have reached the user: stop the batch rather than
+              // risk sending the rest twice. The operator resolves this row.
+              this.commitPendingEffects(task.id);
+              return;
+            }
+            failedDelivery ??= message;
+            if (!deliveredAny) {
+              // Nothing from this reply has been delivered. Sending the tail
+              // would leave a half-answer, so retire it and surface one failed
+              // task for the operator.
+              this.store.cancelPendingForTask(task.id, delivery.id, message);
+              this.discardPendingEffects(task.id);
+              break;
+            }
+            // A later bubble failed (for example an unavailable sticker) after
+            // text was already delivered. Keep going with the remaining text:
+            // cancelling it here permanently truncated the reply.
           }
           if (i < own.length - 1) {
             // Human-like pacing: longer bubbles get longer pauses, never a
@@ -330,6 +399,7 @@ export class Runtime {
             await sleep(Math.min(2500, 400 + Math.min(80, chars) * 25), entry.controller.signal);
           }
         }
+        if (failedDelivery) this.store.finish(task.id, 'failed', failedDelivery);
         this.maybeMood(peerId);
         this.maybeNotes(peerId);
         continue;
@@ -388,8 +458,15 @@ export class Runtime {
             await this.dedupeMemories(peerId, reply.memories, signal);
             const saved = this.store.saveReply(task, reply.parts, reply.memories);
             if (saved) {
-              this.applyOpenLoops(task, reply);
-              this.applySoftThreads(task, reply);
+              const loops = this.applyOpenLoops(task, reply);
+              const threads = this.applySoftThreads(task, reply);
+              if (loops.length || threads.length) {
+                this.pendingEffects.set(task.id, { loops, threads });
+                // Persist across a crash between save and delivery: the outbox
+                // retries the bubbles after restart, and the asked-state must
+                // travel with them or the reminder can be sent twice.
+                this.store.setSetting(`pending_effects:${task.id}`, { loops, threads });
+              }
               // Every prompt inclusion is a memory "use", not only tool hits —
               // otherwise the hits-based ranking sees a fraction of reality.
               if (reply.pickedMemoryIds?.length)
@@ -480,6 +557,25 @@ export class Runtime {
       }
     }
   }
+  /** Commit asked-state once delivery is known (sent, or uncertain enough that
+   *  retrying would double-ask). Certain failure/cancel discards it. */
+  private commitPendingEffects(taskId: string): void {
+    const key = `pending_effects:${taskId}`;
+    const effects =
+      this.pendingEffects.get(taskId) ??
+      this.store.getSetting<{ loops: string[]; threads: string[] } | undefined>(key, undefined);
+    this.pendingEffects.delete(taskId);
+    this.store.removeSetting(key);
+    if (!effects) return;
+    const peer = this.store.taskById(taskId)?.peer_id;
+    if (!peer) return;
+    for (const id of effects.loops) this.store.markLoopAsked(peer, id);
+    for (const id of effects.threads) this.store.markSoftThreadAsked(peer, id);
+  }
+  private discardPendingEffects(taskId: string): void {
+    this.pendingEffects.delete(taskId);
+    this.store.removeSetting(`pending_effects:${taskId}`);
+  }
   /** Open loops: resolve loops the user just answered, record new ones,
    *  mark due loops as asked only when the model actually brought them up,
    *  and expire old ones. */
@@ -491,11 +587,13 @@ export class Runtime {
       askedLoops?: string[];
       parts?: { type: string }[];
     },
-  ) {
+  ): string[] {
     const store = this.store,
       peer = task.peer_id,
       now = Date.now();
     store.expireOpenLoops(peer, now, this.options.config().timeZone);
+    const due = new Map(store.dueOpenLoops(peer, now).map((l) => [l.id, l]));
+    const explicit = (reply.askedLoops ?? []).filter((id) => due.has(id));
     // A proactive message has no user turn behind it. Letting the model create
     // or resolve dated plans there invents commitments out of old messages;
     // the same rule already applies to soft threads. Proactive turns may only
@@ -508,16 +606,17 @@ export class Runtime {
         if (!loop.sources.length) continue;
         store.addOpenLoop(peer, loop, now);
       }
-      return;
+      // Normal chat turns were previously excluded from asked-state entirely:
+      // if she naturally asked about a due plan while replying, the loop stayed
+      // open and was asked again by the scheduler.
+      return [...new Set(explicit)];
     }
     // A ping that says nothing (the model chose to skip) asked nothing; a ping
     // that talks about something else also asked nothing. Mark only what the
     // model reports mentioning, so "每件只问一次" holds.
-    const due = new Map(store.dueOpenLoops(peer, now).map((l) => [l.id, l]));
-    const explicit = (reply.askedLoops ?? []).filter((id) => due.has(id));
     const spoken =
       reply.parts?.map((p) => ('text' in p ? String(p.text ?? '') : '')).join(' ') ?? '';
-    if (!spoken.trim()) return;
+    if (!spoken.trim()) return [];
     const matched = explicit.length
       ? explicit
       : // The prompt asks for askedLoops; a model that omits it gets one
@@ -525,7 +624,7 @@ export class Runtime {
         // task's loop id here marked the reminder as asked even when the model
         // talked about something else, silently dropping the promise.
         [...due.values()].filter((loop) => sharesTerm(loop.content, spoken)).map((loop) => loop.id);
-    for (const id of new Set(matched)) store.markLoopAsked(peer, id);
+    return [...new Set(matched)];
   }
   /** Undated concerns/promises: record, resolve, and mark the one this reply
    *  actually brought up. They never create tasks or pings; the scheduler only
@@ -542,22 +641,21 @@ export class Runtime {
       resolveThreads?: string[];
       askedThreads?: string[];
     },
-  ) {
+  ): string[] {
     const store = this.store,
       peer = task.peer_id,
       now = Date.now();
     store.expireSoftThreads(peer, now);
     // A proactive message has no user turn behind it; letting the model write
     // new concerns there would let it invent worries out of nothing.
-    if (task.kind === 'proactive') return;
+    if (task.kind === 'proactive') return [];
     for (const id of reply.resolveThreads ?? []) store.resolveSoftThread(peer, id, now);
     for (const thread of reply.threads ?? []) {
       if (!thread.sources.length) continue;
       store.addSoftThread(peer, thread, now);
     }
     const open = new Set(store.softThreads(peer, true).map((t) => t.id));
-    for (const id of reply.askedThreads ?? [])
-      if (open.has(id)) store.markSoftThreadAsked(peer, id);
+    return [...new Set((reply.askedThreads ?? []).filter((id) => open.has(id)))];
   }
   /** After a delivered exchange, pulse the light mood state from the last
    *  user/assistant pair; runs at most once per finished task batch. */
@@ -600,7 +698,12 @@ export class Runtime {
           this.options.config().contextTokens * NOTES_BUDGET_SHARE)
     )
       return;
-    const through = recent[Math.max(0, recent.length - NOTES_TAIL_EXEMPT)].seq;
+    // Keep the newest NOTES_TAIL_EXEMPT messages out of the summary. The old
+    // index left only 12, so a compliant summary always swallowed one extra
+    // recent message and the context notes described a turn still in flight.
+    const cutoff = recent.length - NOTES_TAIL_EXEMPT - 1;
+    if (cutoff < 0) return;
+    const through = recent[cutoff]!.seq;
     if (through > peer.notes_until)
       this.store.enqueue(peerId, 'notes', String(through), { through });
   }
@@ -708,35 +811,56 @@ export class Runtime {
       });
     }
     for (const peer of this.store.peers().filter((p) => p.approved)) {
-      if (hour >= c.diaryHour) this.queueDiary(peer.id, false, now);
-      // A due loop is checked first and wins over casual small talk. The old
-      // order only looked at loops when the daily casual quota was already
-      // spent, so a due loop could be starved forever on days the casual ping
-      // went out first. Keeping them mutually exclusive also spends at most
-      // one proactive message per scheduler pass.
-      // dueOpenLoops already filters asked=0 in SQL; re-filtering here did
-      // nothing except suggest the query was untrusted.
-      const dueLoops = this.store.dueOpenLoops(peer.id, now);
-      const loop = dueLoops.length > 0 && this.loopPingAllowed(peer, now) ? dueLoops[0] : undefined;
-      const casual = !loop && this.proactiveAllowed(peer, now);
-      if (loop || casual) {
-        // Randomized delay so proactive pings do not land at the same minute
-        // every day — a small step toward a human-like rhythm.
-        const jitter = Math.floor(Math.random() * PROACTIVE_JITTER_MINUTES) * 60000;
-        this.store.enqueue(
-          peer.id,
-          'proactive',
-          // The due date is part of the key: a yearly loop rolled forward must
-          // produce a new task instead of hitting last year's finished one.
-          // The day is included too: a model that skips ("send nothing") leaves
-          // the promise open, and without a per-day key that finished task
-          // would suppress every future attempt for the same due date.
-          loop
-            ? `${this.store.loopTaskKey(loop)}:${dayAt(now, c.timeZone)}`
-            : `casual:${dayAt(now, c.timeZone)}`,
-          loop ? { loop: loop.id } : {},
-          now + jitter,
-        );
+      // One broken peer row must not starve every contact after it in the list.
+      try {
+        if (hour >= c.diaryHour) this.queueDiary(peer.id, false, now);
+        // A due loop is checked first and wins over casual small talk. The old
+        // order only looked at loops when the daily casual quota was already
+        // spent, so a due loop could be starved forever on days the casual ping
+        // went out first. Keeping them mutually exclusive also spends at most
+        // one proactive message per scheduler pass.
+        // dueOpenLoops already filters asked=0 in SQL; re-filtering here did
+        // nothing except suggest the query was untrusted.
+        const dueLoops = this.store.dueOpenLoops(peer.id, now);
+        // Pick the first loop whose ping is not already queued. Selecting
+        // dueLoops[0] unconditionally meant one loop waiting behind another
+        // (or failing repeatedly) starved every later due promise.
+        const loop =
+          dueLoops.length > 0 && this.loopPingAllowed(peer, now)
+            ? dueLoops.find(
+                (candidate) =>
+                  !this.store.hasPendingTask(
+                    peer.id,
+                    'proactive',
+                    `${this.store.loopTaskKey(candidate)}:${dayAt(now, c.timeZone)}`,
+                  ),
+              )
+            : undefined;
+        const casual = !loop && this.proactiveAllowed(peer, now);
+        if (loop || casual) {
+          // Randomized delay so proactive pings do not land at the same minute
+          // every day — a small step toward a human-like rhythm.
+          const jitter = Math.floor(Math.random() * PROACTIVE_JITTER_MINUTES) * 60000;
+          this.store.enqueue(
+            peer.id,
+            'proactive',
+            // The due date is part of the key: a yearly loop rolled forward must
+            // produce a new task instead of hitting last year's finished one.
+            // The day is included too: a model that skips ("send nothing") leaves
+            // the promise open, and without a per-day key that finished task
+            // would suppress every future attempt for the same due date.
+            loop
+              ? `${this.store.loopTaskKey(loop)}:${dayAt(now, c.timeZone)}`
+              : `casual:${dayAt(now, c.timeZone)}`,
+            loop ? { loop: loop.id } : {},
+            now + jitter,
+          );
+        }
+      } catch (error) {
+        this.options.log?.('联系人调度失败，本轮跳过', {
+          peer: peer.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
     }
     this.pump();

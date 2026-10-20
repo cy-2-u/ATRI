@@ -147,17 +147,72 @@ export function extractInlineStickers(
  * model was supposed to emit them via the messages array.
  */
 export function stripSourceAnnotations(text: string): { parts: ReplyPart[]; text: string } {
+  if (!/\[来源[^\]]*\]/.test(text)) return { parts: [], text };
+  // Strip annotations wherever they appear, not only at the very start. A
+  // mid-sentence "[来源 …]" used to survive into the outgoing WeChat message.
+  const withoutInline = (value: string) =>
+    value
+      .replace(/\s*\[来源[^\]]*\]\s*/g, ' ')
+      .replace(/[ \t]{2,}/g, ' ')
+      .trim();
+  const leading = /^\s*\[来源[^\]]*\]/.test(text);
+  if (!leading) return { parts: [], text: withoutInline(text) };
+  // Leading annotations usually mark separate recalled blocks; preserve the
+  // existing split into bubbles. The old code compared the whole string with
+  // its prefix-stripped copy, so an inline annotation later in the same text
+  // skipped this path entirely.
   const withoutPrefix = text.replace(/^\s*\[来源[^\]]*\]\s*\n?/g, '');
-  if (withoutPrefix === text) return { parts: [], text };
   const chunks = withoutPrefix
     .split(/\s*\[来源[^\]]*\]\s*/g)
     .map((c) => c.trim())
     .filter(Boolean);
-  if (chunks.length <= 1) return { parts: [], text: withoutPrefix.trim() };
+  if (chunks.length <= 1) return { parts: [], text: withoutInline(chunks[0] ?? '') };
   return {
     parts: chunks.slice(0, MAX_REPLY_PARTS).map((c) => ({ type: 'text' as const, text: c })),
     text: '',
   };
+}
+/** Split one text segment into text/sticker parts in source order. The old
+ *  extractor returned all stickers separately, so normalizeTextParts put every
+ *  sticker before every line of text and "哈哈[表情]收到" arrived backwards. */
+function splitInlineParts(text: string, stickers: Sticker[]): ReplyPart[] {
+  const out: ReplyPart[] = [];
+  const pushText = (value: string) => {
+    const body = value.trim();
+    if (!body) return;
+    const last = out.at(-1);
+    if (last?.type === 'text') last.text = `${last.text} ${body}`.trim();
+    else out.push({ type: 'text', text: body.slice(0, 6000) });
+  };
+  const re = /(\s*)[(\[{【]\s*(?:表情|sticker)\s*[：:]\s*([^\]】)}]{1,40}?)\s*[\]】)}](\s*)/gi;
+  let cursor = 0;
+  for (;;) {
+    const match = re.exec(text);
+    if (!match) break;
+    pushText(text.slice(cursor, match.index) + (match[1] ?? ''));
+    const query = (match[2] ?? '').trim().toLowerCase();
+    const bySlug = query ? stickers.find((s) => s.slug.toLowerCase() === query) : undefined;
+    const byDescription = query
+      ? stickers.find(
+          (s) =>
+            s.description.toLowerCase().includes(query) ||
+            (s.tags ?? []).some((t) => t.toLowerCase() === query),
+        )
+      : undefined;
+    const byTag = query
+      ? stickers.find((s) =>
+          (s.tags ?? []).some(
+            (t) => query.includes(t.toLowerCase()) || t.toLowerCase().includes(query),
+          ),
+        )
+      : undefined;
+    const sticker = bySlug ?? byDescription ?? byTag;
+    if (sticker)
+      out.push({ type: 'sticker', slug: sticker.slug, description: sticker.description });
+    cursor = match.index + match[0].length;
+  }
+  pushText(text.slice(cursor));
+  return out;
 }
 function normalizeTextParts(raw: unknown[], stickers: Sticker[]): ReplyPart[] {
   // The slice bounds how many input messages are read, but one message can hold
@@ -172,21 +227,7 @@ function normalizeTextParts(raw: unknown[], stickers: Sticker[]): ReplyPart[] {
         const segments = head.parts.length
           ? head.parts.flatMap((p) => (p.type === 'text' && p.text ? [p.text] : []))
           : [head.text];
-        return segments.flatMap<ReplyPart>((segment) => {
-          const { parts, text } = extractInlineStickers(segment, stickers);
-          const body = text.trim();
-          const stripped = stripSourceAnnotations(body);
-          const combined = [...parts, ...stripped.parts];
-          if (combined.length)
-            return [
-              ...combined,
-              ...(stripped.text
-                ? [{ type: 'text' as const, text: stripped.text.slice(0, 6000) }]
-                : []),
-            ];
-          if (stripped.text) return [{ type: 'text' as const, text: stripped.text.slice(0, 6000) }];
-          return [];
-        });
+        return segments.flatMap<ReplyPart>((segment) => splitInlineParts(segment, stickers));
       }
       if (m && typeof m === 'object' && 'type' in m && m.type === 'sticker' && 'slug' in m) {
         const slug = m.slug;
@@ -404,6 +445,31 @@ function localWallTimeFromYMD(
   minute: number,
   timeZone: string,
 ): number {
+  if (
+    !Number.isInteger(year) ||
+    !Number.isInteger(month) ||
+    !Number.isInteger(day) ||
+    !Number.isInteger(hour) ||
+    !Number.isInteger(minute) ||
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > 31 ||
+    hour < 0 ||
+    hour > 23 ||
+    minute < 0 ||
+    minute > 59
+  )
+    return NaN;
+  // Date.parse normalizes 2026-02-30 into March 2, so round-trip the calendar
+  // date and reject any day that does not exist.
+  const calendar = new Date(Date.UTC(year, month - 1, day));
+  if (
+    calendar.getUTCFullYear() !== year ||
+    calendar.getUTCMonth() !== month - 1 ||
+    calendar.getUTCDate() !== day
+  )
+    return NaN;
   const utc = Date.parse(
     `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00Z`,
   );
@@ -469,19 +535,16 @@ export function parseReply(
       // still starts with an annotation, so after one pass the remaining three
       // source blocks collapsed into a single bubble.
       const annotated = stripSourceAnnotations(blob);
-      const blocks = annotated.parts.length ? annotated.parts.map((p) => p.text ?? '') : [blob];
+      const blocks = annotated.parts.length
+        ? annotated.parts.map((p) => p.text ?? '')
+        : annotated.text
+          ? [annotated.text]
+          : [];
       const all: ReplyPart[] = [];
-      for (const block of blocks) {
-        const { parts: stickerParts, text: stickerText } = extractInlineStickers(block, stickers);
-        all.push(...stickerParts);
-        const body = stickerText.trim();
-        const stripped = stripSourceAnnotations(body);
-        if (stripped.parts.length) all.push(...stripped.parts);
-        else if (stripped.text)
-          all.push({ type: 'text' as const, text: stripped.text.slice(0, 6000) });
-      }
+      for (const block of blocks) all.push(...splitInlineParts(block, stickers));
+      if (!all.length) throw new Error('回复没有有效内容');
       return {
-        parts: all.length ? all.slice(0, MAX_REPLY_PARTS) : [{ type: 'text' as const, text: blob }],
+        parts: all.slice(0, MAX_REPLY_PARTS),
         memories: [],
         descriptions: [],
         openLoops: [],
@@ -494,6 +557,7 @@ export function parseReply(
     }
     throw new Error('回复格式无效');
   }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('回复不是 JSON 对象');
   if (!Array.isArray(raw.messages)) throw new Error('回复缺少 messages 数组');
   const parts = normalizeTextParts(raw.messages, stickers);
   if (!parts.length && !(allowSkip && raw.messages.length === 0))

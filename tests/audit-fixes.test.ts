@@ -263,6 +263,96 @@ test('空日记是显式契约：不写日记并推进游标', async (t) => {
   assert.equal(f.runtime.queueDiary('p1', true), undefined, '同一批记录不会被反复重跑');
 });
 
+test('主动消息的冷落计数按任务算，不把多气泡当成多次已读不回', (t) => {
+  const f = fixture(t);
+  const now = Date.now();
+  for (let i = 0; i < 2; i++) {
+    f.store.enqueue('p1', 'proactive', `ping-${i}`, {}, now + i * 1000);
+    const task = f.store.claim('p1', now + i * 1000)!;
+    assert.equal(
+      f.store.saveReply(
+        task,
+        [
+          { type: 'text', text: '在吗' },
+          { type: 'text', text: '今天怎么样' },
+        ],
+        [],
+        now + i * 1000,
+      ),
+      true,
+    );
+    for (const delivery of f.store.pendingDeliveries('p1')) {
+      f.store.startDelivery(delivery.id);
+      f.store.markDelivery(delivery.id, 'sent');
+    }
+  }
+  assert.equal(f.store.unansweredProactiveStreak('p1'), 2, '两条主动消息各算一次');
+});
+
+test('日记游标只前进不后退，旧任务晚完成不会重做已覆盖的记录', (t) => {
+  const f = fixture(t);
+  const first = f.store.enqueue('p1', 'diary', 'diary-new', { through: 100 });
+  f.store.enqueue('p1', 'diary', 'diary-old', { through: 50 });
+  const newer = f.store.claim('p1')!;
+  assert.equal(newer.id, first);
+  f.store.saveDiary(newer, '2026-10-20', [], []);
+  const older = f.store.claim('p1')!;
+  f.store.saveDiary(older, '2026-10-19', [], []);
+  assert.equal(f.store.getSetting('diary_cursor:p1', 0), 100, '游标不能被旧任务改回 50');
+});
+
+test('过期的 notes 快照不能覆盖更新的笔记', (t) => {
+  const f = fixture(t);
+  const newer = f.store.enqueue('p1', 'notes', 'notes-new', { through: 100 });
+  f.store.enqueue('p1', 'notes', 'notes-old', { through: 50 });
+  const first = f.store.claim('p1')!;
+  assert.equal(first.id, newer);
+  f.store.setNotes(first, '新笔记', 100);
+  const stale = f.store.claim('p1')!;
+  f.store.setNotes(stale, '旧笔记', 50);
+  const peer = f.store.peer('p1')!;
+  assert.equal(peer.notes, '新笔记');
+  assert.equal(peer.notes_until, 100);
+});
+
+test('pruneTasks 会顺带清理已删任务的 pending_effects 残留', (t) => {
+  const f = fixture(t);
+  const old = Date.now() - 40 * 86400000;
+  const id = f.store.enqueue('p1', 'chat', 'effects', { text: '早' });
+  f.store.setSetting(`pending_effects:${id}`, { loops: ['l1'], threads: ['t1'] });
+  f.store.sql.prepare('UPDATE tasks SET state=?, created_at=? WHERE id=?').run('done', old, id);
+  f.store.pruneTasks(Date.now());
+  assert.equal(f.store.getSetting(`pending_effects:${id}`, null), null);
+});
+
+test('getuploadurl 返回的外部主机不会让上传请求变成 SSRF', async () => {
+  const original = globalThis.fetch;
+  let requests = 0;
+  try {
+    globalThis.fetch = (async () => {
+      requests++;
+      return Response.json({ ok: true });
+    }) as typeof fetch;
+    const client = new ILinkClient({
+      botToken: 'token',
+      baseUrl: 'https://ilink.test',
+      cdnBaseUrl: 'https://cdn.test/c2c',
+    });
+    await assert.rejects(
+      client.uploadEncryptedToCdn({
+        plaintext: Buffer.from('image'),
+        aesKey: Buffer.alloc(16, 1),
+        filekey: 'file-key',
+        uploadFullUrl: 'https://evil.example/upload',
+      }),
+      /host not allowed/,
+    );
+    assert.equal(requests, 0, '被拒绝的地址不应发出任何请求');
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
 test('CDN 5xx 带 httpStatus 而不是 errcode，便于按暂时失败处理', async () => {
   const original = globalThis.fetch;
   try {
@@ -270,12 +360,19 @@ test('CDN 5xx 带 httpStatus 而不是 errcode，便于按暂时失败处理', a
       const path = new URL(String(input)).pathname;
       if (path.endsWith('/getuploadurl'))
         return Response.json({ ret: 0, upload_full_url: 'https://cdn.test/upload' });
+      // The upload URL is only fetchable when its host is the configured CDN;
+      // this test is about HTTP status propagation, not the host gate.
+
       return new Response('bad gateway', {
         status: 502,
         headers: { 'x-error-message': 'bad gateway' },
       });
     }) as typeof fetch;
-    const client = new ILinkClient({ botToken: 'token', baseUrl: 'https://ilink.test' });
+    const client = new ILinkClient({
+      botToken: 'token',
+      baseUrl: 'https://ilink.test',
+      cdnBaseUrl: 'https://cdn.test',
+    });
     await assert.rejects(
       client.sendImage({
         toUserId: 'peer',

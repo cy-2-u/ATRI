@@ -40,6 +40,19 @@ export function createServer(o: ServerOptions) {
   const app = Fastify({ bodyLimit: 5 * 1024 * 1024, logger: false });
   const sessions = new Map<string, number>(),
     failures = new Map<string, { count: number; until: number }>();
+  const blocked = (ip: string, now = Date.now()) => {
+    const attempt = failures.get(ip);
+    return Boolean(attempt && attempt.until > now && attempt.count >= 8);
+  };
+  const recordFailure = (ip: string, now = Date.now()) => {
+    const attempt = failures.get(ip);
+    failures.set(ip, {
+      count: attempt && attempt.until > now ? attempt.count + 1 : 1,
+      until: now + 60000,
+    });
+    if (failures.size > 1000)
+      for (const [key, value] of failures) if (value.until < now) failures.delete(key);
+  };
   const publicDir = join(o.settings.root, 'apps', 'api', 'public');
   const staticCache = new Map<string, Buffer>();
   const asset = (name: string) => {
@@ -67,11 +80,21 @@ export function createServer(o: ServerOptions) {
     );
     if (request.url.startsWith('/api/')) reply.header('cache-control', 'no-store');
     if (!request.url.startsWith('/api/') || request.url === '/api/login') return;
+    const now = Date.now();
     const bearer = request.headers.authorization?.replace(/^Bearer /, '') ?? '';
     const token = /\batri_session=([^;]+)/.exec(request.headers.cookie ?? '')?.[1];
     const validBearer = !!bearer && timingSafeEqual(digest(bearer), credentials);
-    if (!validBearer && (!token || (sessions.get(token) ?? 0) < Date.now()))
+    const cookieValid = Boolean(token && (sessions.get(token) ?? 0) >= now);
+    if (!validBearer && !cookieValid) {
+      // Bearer requests bypassed /api/login and therefore its rate limit,
+      // leaving the admin password open to unlimited guessing. Count them here.
+      if (bearer) {
+        if (blocked(request.ip, now))
+          return reply.code(429).send({ error: '尝试次数较多，请一分钟后再试' });
+        recordFailure(request.ip, now);
+      }
       return reply.code(401).send({ error: '请先登录管理页' });
+    }
     if (!['GET', 'HEAD'].includes(request.method) && request.headers.origin) {
       try {
         if (new URL(request.headers.origin).host !== request.headers.host)
@@ -89,7 +112,16 @@ export function createServer(o: ServerOptions) {
       .code(e.statusCode && e.statusCode >= 400 && e.statusCode < 600 ? e.statusCode : 400)
       .send({ error: e.message.slice(0, 300) });
   });
-  app.get('/healthz', () => ({ ok: true }));
+  app.get('/healthz', (_request, reply) => {
+    try {
+      // A process that cannot answer a trivial query is not healthy even if
+      // the HTTP loop is still alive (disk full, corrupted WAL, closed DB).
+      o.store.sql.prepare('SELECT 1').get();
+      return { ok: true };
+    } catch {
+      return reply.code(503).send({ ok: false });
+    }
+  });
   app.get('/', (_request, reply) =>
     reply.type('text/html; charset=utf-8').send(asset('index.html')),
   );
@@ -115,22 +147,14 @@ export function createServer(o: ServerOptions) {
       }
     }
     const now = Date.now(),
-      ip = request.ip,
-      attempt = failures.get(ip);
-    if (attempt && attempt.until > now && attempt.count >= 8)
-      return reply.code(429).send({ error: '尝试次数较多，请一分钟后再试' });
-    if (
-      typeof request.body?.password !== 'string' ||
-      !timingSafeEqual(digest(request.body.password), credentials)
-    ) {
-      failures.set(ip, {
-        count: attempt && attempt.until > now ? attempt.count + 1 : 1,
-        until: now + 60000,
-      });
-      if (failures.size > 1000)
-        for (const [key, value] of failures) if (value.until < now) failures.delete(key);
+      ip = request.ip;
+    if (blocked(ip, now)) return reply.code(429).send({ error: '尝试次数较多，请一分钟后再试' });
+    const password = typeof request.body?.password === 'string' ? request.body.password : '';
+    if (!password || !timingSafeEqual(digest(password), credentials)) {
+      recordFailure(ip, now);
       return reply.code(401).send({ error: '管理密码不正确' });
     }
+    failures.delete(ip);
     const token = randomBytes(32).toString('base64url');
     sessions.set(token, now + 12 * 3600000);
     if (sessions.size > 100) sessions.delete(sessions.keys().next().value!);
@@ -164,21 +188,24 @@ export function createServer(o: ServerOptions) {
       // embeddings table on every poll (the UI polls /api/status every 2.5 s)
       // and was never rendered; the vector count lives on /api/sandbox-adjacent
       // debug endpoints instead.
-      states: o.store.peers().map((peer) => {
-        const mood = o.store.mood(peer.id);
-        const dueLoops = o.store.dueOpenLoops(peer.id, Date.now());
-        return {
-          peerId: peer.id,
-          address: peer.address,
-          approved: !!peer.approved,
-          mood: mood.at ? mood : undefined,
-          dueLoops: dueLoops.length,
-          // Drives "她多久没来了" in the UI, which is the one field here the
-          // operator actually needs to judge whether a peer is still alive.
-          lastUserAt: peer.last_user_at,
-          lastProactiveAt: peer.last_proactive_at,
-        };
-      }),
+      states: (() => {
+        const moods = o.store.moods();
+        const due = o.store.dueLoopCounts();
+        return o.store.peers().map((peer) => {
+          const mood = moods.get(peer.id) ?? { valence: 0, energy: 0, patience: 0, at: 0 };
+          return {
+            peerId: peer.id,
+            address: peer.address,
+            approved: !!peer.approved,
+            mood: mood.at ? mood : undefined,
+            dueLoops: due.get(peer.id) ?? 0,
+            // Drives "她多久没来了" in the UI, which is the one field here the
+            // operator actually needs to judge whether a peer is still alive.
+            lastUserAt: peer.last_user_at,
+            lastProactiveAt: peer.last_proactive_at,
+          };
+        });
+      })(),
     };
   });
   app.post('/api/wechat/login', () => o.bridge.login());
@@ -196,7 +223,7 @@ export function createServer(o: ServerOptions) {
     };
   });
   app.put<{ Body: Record<string, unknown> }>('/api/config', (request) =>
-    o.settings.update(request.body),
+    o.settings.update(request.body ?? {}),
   );
   // Sandbox status for the settings page: enabled flag, what the directory
   // currently holds, and what isolation this host actually provides.
@@ -229,9 +256,10 @@ export function createServer(o: ServerOptions) {
   // straight from the chosen preset, and without the text every template
   // silently produced the placeholder.
   app.get('/api/persona-presets', () => PERSONA_PRESETS);
-  app.post<{ Body: { name: string; content: string } }>('/api/personas', (request) =>
-    o.settings.personaCreate(text(request.body.name, 40), text(request.body.content)),
-  );
+  app.post<{ Body: { name: string; content: string } }>('/api/personas', (request) => {
+    const input = request.body ?? {};
+    return o.settings.personaCreate(text(input.name, 40), text(input.content));
+  });
   app.put<{ Params: { id: string }; Body: { name?: string; content?: string; greeting?: string } }>(
     '/api/personas/:id',
     (request) => {
@@ -256,8 +284,9 @@ export function createServer(o: ServerOptions) {
   app.put<{ Params: { id: string }; Body: { personaId: string } }>(
     '/api/peers/:id/persona',
     (request) => {
-      if (typeof request.body.personaId !== 'string') throw new Error('人格选择无效');
-      return o.settings.setPeerPersona(request.params.id, request.body.personaId);
+      const input = request.body ?? {};
+      if (typeof input.personaId !== 'string') throw new Error('人格选择无效');
+      return o.settings.setPeerPersona(request.params.id, input.personaId);
     },
   );
   app.get('/api/models', async () => {
@@ -270,17 +299,31 @@ export function createServer(o: ServerOptions) {
       headers: { authorization: `Bearer ${c.apiKey}` },
       signal: AbortSignal.timeout(15000),
     });
-    const body = (await response.json().catch(() => null)) as {
-      data?: { id?: unknown }[];
-      error?: { message?: unknown };
-    } | null;
+    // Read once: response.json() consumed the body, so the error branch's
+    // response.text() could only ever return '' for an HTML/plain-text failure.
+    const raw = await response.text().catch(() => '');
+    type ModelListBody = { data?: { id?: unknown }[]; error?: { message?: unknown } };
+    let body: ModelListBody | null = null;
+    try {
+      body = raw ? (JSON.parse(raw) as ModelListBody) : null;
+    } catch {
+      body = null;
+    }
     if (!response.ok)
       throw new Error(
         `拉取模型列表失败（HTTP ${response.status}）：${
-          (body?.error?.message as string) || (await response.text().catch(() => '')).slice(0, 200)
+          (body?.error?.message as string) || raw.slice(0, 200) || '无响应内容'
         }`,
       );
-    const ids = [...new Set((body?.data ?? []).map((m) => String(m?.id ?? '')).filter(Boolean))];
+    const data = Array.isArray(body?.data) ? body.data : [];
+    const ids = [
+      ...new Set(
+        data
+          .filter((m) => m && typeof m === 'object')
+          .map((m) => (typeof m.id === 'string' ? m.id.trim() : ''))
+          .filter(Boolean),
+      ),
+    ];
     return { models: ids.sort((a, b) => a.localeCompare(b)) };
   });
   app.post('/api/test-llm', async () => {
@@ -322,17 +365,18 @@ export function createServer(o: ServerOptions) {
     o.store.peers().map(({ context_token, ...peer }) => peer),
   );
   app.put<{ Params: { id: string }; Body: { approved: boolean } }>('/api/peers/:id', (request) => {
-    if (typeof request.body.approved !== 'boolean' || !o.store.peer(request.params.id))
+    const input = request.body ?? {};
+    if (typeof input.approved !== 'boolean' || !o.store.peer(request.params.id))
       throw new Error('联系人或设置无效');
     const peer = o.store.peer(request.params.id)!;
-    o.store.approve(request.params.id, request.body.approved);
+    o.store.approve(request.params.id, input.approved);
     // First approval of a real contact: queue a one-shot greeting task. An empty
     // greeting means the operator asked for no opener, so nothing is enqueued.
     // The version-qualified dedupe key lets a later re-approval send the updated
     // greeting: the previous key's task is already `done`, and enqueue only
     // revives failed/superseded/interrupted rows, so reusing "greeting" froze
     // every new opener behind the finished task.
-    if (request.body.approved && !peer.approved && peer.channel === 'wechat') {
+    if (input.approved && !peer.approved && peer.channel === 'wechat') {
       const greeting = o.settings.personaGreetingFor(peer.id);
       if (greeting.trim())
         o.store.enqueue(
@@ -380,19 +424,17 @@ export function createServer(o: ServerOptions) {
   app.put<{ Params: { peer: string; id: string }; Body: { content: string } }>(
     '/api/peers/:peer/memories/:id',
     (request) => {
-      o.store.correctMemory(
-        request.params.peer,
-        request.params.id,
-        text(request.body.content, 800),
-      );
+      const input = request.body ?? {};
+      o.store.correctMemory(request.params.peer, request.params.id, text(input.content, 800));
       return { ok: true };
     },
   );
   app.put<{ Params: { peer: string; id: string }; Body: { pinned: boolean } }>(
     '/api/peers/:peer/memories/:id/pinned',
     (request) => {
-      if (typeof request.body.pinned !== 'boolean') throw new Error('置顶状态无效');
-      o.store.setMemoryPinned(request.params.peer, request.params.id, request.body.pinned);
+      const input = request.body ?? {};
+      if (typeof input.pinned !== 'boolean') throw new Error('置顶状态无效');
+      o.store.setMemoryPinned(request.params.peer, request.params.id, input.pinned);
       return { ok: true };
     },
   );
@@ -440,10 +482,11 @@ export function createServer(o: ServerOptions) {
   // never needs to write, and re-ensured here (cheap upsert) before a chat.
   app.post<{ Body: { content: string; eventId?: string } }>('/api/chat', (request, reply) => {
     const peer = o.store.ensurePeer('preview:default', 'preview', '本地试聊', '', true);
+    const input = request.body ?? {};
     const event = o.runtime.accept(
       peer.id,
-      request.body.eventId ? text(request.body.eventId, 100) : randomUUID(),
-      text(request.body.content),
+      input.eventId ? text(input.eventId, 100) : randomUUID(),
+      text(input.content),
     );
     reply.code(202);
     return { peerId: peer.id, messageId: event.message.id, taskId: event.taskId ?? null };
@@ -477,18 +520,17 @@ export function createServer(o: ServerOptions) {
     (request) => {
       // Look the delivery up directly: issues() caps at 100 rows, so anything
       // older was reported as "不存在" exactly when it was blocking a peer.
+      const action = String(request.body?.action);
+      const delivery = o.store.deliveryById(request.params.id);
       if (
-        !['confirmed', 'retry', 'skip'].includes(String(request.body?.action)) ||
-        !o.store.deliveryById(request.params.id)
+        !['confirmed', 'retry', 'skip'].includes(action) ||
+        !delivery ||
+        !['failed', 'uncertain'].includes(delivery.status)
       )
-        throw new Error('待处理的发送记录不存在');
-      const status =
-        request.body.action === 'confirmed'
-          ? 'sent'
-          : request.body.action === 'retry'
-            ? 'pending'
-            : 'cancelled';
-      o.store.markDelivery(request.params.id, status);
+        throw new Error('待处理的发送记录不存在或状态已变化');
+      const status = action === 'confirmed' ? 'sent' : action === 'retry' ? 'pending' : 'cancelled';
+      if (!o.store.markDelivery(request.params.id, status))
+        throw new Error('发送记录状态已变化，请刷新后重试');
       o.runtime.pump();
       return { ok: true };
     },

@@ -515,6 +515,7 @@ describe('sendVoice', () => {
     const upload = calls.find((c) => c.path.endsWith('/getuploadurl'))!;
     assert.equal(upload.body!.media_type, UPLOAD_MEDIA_TYPE.voice);
     assert.equal(upload.body!.media_type, 4);
+    assert.deepEqual(upload.body!.base_info, { channel_version: '1.0.2' });
 
     const item = sentItem(calls);
     assert.equal(item.type, ITEM_TYPE.voice);

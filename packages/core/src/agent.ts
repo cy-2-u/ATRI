@@ -1,6 +1,6 @@
 import type { Message, Store, Task, SearchHit, MemoryUpdate, OpenLoop, SoftThread } from '@atri/db';
 import type { Model, ModelMessage, ToolDefinition, Completion } from '@atri/llm';
-import { estimateRequestTokens, estimateTextTokens, trimToTokens } from '@atri/llm';
+import { ModelError, estimateRequestTokens, estimateTextTokens, trimToTokens } from '@atri/llm';
 import { hourFormatter } from '@atri/db';
 import {
   parseJson,
@@ -66,9 +66,9 @@ export interface AgentOptions {
   timeZone: () => string;
   contextTokens: () => number;
   turnTimeoutMs: () => number;
-  images?: (message: Message) => Promise<string[]>;
+  images?: (message: Message, signal?: AbortSignal) => Promise<string[]>;
   /** Optional semantic search support; when absent, search stays lexical. */
-  embedQuery?: (query: string) => Promise<Float32Array | undefined>;
+  embedQuery?: (query: string, signal?: AbortSignal) => Promise<Float32Array | undefined>;
   /** Name of the embedding model behind embedQuery, so stored vectors from a
    *  different model are excluded from semantic recall instead of being
    *  cosine-compared into plausible-looking garbage. */
@@ -452,7 +452,14 @@ export function renderMemories(
  *  at the end of the prompt, and a reader who skims a list of old events
  *  naturally weights the last one. */
 export function renderHits(
-  hits: { id: string; kind: string; role?: string; content: string; created_at: number }[],
+  hits: {
+    id: string;
+    kind: string;
+    role?: string;
+    content: string;
+    created_at: number;
+    memory_kind?: 'stated' | 'interpretation';
+  }[],
   timeZone: string,
 ): string {
   if (!hits.length) return '暂无';
@@ -470,7 +477,9 @@ export function renderHits(
               ? '设定更正'
               : '你说'
           : h.kind === 'memory'
-            ? '记忆'
+            ? h.memory_kind === 'stated'
+              ? '记忆·对话确认'
+              : '记忆·主观理解'
             : '日记';
       return `- ${h.content}（${who}，${formatter.format(new Date(h.created_at))}，id:${h.id}）`;
     })
@@ -570,8 +579,12 @@ export class Agent {
     peer: { id: string; notes: string },
     history: Message[],
     now: number,
+    signal: AbortSignal,
   ) {
     const { store } = this.o;
+    // The model actually sees sandbox tools when enabled; budgeting against
+    // INFO_TOOLS alone undercounted their schema and let the request overshoot.
+    const budgetTools = this.toolset();
     const query = history
       .filter((m) => m.role === 'user')
       .slice(-RECALL_QUERY_MESSAGES)
@@ -580,28 +593,29 @@ export class Agent {
       .slice(-RECALL_QUERY_MAX_CHARS);
     let queryVector: Float32Array | undefined;
     try {
-      queryVector = query.trim() ? await this.o.embedQuery?.(query) : undefined;
-    } catch {
+      queryVector = query.trim() ? await this.o.embedQuery?.(query, signal) : undefined;
+    } catch (error) {
+      if (signal.aborted) throw error;
       queryVector = undefined;
     }
-    const ranked = store.rankedMemories(peer.id, PROMPT_MEMORIES);
-    // The list already ranks every stored fact, so more memories than slots
-    // means the same ten rows win every turn and the rest are never seen. Keep
-    // the strongest few fixed and let the tail alternate: what was in the
+    // Fetch a candidate pool, not just the slots: with only ten rows the same
+    // ten won forever and facts ranked 11+ never had a chance to rotate in.
+    const rankedPool = store.rankedMemories(peer.id, Math.max(PROMPT_MEMORIES * 4, 40));
+    // Keep the strongest few fixed and let the tail alternate: what was in the
     // previous prompt moves behind what was not. `sort` is stable, so each
     // group keeps its rank order.
     const cooling = new Set(
-      ranked
+      rankedPool
         .filter((m) => !m.pinned && now - m.last_hit_at < MEMORY_HIT_COOLDOWN_MINUTES * 60000)
         .map((m) => m.id),
     );
-    const core = ranked.slice(0, MEMORY_COOLDOWN_CORE);
-    const tail = ranked.slice(MEMORY_COOLDOWN_CORE);
+    const core = rankedPool.slice(0, MEMORY_COOLDOWN_CORE);
+    const tail = rankedPool.slice(MEMORY_COOLDOWN_CORE);
     const ordered = [
       ...core,
       ...tail.filter((m) => !cooling.has(m.id)),
       ...tail.filter((m) => cooling.has(m.id)),
-    ];
+    ].slice(0, PROMPT_MEMORIES);
     const rawMemories = ordered;
     const memories = ordered.map((m) => ({
       id: m.id,
@@ -650,7 +664,9 @@ export class Agent {
     const dueIds = new Set(dueLoops.map((l) => l.id));
     const upcomingLoops = store
       .openLoops(peer.id, true)
-      .filter((l) => !dueIds.has(l.id))
+      // A loop already asked about is still open until resolved, but listing it
+      // as "not due yet" contradicts the prompt and invites asking twice.
+      .filter((l) => !dueIds.has(l.id) && !l.asked)
       .slice(0, OPEN_LOOP_PROMPT_MAX);
     const openLoops = [...dueLoops, ...upcomingLoops];
     // Proactive pings have no user message to judge relevance against, so
@@ -693,12 +709,30 @@ export class Agent {
     // newest message in full: a single oversized turn then collapses `optional`
     // to zero instead of leaving notes and memories competing for space that
     // the turn itself is about to consume.
-    const keepLatest = history.at(-1) ? estimateTextTokens(renderMessage(history.at(-1)!)) + 32 : 0;
+    // Images are billed by the provider even though renderMessage only emits a
+    // short "[图片]" marker. Reserving nothing for them let a one-image turn
+    // look cheap and then blow the real request budget.
+    // Only the newest two user image messages are actually attached below.
+    // Charging every image in the 500-message history made one old photo keep
+    // ~4k tokens reserved forever, silently shrinking the recent-turn window.
+    const attachableImages = new Set(
+      history
+        .filter((m) => m.role === 'user' && m.media?.some((item) => item.kind === 'image'))
+        .slice(-2)
+        .map((m) => m.id),
+    );
+    const historyMessageTokens = (m: Message) =>
+      estimateTextTokens(renderMessage(m)) +
+      32 +
+      (attachableImages.has(m.id)
+        ? (m.media?.filter((item) => item.kind === 'image').length ?? 0) * 4096
+        : 0);
+    const keepLatest = history.at(-1) ? historyMessageTokens(history.at(-1)!) : 0;
     const reserve = Math.max(Math.floor(initialBudget * HISTORY_RESERVE_SHARE), keepLatest);
     const optional = Math.max(
       0,
       initialBudget -
-        estimateRequestTokens([{ role: 'system', content: base }], INFO_TOOLS) -
+        estimateRequestTokens([{ role: 'system', content: base }], budgetTools) -
         reserve -
         PROMPT_HEADROOM_TOKENS,
     );
@@ -825,13 +859,13 @@ export class Agent {
             { role: 'system', content: system },
             { role: 'user', content: context },
           ],
-          INFO_TOOLS,
+          budgetTools,
         ) -
         PROMPT_HEADROOM_TOKENS,
     );
     const recent: Message[] = [];
     for (const m of [...history].reverse()) {
-      const length = estimateTextTokens(renderMessage(m)) + 32;
+      const length = historyMessageTokens(m);
       if (recent.length && remaining < length) break;
       recent.unshift(m);
       remaining -= length;
@@ -876,15 +910,17 @@ export class Agent {
     const through =
       typeof task.payload.through === 'number' ? task.payload.through : Number.MAX_SAFE_INTEGER;
     const history = store.history(peer.id, 500, through);
-    const plan = await this.planReply(task, peer, history, now);
+    const plan = await this.planReply(task, peer, history, now, signal);
     const messages: ModelMessage[] = [{ role: 'system', content: plan.system }];
     const imageMessages = plan.recent
       .filter((m) => m.role === 'user' && m.media.some((a) => a.kind === 'image'))
       .slice(-2);
+    const attachedImageIds = new Set<string>();
     for (const m of plan.recent) {
       let images: string[] = [];
       const withImage = this.o.images && imageMessages.some((i) => i.id === m.id);
-      if (withImage) images = await this.o.images!(m);
+      if (withImage) images = await this.o.images!(m, signal);
+      if (images.length) attachedImageIds.add(m.id);
       // Only these two messages can have had their media rewritten (images()
       // stores a description), so re-reading the row for every media-bearing
       // message was pure waste: a chatty contact with photos and voice notes
@@ -976,7 +1012,7 @@ export class Agent {
           : JSON.stringify(m.raw),
       ) +
       (m.images?.length ?? 0) * 4096;
-    let totalTokens = estimateRequestTokens(messages, INFO_TOOLS);
+    let totalTokens = estimateRequestTokens(messages, this.toolset());
     while (messages.length > 2 && totalTokens > plan.budget) {
       // The per-turn material and the message being answered are not droppable;
       // only the oldest piece of history is. With a short history the material
@@ -1007,8 +1043,11 @@ export class Agent {
     const threadIds = new Set(store.softThreads(peer.id, true).map((t) => t.id));
     result.resolveThreads = result.resolveThreads.filter((id) => threadIds.has(id));
     result.askedThreads = result.askedThreads.filter((id) => threadIds.has(id));
+    // Only describe images that were actually sent to the model. When vision is
+    // off or a download failed, `images()` returns [], and accepting the model's
+    // invented description would poison recall with text it never saw.
     result.descriptions = result.descriptions.filter(
-      (d) => plan.available.has(d.messageId) && imageMessages.some((m) => m.id === d.messageId),
+      (d) => plan.available.has(d.messageId) && attachedImageIds.has(d.messageId),
     );
     return result;
   }
@@ -1061,7 +1100,8 @@ export class Agent {
           }
           messages.push(completion.continuation);
           toolRounds++;
-          for (const call of completion.calls) {
+          for (let callIndex = 0; callIndex < completion.calls.length; callIndex++) {
+            const call = completion.calls[callIndex]!;
             let result: unknown;
             const overBudget = toolCalls >= MAX_TOOL_CALLS;
             if (!overBudget) toolCalls++;
@@ -1074,16 +1114,20 @@ export class Agent {
               }
             const encoded = JSON.stringify(result);
             const room =
-              this.o.contextTokens() - estimateRequestTokens(messages, INFO_TOOLS) - 1024;
+              this.o.contextTokens() - estimateRequestTokens(messages, this.toolset()) - 1024;
             if (room <= 64) {
-              // No room left for a result: say so instead of pushing 64 tokens
-              // that would put the next request over the hard cap.
-              messages.push({
-                role: 'tool',
-                callId: call.id,
-                name: call.name,
-                content: JSON.stringify({ error: '上下文预算不足，请直接作答' }),
-              });
+              // Every tool_call in the assistant message needs a matching tool
+              // result or the next OpenAI request is malformed. Add the error
+              // for this call and all remaining calls, then stop this round.
+              for (let rest = callIndex; rest < completion.calls.length; rest++) {
+                const pending = completion.calls[rest]!;
+                messages.push({
+                  role: 'tool',
+                  callId: pending.id,
+                  name: pending.name,
+                  content: JSON.stringify({ error: '上下文预算不足，请直接作答' }),
+                });
+              }
               toolCalls = MAX_TOOL_CALLS;
               break;
             }
@@ -1130,6 +1174,12 @@ export class Agent {
           if (!dropNewestToolRound(messages)) throw error;
           continue;
         }
+        // Only malformed model output is worth a formatting repair round.
+        // Retrying a DNS failure, auth error or cancellation as "fix your JSON"
+        // sent the same request again and replaced the real error with a
+        // confusing format failure.
+        if (error instanceof ModelError) throw error;
+        if (signal.aborted) throw error;
         if (repaired || attempt === MAX_REPLY_ATTEMPTS - 1) throw error;
         repaired = true;
         // Re-injecting the whole raw output used to cost ~16000 tokens on its
@@ -1139,7 +1189,7 @@ export class Agent {
         const excerpt = (completion?.text ?? '').trim().slice(0, REPAIR_EXCERPT_CHARS);
         const room =
           this.o.contextTokens() -
-          estimateRequestTokens(messages, INFO_TOOLS) -
+          estimateRequestTokens(messages, this.toolset()) -
           PROMPT_HEADROOM_TOKENS;
         if (excerpt && estimateTextTokens(excerpt) + 120 < room)
           messages.push({ role: 'assistant', content: excerpt });
@@ -1180,8 +1230,9 @@ export class Agent {
         : undefined;
       let queryVector: Float32Array | undefined;
       try {
-        queryVector = await this.o.embedQuery?.(query);
-      } catch {
+        queryVector = await this.o.embedQuery?.(query, signal);
+      } catch (error) {
+        if (signal.aborted) throw error;
         queryVector = undefined;
       }
       hits = store.search(peer, query, 8, kind, queryVector, this.o.embeddingModel?.() ?? '');
@@ -1273,9 +1324,24 @@ export class Agent {
     let count = 0;
     for (const m of messages) {
       const size = estimateTextTokens(`${m.role} ${renderMessage(m)}\n\n`);
-      if (count + size > availableTokens && input.length) break;
-      input.push(m);
-      count += size;
+      if (count + size <= availableTokens) {
+        input.push(m);
+        count += size;
+        continue;
+      }
+      if (input.length) break;
+      // The oldest unprocessed message alone exceeds the remaining budget.
+      // Including it whole used to blow the request budget on every retry, so
+      // the diary task could never advance its cursor. Keep a bounded excerpt
+      // and let the cursor move past this message.
+      const room = Math.max(16, availableTokens - 64);
+      const clipped: Message = {
+        ...m,
+        content: trimToTokens(m.content, room),
+        media: [],
+      };
+      input.push(clipped);
+      break;
     }
     if (!input.length) {
       store.finish(task.id);

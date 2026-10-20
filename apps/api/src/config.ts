@@ -103,12 +103,30 @@ export const PERSONA_PRESETS: {
 ];
 // Shared with update(): an empty field in the settings form means "keep the
 // built-in default", so both paths have to agree on one source of truth.
+function envNumber(
+  name: string,
+  raw: string | undefined,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
+  if (raw === undefined || raw === '') return fallback;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < min || value > max)
+    throw new Error(`环境变量 ${name} 需要 ${min}–${max} 之间的数字`);
+  return value;
+}
 function builtinDefaults(env: NodeJS.ProcessEnv): SavedConfig {
   return {
     baseUrl: env.LLM_BASE_URL || 'https://api.deepseek.com',
     apiKey: env.LLM_API_KEY || '',
     model: env.LLM_MODEL || 'deepseek-chat',
-    format: (env.LLM_FORMAT || 'openai') as ApiFormat,
+    format: (() => {
+      const format = env.LLM_FORMAT || 'openai';
+      if (!['openai', 'anthropic', 'gemini'].includes(format))
+        throw new Error('环境变量 LLM_FORMAT 只能是 openai、anthropic 或 gemini');
+      return format as ApiFormat;
+    })(),
     vision: env.LLM_VISION === 'true',
     tavilyKey: env.TAVILY_API_KEY || '',
     timeZone: env.TZ || 'Asia/Shanghai',
@@ -131,8 +149,8 @@ function builtinDefaults(env: NodeJS.ProcessEnv): SavedConfig {
     // Off by default: a command with no route out is the safer default, and
     // the operator can turn it on when she needs to install packages.
     sandboxNetwork: env.SANDBOX_NETWORK === 'true',
-    sandboxSizeMb: Number(env.SANDBOX_SIZE_MB || 512),
-    sandboxMemoryMb: Number(env.SANDBOX_MEMORY_MB || 2048),
+    sandboxSizeMb: envNumber('SANDBOX_SIZE_MB', env.SANDBOX_SIZE_MB, 512, 0, 102400),
+    sandboxMemoryMb: envNumber('SANDBOX_MEMORY_MB', env.SANDBOX_MEMORY_MB, 2048, 0, 262144),
     maxConcurrentPeers: 3,
     debounceMs: 800,
   };
@@ -152,6 +170,9 @@ export class Settings {
     mkdirSync(this.dataDir, { recursive: true });
     this.host = env.HOST || '127.0.0.1';
     this.port = Number(env.PORT || 3000);
+    // 0 asks the OS for a free port; the smoke test uses it to avoid collisions.
+    if (!Number.isInteger(this.port) || this.port < 0 || this.port > 65535)
+      throw new Error('PORT 需要 0–65535 之间的整数');
     this.secureCookie = env.COOKIE_SECURE === 'true';
     const passwordFile = join(this.dataDir, 'admin-secret.txt');
     if (env.ADMIN_PASSWORD) this.adminPassword = env.ADMIN_PASSWORD;
@@ -178,10 +199,70 @@ export class Settings {
     const merged = { ...defaults } as Record<string, unknown>;
     for (const key of Object.keys(defaults) as (keyof SavedConfig)[])
       if (stored[key] !== undefined) merged[key] = stored[key];
-    this.configCache = merged as unknown as SavedConfig;
-    return this.configCache;
+    const config = merged as unknown as SavedConfig;
+    // Validate before publishing to the cache: caching first meant a failed
+    // validation left an invalid object that every later config() call returned
+    // without checking again.
+    this.validateConfig(config);
+    this.configCache = config;
+    return config;
   }
   private configCache: SavedConfig | null = null;
+  /** Stored settings from an older build bypass update(). Validate the merged
+   *  result too, so NaN/out-of-range values fail at startup with a readable
+   *  message instead of disabling a limit at runtime. */
+  private validateConfig(c: SavedConfig): void {
+    if (!['openai', 'anthropic', 'gemini'].includes(c.format))
+      throw new Error('模型接口格式无效，请在设置页重新选择');
+    for (const [key, min, max] of [
+      ['contextWindowTokens', 8192, 2000000],
+      ['inputBudgetTokens', 4096, 1000000],
+      ['maxOutputTokens', 256, 131072],
+      ['requestTimeoutSeconds', 10, 300],
+      ['turnTimeoutSeconds', 10, 600],
+      ['sandboxSizeMb', 0, 102400],
+      ['sandboxMemoryMb', 0, 262144],
+      ['maxConcurrentPeers', 1, 12],
+      ['debounceMs', 0, 10000],
+    ] as const) {
+      const value = c[key];
+      if (typeof value !== 'number' || !Number.isInteger(value) || value < min || value > max)
+        throw new Error(`设置项 ${key} 无效（需要 ${min}–${max} 的整数）`);
+    }
+    if (
+      c.temperature !== null &&
+      (typeof c.temperature !== 'number' ||
+        !Number.isFinite(c.temperature) ||
+        c.temperature < 0 ||
+        c.temperature > 2)
+    )
+      throw new Error('温度设置无效');
+    if (c.inputBudgetTokens + c.maxOutputTokens + 1024 > c.contextWindowTokens)
+      throw new Error('输入预算 + 输出上限 + 1024 token 余量不能超过模型上下文窗口');
+    if (c.turnTimeoutSeconds < c.requestTimeoutSeconds)
+      throw new Error('整轮处理超时不能短于单次请求超时');
+    for (const [label, raw] of [
+      ['模型地址', c.baseUrl],
+      ['向量模型地址', c.embeddingBaseUrl],
+    ] as const) {
+      // An empty embedding URL means "use the main API URL" (embedding() has
+      // always implemented that fallback); it is not a malformed URL.
+      if (label === '向量模型地址' && !raw) continue;
+      let url: URL;
+      try {
+        url = new URL(raw);
+      } catch {
+        throw new Error(`${label}不是有效的 URL`);
+      }
+      if (!['http:', 'https:'].includes(url.protocol))
+        throw new Error(`${label}需要是 HTTP/HTTPS URL`);
+    }
+    try {
+      new Intl.DateTimeFormat('zh-CN', { timeZone: c.timeZone }).format();
+    } catch {
+      throw new Error('时区设置无效');
+    }
+  }
   publicConfig() {
     const { apiKey, tavilyKey, embeddingApiKey, ...rest } = this.config();
     return {
@@ -214,6 +295,8 @@ export class Settings {
     // new URL('') below and surfacing a raw `Invalid URL` to the operator.
     const builtin = builtinDefaults(this.env);
     if (!next.baseUrl) next.baseUrl = builtin.baseUrl;
+    // The form treats a blank embedding URL as "same endpoint as above".
+    if (!next.embeddingBaseUrl) next.embeddingBaseUrl = next.baseUrl;
     if (!next.model) next.model = builtin.model;
     if (!next.timeZone) next.timeZone = builtin.timeZone;
     if (typeof input.apiKey === 'string' && input.apiKey.trim()) next.apiKey = input.apiKey.trim();

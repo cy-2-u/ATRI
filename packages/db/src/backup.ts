@@ -1,10 +1,14 @@
 import {
+  chmodSync,
   copyFileSync,
   existsSync,
   lstatSync,
   mkdirSync,
   readFileSync,
   readdirSync,
+  renameSync,
+  rmSync,
+  rmdirSync,
   writeFileSync,
 } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
@@ -41,7 +45,12 @@ export async function createBackup(
     'backups',
     `${new Date().toISOString().replace(/[:.]/g, '-')}-${randomUUID().slice(0, 8)}`,
   );
-  mkdirSync(directory, { recursive: true });
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  try {
+    chmodSync(directory, 0o700);
+  } catch {
+    // chmod is advisory on Windows; the directory ACL already applies.
+  }
   const destination = join(directory, 'atri.db');
   await store.backup(destination);
   const snapshot = new DatabaseSync(destination, { readOnly: true });
@@ -63,8 +72,18 @@ export async function createBackup(
         target = safePath(directory, file);
       if (!lstatSync(source).isFile() || lstatSync(source).isSymbolicLink())
         throw new Error('备份源不是普通文件');
-      mkdirSync(dirname(target), { recursive: true });
+      mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
       copyFileSync(source, target);
+      try {
+        chmodSync(target, 0o600);
+      } catch {
+        /* Windows */
+      }
+    }
+    try {
+      chmodSync(destination, 0o600);
+    } catch {
+      /* Windows */
     }
     const manifest: Manifest = {
       format: 1,
@@ -98,7 +117,8 @@ export function restoreBackup(backupDir: string, dataDir: string) {
     !manifest.files.some((f) => f.path === 'atri.db')
   )
     throw new Error('备份格式无效');
-  if (existsSync(dataDir) && readdirSync(dataDir).length)
+  const targetDir = resolve(dataDir);
+  if (existsSync(targetDir) && readdirSync(targetDir).length)
     throw new Error('请停止服务，并恢复到一个空的数据目录');
   const seen = new Set<string>();
   for (const file of manifest.files) {
@@ -111,25 +131,88 @@ export function restoreBackup(backupDir: string, dataDir: string) {
       hash(source) !== file.sha256
     )
       throw new Error('备份文件校验失败');
-    safePath(dataDir, file.path);
+    safePath(targetDir, file.path);
   }
-  mkdirSync(dataDir, { recursive: true });
-  for (const file of manifest.files) {
-    const target = safePath(dataDir, file.path);
-    mkdirSync(dirname(target), { recursive: true });
-    copyFileSync(safePath(backupDir, file.path), target);
-  }
-  const store = new Store(join(dataDir, 'atri.db'));
+  // Build and validate in a staging directory INSIDE the target. A sibling
+  // directory is impossible when the target is a Docker mount point and / is
+  // read-only, and the old final `rmdirSync(targetDir)` failed with EBUSY on
+  // every mounted /data. Staging inside also guarantees the final moves stay
+  // on the same filesystem (rename is atomic per entry).
+  if (existsSync(targetDir) && !lstatSync(targetDir).isDirectory())
+    throw new Error('数据目录不是目录');
+  mkdirSync(targetDir, { recursive: true, mode: 0o700 });
+  const tempDir = join(targetDir, `.atri-restore-${randomUUID().slice(0, 8)}`);
+  mkdirSync(tempDir, { recursive: true, mode: 0o700 });
+  const moved: string[] = [];
   try {
-    store.transaction(() => {
-      store.sql.exec(
-        "UPDATE tasks SET state='failed',error='从备份恢复，请确认是否重试此历史任务' WHERE state IN ('queued','running'); UPDATE outbox SET status='uncertain',error='从备份恢复，请先确认微信是否收到' WHERE status IN ('pending','sending'); UPDATE messages SET status='uncertain' WHERE id IN (SELECT id FROM outbox WHERE status='uncertain');",
+    for (const file of manifest.files) {
+      const target = safePath(tempDir, file.path);
+      mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
+      copyFileSync(safePath(backupDir, file.path), target);
+      try {
+        chmodSync(target, 0o600);
+      } catch {
+        /* Windows */
+      }
+    }
+    const store = new Store(join(tempDir, 'atri.db'));
+    try {
+      const integrity = String(
+        store.sql.prepare('PRAGMA integrity_check').get()?.integrity_check ?? '',
       );
-      const config = store.getSetting<Record<string, unknown>>('config', {});
-      store.setSetting('config', { ...config, proactiveEnabled: false });
-    });
-  } finally {
-    store.close();
+      if (integrity !== 'ok') throw new Error('备份数据库完整性校验失败');
+      if (store.sql.prepare('PRAGMA foreign_key_check').all().length)
+        throw new Error('备份数据库外键校验失败');
+      // Every attachment referenced by a message must be present in the
+      // manifest; otherwise restore succeeds and the first image read silently
+      // fails months later.
+      const referenced = new Set<string>();
+      for (const row of store.sql
+        .prepare("SELECT media FROM messages WHERE status<>'deleted'")
+        .all())
+        for (const item of JSON.parse(String(row.media)) as { path?: string }[])
+          if (typeof item.path === 'string') referenced.add(item.path);
+      for (const path of referenced) if (!seen.has(path)) throw new Error(`备份缺少附件：${path}`);
+      store.transaction(() => {
+        store.sql.exec(
+          "UPDATE tasks SET state='failed',error='从备份恢复，请确认是否重试此历史任务' WHERE state IN ('queued','running'); UPDATE outbox SET status='uncertain',error='从备份恢复，请先确认微信是否收到' WHERE status IN ('pending','sending'); UPDATE messages SET status='uncertain' WHERE id IN (SELECT id FROM outbox WHERE status='uncertain');",
+        );
+        const config = store.getSetting<Record<string, unknown>>('config', {});
+        store.setSetting('config', { ...config, proactiveEnabled: false });
+      });
+    } finally {
+      store.close();
+    }
+    // The target was verified empty above, so every top-level entry can be
+    // renamed in. If one move fails, move the already-installed entries back
+    // into staging and leave the target as empty as we found it.
+    try {
+      for (const entry of readdirSync(tempDir)) {
+        const destination = join(targetDir, entry);
+        if (existsSync(destination)) throw new Error('目标数据目录不为空');
+        renameSync(join(tempDir, entry), destination);
+        moved.push(entry);
+      }
+    } catch (error) {
+      for (const entry of moved.reverse()) {
+        try {
+          renameSync(join(targetDir, entry), join(tempDir, entry));
+        } catch {
+          // Best effort: the original error already tells the operator to
+          // inspect the data directory.
+        }
+      }
+      throw error;
+    }
+    rmdirSync(tempDir);
+    try {
+      chmodSync(targetDir, 0o700);
+    } catch {
+      /* Windows */
+    }
+    return manifest;
+  } catch (error) {
+    rmSync(tempDir, { recursive: true, force: true });
+    throw error;
   }
-  return manifest;
 }

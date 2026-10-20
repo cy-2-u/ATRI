@@ -16,43 +16,77 @@ function isPrivateV4(address: string): boolean {
     a >= 224 ||
     (a === 169 && b === 254) ||
     (a === 172 && b >= 16 && b <= 31) ||
-    (a === 192 && b === 168) ||
+    (a === 192 && (b === 168 || b === 0 || b === 88)) ||
     (a === 100 && b >= 64 && b <= 127) ||
-    (a === 198 && (b === 18 || b === 19))
+    (a === 198 && (b === 18 || b === 19 || b === 51)) ||
+    (a === 203 && b === 0)
   );
 }
 
-/** ::ffff:XXXX:XXXX — the hex spelling of an IPv4-mapped address. */
-const HEX_MAPPED = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/;
-/** ::ffff:1.2.3.4 — the dotted spelling of the same address. */
-const DOTTED_MAPPED = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/;
+/**
+ * Expand an IPv6 literal to eight 16-bit groups, including the dotted IPv4
+ * suffix and compressed `::` forms. Returns null for malformed input.
+ */
+function parseIPv6(host: string): number[] | null {
+  let h = host.toLowerCase();
+  const zone = h.indexOf('%');
+  if (zone >= 0) h = h.slice(0, zone);
+  if (h.includes('.')) {
+    const colon = h.lastIndexOf(':');
+    if (colon < 0) return null;
+    const octets = h
+      .slice(colon + 1)
+      .split('.')
+      .map((part) => Number(part));
+    if (octets.length !== 4 || octets.some((n) => !Number.isInteger(n) || n < 0 || n > 255))
+      return null;
+    h =
+      h.slice(0, colon + 1) +
+      (((octets[0]! << 8) | octets[1]!).toString(16) +
+        ':' +
+        ((octets[2]! << 8) | octets[3]!).toString(16));
+  }
+  const halves = h.split('::');
+  if (halves.length > 2) return null;
+  const parse = (part: string): number[] | null => {
+    if (!part) return [];
+    const groups = part.split(':');
+    const out: number[] = [];
+    for (const group of groups) {
+      if (!/^[0-9a-f]{1,4}$/.test(group)) return null;
+      out.push(parseInt(group, 16));
+    }
+    return out;
+  };
+  const left = parse(halves[0] ?? '');
+  const right = parse(halves[1] ?? '');
+  if (!left || !right) return null;
+  if (halves.length === 1) return left.length === 8 ? left : null;
+  const missing = 8 - left.length - right.length;
+  if (missing < 1) return null;
+  return [...left, ...Array<number>(missing).fill(0), ...right];
+}
 
 function isPrivateV6(host: string): boolean {
-  const h = host.toLowerCase();
-  if (
-    h === '::1' ||
-    h === '::' ||
-    h.startsWith('fe80:') ||
-    h.startsWith('fc') ||
-    h.startsWith('fd')
-  )
-    return true;
-  // IPv4-mapped addresses must not slip through, in BOTH spellings. Only the
-  // dotted form was handled, so the same address written in hex fell through to
-  // `false`: `http://[::ffff:7f00:1]/` reached loopback and
-  // `http://[::ffff:a9fe:a9fe]/` reached cloud metadata, both classified as
-  // public. Accepting one spelling made the whole private-address gate opt-out
-  // by rewording the URL.
-  const dotted = DOTTED_MAPPED.exec(h);
-  if (dotted) return isPrivateV4(dotted[1]!);
-  const hex = HEX_MAPPED.exec(h);
-  if (hex) {
-    const value = ((parseInt(hex[1]!, 16) << 16) | parseInt(hex[2]!, 16)) >>> 0;
-    return isPrivateV4(
-      `${value >>> 24}.${(value >>> 16) & 255}.${(value >>> 8) & 255}.${value & 255}`,
-    );
+  const groups = parseIPv6(host);
+  // Malformed literals must fail closed; the URL parser normally rejects them,
+  // but DNS answers and direct calls can still hand us anything.
+  if (!groups) return true;
+  // IPv4-mapped (::ffff:0:0/96) is just an IPv4 address in IPv6 clothing.
+  // Classify the embedded address so a mapped public host stays reachable
+  // while ::ffff:127.0.0.1 and ::ffff:a9fe:a9fe remain blocked.
+  if (groups.slice(0, 5).every((g) => g === 0) && groups[5] === 0xffff) {
+    const v4 = `${groups[6]! >> 8}.${groups[6]! & 0xff}.${groups[7]! >> 8}.${groups[7]! & 0xff}`;
+    return isPrivateV4(v4);
   }
-  // A bare "::ffff:<one group>" cannot express an IPv4 address; no decision.
+  // Only global unicast (2000::/3) is allowed. This single rule rejects
+  // loopback, unspecified, link-local, ULA, IPv4-compatible, NAT64 and other
+  // transition prefixes regardless of how they are spelled.
+  if ((groups[0]! & 0xe000) !== 0x2000) return true;
+  // Non-global special-purpose ranges inside 2000::/3.
+  if (groups[0] === 0x2002) return true; // 6to4 tunnels an arbitrary IPv4
+  if (groups[0] === 0x2001 && [0, 0xdb8, 0x10].includes(groups[1]!)) return true; // Teredo/doc/ORCHID
+  if (groups[0] === 0x3ffe) return true; // deprecated 6bone
   return false;
 }
 

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { estimateRequestTokens } from './budget.js';
 export { estimateTextTokens, estimateRequestTokens, trimToTokens } from './budget.js';
 
@@ -81,6 +82,10 @@ export class ModelError extends Error {
   }
 }
 type Json = Record<string, any>;
+/** Provider payloads are untrusted JSON; an array item can be a string/null. */
+function isJsonObject(value: unknown): value is Json {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
 /** Sleep for `ms`, aborting early when the caller cancels (signal optional). */
 function pause(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -97,13 +102,26 @@ function pause(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 function argumentsOf(value: unknown): Record<string, unknown> {
-  if (typeof value === 'object' && value !== null && !Array.isArray(value))
-    return value as Record<string, unknown>;
+  if (isJsonObject(value)) return value;
   try {
-    return JSON.parse(String(value));
+    const parsed = JSON.parse(String(value));
+    return isJsonObject(parsed) ? parsed : {};
   } catch {
     return {};
   }
+}
+/** Gemini functionResponse.response must be an object; tool output is usually
+ *  already JSON, but a plain-text result must not become `{}` and silently
+ *  erase the only information the model asked for. */
+function toolResponseOf(content: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(content);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed))
+      return parsed as Record<string, unknown>;
+  } catch {
+    /* plain text */
+  }
+  return { result: content };
 }
 /** Some models inline reasoning as <think>…</think> in content itself instead
  *  of a dedicated field. Strip it — balanced tags removed, then a stray
@@ -114,9 +132,11 @@ function stripThinkTags(text: string): string {
   return out.trimStart();
 }
 function imageParts(message: ModelMessage, format: ApiFormat): unknown[] {
-  const parts: unknown[] = [
-    { text: message.content, ...(format === 'anthropic' ? { type: 'text' } : {}) },
-  ];
+  // An empty text block is rejected by Anthropic and adds noise everywhere
+  // else; image-only turns are legitimate.
+  const parts: unknown[] = message.content
+    ? [{ text: message.content, ...(format === 'anthropic' ? { type: 'text' } : {}) }]
+    : [];
   for (const image of message.images ?? []) {
     const match = /^data:(image\/[a-z0-9.+-]+);base64,(.+)$/i.exec(image);
     if (!match) continue;
@@ -128,6 +148,29 @@ function imageParts(message: ModelMessage, format: ApiFormat): unknown[] {
   }
   return parts;
 }
+/** Model replies are JSON and never legitimately multi-megabyte. Reading with
+ *  a running cap keeps a broken gateway from buffering an unbounded body. */
+const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
+async function readResponseText(response: Response): Promise<string> {
+  const body = response.body;
+  if (!body) return response.text();
+  const reader = body.getReader();
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    total += value.byteLength;
+    if (total > MAX_RESPONSE_BYTES) {
+      await reader.cancel().catch(() => undefined);
+      throw new Error(`响应超过 ${MAX_RESPONSE_BYTES} 字节上限`);
+    }
+    chunks.push(Buffer.from(value));
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
 export class HttpModel implements Model {
   constructor(
     readonly config: ModelConfig,
@@ -215,33 +258,35 @@ export class HttpModel implements Model {
     } else if (c.format === 'gemini') {
       url = `${/\/v\d+(beta)?$/.test(base) ? base : base + '/v1beta'}/models/${encodeURIComponent(c.model)}:generateContent`;
       headers['x-goog-api-key'] = c.apiKey;
+      // Gemini requires alternating user/model turns. History + context +
+      // current message are several consecutive user messages, and every tool
+      // result is another user message; sending them unmerged is a 400.
+      const contents: Json[] = [];
+      for (const m of messages) {
+        if (m.role === 'system') continue;
+        const role = m.role === 'assistant' ? 'model' : 'user';
+        const parts =
+          m.role === 'tool'
+            ? [
+                {
+                  functionResponse: {
+                    name: m.name,
+                    response: toolResponseOf(m.content),
+                  },
+                },
+              ]
+            : (m.raw ?? imageParts(m, 'gemini'));
+        const last = contents.at(-1);
+        if (last?.role === role) last.parts.push(...(parts as unknown[]));
+        else contents.push({ role, parts });
+      }
+      const systemText = messages
+        .filter((m) => m.role === 'system')
+        .map((m) => m.content)
+        .join('\n\n');
       body = {
-        systemInstruction: {
-          parts: [
-            {
-              text: messages
-                .filter((m) => m.role === 'system')
-                .map((m) => m.content)
-                .join('\n\n'),
-            },
-          ],
-        },
-        contents: messages
-          .filter((m) => m.role !== 'system')
-          .map((m) => ({
-            role: m.role === 'assistant' ? 'model' : 'user',
-            parts:
-              m.role === 'tool'
-                ? [
-                    {
-                      functionResponse: {
-                        name: m.name,
-                        response: { result: argumentsOf(m.content) },
-                      },
-                    },
-                  ]
-                : (m.raw ?? imageParts(m, 'gemini')),
-          })),
+        ...(systemText ? { systemInstruction: { parts: [{ text: systemText }] } } : {}),
+        contents,
         generationConfig: { maxOutputTokens: maxTokens },
       };
       if (tools.length)
@@ -359,11 +404,42 @@ export class HttpModel implements Model {
       );
     }
     let data: Json;
+    let payload = '';
     try {
-      data = (await response.json()) as Json;
+      payload = await readResponseText(response);
+    } catch (error) {
+      if (outer?.aborted || signal.aborted)
+        throw new ModelError('模型请求超时', undefined, undefined, true);
+      throw new ModelError(
+        `读取模型响应失败：${error instanceof Error ? error.message : '未知错误'}`,
+        response.status,
+        undefined,
+        true,
+      );
+    }
+    try {
+      data = JSON.parse(payload) as Json;
     } catch {
+      // An HTML 502 from a gateway is a transient upstream failure, not a
+      // malformed "invalid response" to be reclassified as permanent.
+      if (!response.ok)
+        throw new ModelError(
+          `模型请求失败（HTTP ${response.status}）：${payload.slice(0, 200) || '上游错误'}`,
+          response.status,
+          response.headers.get('retry-after') === null
+            ? undefined
+            : { 'retry-after': response.headers.get('retry-after')! },
+        );
       throw new ModelError(`模型返回了无效响应（HTTP ${response.status}）`, response.status);
     }
+    if (!data || typeof data !== 'object' || Array.isArray(data))
+      throw new ModelError(
+        `模型返回了无效响应（HTTP ${response.status}）`,
+        response.status,
+        response.headers.get('retry-after') === null
+          ? undefined
+          : { 'retry-after': response.headers.get('retry-after')! },
+      );
     if (!response.ok)
       throw new ModelError(
         `模型请求失败（HTTP ${response.status}）：${String(
@@ -382,56 +458,92 @@ export class HttpModel implements Model {
       inputTokens = 0,
       outputTokens = 0;
     if (c.format === 'anthropic') {
-      const content: Json[] = data.content ?? [];
+      const content: Json[] = Array.isArray(data.content) ? data.content : [];
       raw = content;
       text = content
-        .filter((p) => p.type === 'text')
+        .filter((p) => p && typeof p === 'object' && p.type === 'text')
         .map((p) => String(p.text ?? ''))
         .join('');
       calls = content
-        .filter((p) => p.type === 'tool_use')
-        .map((p) => ({ id: String(p.id), name: String(p.name), arguments: argumentsOf(p.input) }));
-      inputTokens = Number(data.usage?.input_tokens ?? 0);
+        .filter((p) => isJsonObject(p) && p.type === 'tool_use')
+        .map((p) => {
+          // Some gateways omit tool_use.id. `String(undefined)` produced the
+          // literal "undefined" for every call, so the matching tool_result
+          // could not be paired and the next round failed. Synthesise one and
+          // write it back into the raw block that gets replayed.
+          const id = typeof p.id === 'string' && p.id ? p.id : `call_${randomUUID()}`;
+          p.id = id;
+          return { id, name: String(p.name), arguments: argumentsOf(p.input) };
+        });
+      // Anthropic splits prompt usage into uncached + cache-write + cache-read.
+      // Reporting only input_tokens undercounted every cached turn by up to the
+      // whole stable prompt.
+      inputTokens =
+        Number(data.usage?.input_tokens ?? 0) +
+        Number(data.usage?.cache_creation_input_tokens ?? 0) +
+        Number(data.usage?.cache_read_input_tokens ?? 0);
       outputTokens = Number(data.usage?.output_tokens ?? 0);
     } else if (c.format === 'gemini') {
-      const parts: Json[] = data.candidates?.[0]?.content?.parts ?? [];
+      const parts: Json[] = Array.isArray(data.candidates?.[0]?.content?.parts)
+        ? data.candidates[0].content.parts
+        : [];
       raw = parts;
       text = parts
-        .filter((p) => !p.thought && typeof p.text === 'string')
+        .filter((p) => p && typeof p === 'object' && !p.thought && typeof p.text === 'string')
         .map((p) => p.text)
         .join('');
       calls = parts
-        .filter((p) => p.functionCall)
-        .map((p, i) => ({
-          id: String(p.functionCall.id ?? `gemini-${i}`),
-          name: String(p.functionCall.name),
-          arguments: argumentsOf(p.functionCall.args),
-        }));
+        .filter((p) => isJsonObject(p) && isJsonObject(p.functionCall))
+        .map((p) => {
+          const id =
+            typeof p.functionCall.id === 'string' && p.functionCall.id
+              ? p.functionCall.id
+              : `call_${randomUUID()}`;
+          p.functionCall.id = id;
+          return {
+            id,
+            name: String(p.functionCall.name),
+            arguments: argumentsOf(p.functionCall.args),
+          };
+        });
       inputTokens = Number(data.usageMetadata?.promptTokenCount ?? 0);
       outputTokens = Number(data.usageMetadata?.candidatesTokenCount ?? 0);
     } else {
-      const message: Json = data.choices?.[0]?.message ?? {};
+      const candidate = data.choices?.[0]?.message;
+      const message: Json = candidate && typeof candidate === 'object' ? candidate : {};
       // Thinking models (GLM, DeepSeek-R1, Qwen-W…, and OpenAI-compatible
       // gateways generally) return reasoning in dedicated fields. They must
       // never reach the conversation history: replaying them back inflates
       // every later request, and they are not meant to be shown or stored.
       delete message.reasoning_content;
       delete message.reasoning;
-      raw = message;
-      text =
+      const rawText =
         typeof message.content === 'string'
-          ? stripThinkTags(message.content)
+          ? message.content
           : Array.isArray(message.content)
             ? message.content
                 .filter((p: Json) => p.type === 'text')
                 .map((p: Json) => p.text ?? '')
                 .join('')
             : '';
-      calls = (message.tool_calls ?? []).map((t: Json) => ({
-        id: String(t.id),
-        name: String(t.function?.name),
-        arguments: argumentsOf(t.function?.arguments),
-      }));
+      text = stripThinkTags(rawText);
+      // Replay the cleaned text, not the original object. Keeping the original
+      // content meant every later request replayed <think> blocks that were
+      // stripped only for display.
+      raw = { ...message, content: text };
+      const toolCalls: Json[] = Array.isArray(message.tool_calls)
+        ? message.tool_calls.filter(isJsonObject)
+        : [];
+      calls = toolCalls.map((t: Json) => {
+        const id = typeof t.id === 'string' && t.id ? t.id : `call_${randomUUID()}`;
+        // Keep the replayed raw assistant message in sync with the synthetic id.
+        t.id = id;
+        return {
+          id,
+          name: String(t.function?.name),
+          arguments: argumentsOf(t.function?.arguments),
+        };
+      });
       inputTokens = Number(data.usage?.prompt_tokens ?? 0);
       outputTokens = Number(data.usage?.completion_tokens ?? 0);
     }
@@ -460,6 +572,26 @@ export function cosineSimilarity(a: Float32Array, b: Float32Array): number {
   return normA && normB ? dot / (Math.sqrt(normA) * Math.sqrt(normB)) : 0;
 }
 
+/** Providers may ignore `encoding_format: float` and return base64-encoded
+ *  little-endian float32 (OpenAI's other accepted format). Accept both rather
+ *  than turning a successful remote call into "索引无效". */
+function decodeEmbedding(value: unknown): Float32Array {
+  if (Array.isArray(value)) {
+    if (!value.length || value.some((n) => typeof n !== 'number' || !Number.isFinite(n)))
+      throw new Error('向量服务返回了无效向量');
+    return Float32Array.from(value as number[]);
+  }
+  if (typeof value === 'string' && value.length) {
+    const buf = Buffer.from(value, 'base64');
+    if (!buf.length || buf.length % 4) throw new Error('向量服务返回了无效的 base64 向量');
+    const out = new Float32Array(buf.length / 4);
+    const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+    for (let i = 0; i < out.length; i++) out[i] = view.getFloat32(i * 4, true);
+    if (out.some((n) => !Number.isFinite(n))) throw new Error('向量服务返回了无效向量');
+    return out;
+  }
+  throw new Error('向量服务返回了无效向量');
+}
 /**
  * OpenAI-compatible /embeddings client. Works with any provider exposing the
  * standard embeddings endpoint (OpenAI, DeepSeek via compatible gateways,
@@ -485,35 +617,56 @@ export class EmbeddingClient {
   async embed(texts: string[], signal?: AbortSignal): Promise<Float32Array[]> {
     const c = this.getConfig();
     if (!c.model || !c.apiKey || !c.baseUrl) throw new Error('向量模型尚未配置');
+    if (!texts.length) return [];
     const usable = texts.map((t) => t.slice(0, 6000)).map((t) => (t.trim() ? t : '(空)'));
     const base = c.baseUrl.replace(/\/+$/, '').replace(/\/embeddings$/, '');
     const endpoint = `${/\/v\d+$/.test(base) ? base : `${base}/v1`}/embeddings`;
-    const timeout = AbortSignal.timeout(c.timeoutMs ?? 30000);
-    let response: Response;
-    try {
-      response = await this.fetcher(endpoint, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${c.apiKey}` },
-        body: JSON.stringify({ model: c.model, input: usable, encoding_format: 'float' }),
-        signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
-      });
-    } catch (error) {
-      throw new Error(`向量服务连接失败：${error instanceof Error ? error.message : '未知错误'}`);
+    const timeoutMs = c.timeoutMs ?? 30000;
+    let response: Response | undefined;
+    let lastError: Error | undefined;
+    // Backfill retries anyway, but a transient 429/5xx during a chat turn must
+    // not silently discard this turn's dedupe work. 4xx configuration errors
+    // fail immediately.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        response = await this.fetcher(endpoint, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${c.apiKey}` },
+          body: JSON.stringify({ model: c.model, input: usable, encoding_format: 'float' }),
+          signal: signal
+            ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)])
+            : AbortSignal.timeout(timeoutMs),
+        });
+      } catch (error) {
+        if (signal?.aborted) throw new Error('向量请求已取消');
+        lastError = new Error(
+          `向量服务连接失败：${error instanceof Error ? error.message : '未知错误'}`,
+        );
+      }
+      if (response) {
+        if (response.ok) break;
+        const body = (await readResponseText(response).catch(() => '')).slice(0, 200);
+        lastError = new Error(`向量服务请求失败（HTTP ${response.status}）：${body}`);
+        if (![408, 429].includes(response.status) && response.status < 500) throw lastError;
+      }
+      if (attempt < 2) await pause(500 * 2 ** attempt, signal);
+      response = undefined;
     }
-    if (!response.ok)
-      throw new Error(
-        `向量服务请求失败（HTTP ${response.status}）：${(await response.text().catch(() => '')).slice(0, 200)}`,
-      );
-    const data = (await response.json()) as {
-      data?: { index?: number; embedding: number[] }[];
-    };
+    if (!response?.ok) throw lastError ?? new Error('向量服务请求失败');
+    let data: { data?: { index?: number; embedding?: unknown }[] };
+    try {
+      data = JSON.parse(await readResponseText(response)) as typeof data;
+    } catch {
+      throw new Error('向量服务返回了无效 JSON');
+    }
     if (!Array.isArray(data.data) || data.data.length !== usable.length)
       throw new Error('向量服务返回条数不符');
     const out = new Array<Float32Array>(usable.length);
     for (const item of data.data) {
+      if (!isJsonObject(item)) throw new Error('向量服务返回了无效条目');
       const index = typeof item.index === 'number' ? item.index : out.findIndex((v) => !v);
       if (index < 0 || index >= out.length || out[index]) throw new Error('向量服务返回索引无效');
-      out[index] = new Float32Array(item.embedding);
+      out[index] = decodeEmbedding(item.embedding);
     }
     if (out.some((v) => !v)) throw new Error('向量服务返回不完整');
     return out;

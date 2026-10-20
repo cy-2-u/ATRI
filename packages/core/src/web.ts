@@ -2,7 +2,68 @@ import { lookup } from 'node:dns/promises';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { isIP } from 'node:net';
+import { brotliDecompressSync, gunzipSync, inflateSync } from 'node:zlib';
 import { isPrivateAddress } from '@atri/net';
+
+const WEB_TIMEOUT_MS = 10_000;
+const PAGE_MAX_BYTES = 1024 * 1024;
+const SEARCH_MAX_BYTES = 2 * 1024 * 1024;
+
+function abortRejection(signal: AbortSignal): Promise<never> {
+  return new Promise((_, reject) => {
+    const fail = () =>
+      reject(signal.reason instanceof Error ? signal.reason : new Error('请求已取消'));
+    if (signal.aborted) fail();
+    else signal.addEventListener('abort', fail, { once: true });
+  });
+}
+
+/** Read a response body without letting a broken upstream allocate unbounded memory. */
+async function readBoundedText(response: Response, maxBytes: number): Promise<string> {
+  const reader = response.body?.getReader();
+  if (!reader) {
+    const text = await response.text();
+    if (Buffer.byteLength(text) > maxBytes) throw new Error('上游响应超过读取上限');
+    return text;
+  }
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > maxBytes) {
+      await reader.cancel().catch(() => {});
+      throw new Error('上游响应超过读取上限');
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+function decodePage(body: Buffer, encoding: string, contentType: string): string {
+  const normalized = encoding.trim().toLowerCase();
+  let decoded = body;
+  if (normalized && normalized !== 'identity') {
+    const options = { maxOutputLength: PAGE_MAX_BYTES };
+    try {
+      if (normalized === 'gzip' || normalized === 'x-gzip') decoded = gunzipSync(body, options);
+      else if (normalized === 'deflate') decoded = inflateSync(body, options);
+      else if (normalized === 'br') decoded = brotliDecompressSync(body, options);
+      else throw new Error(`不支持的内容编码：${normalized}`);
+    } catch (error) {
+      if (error instanceof Error && /maxOutputLength|buffer/i.test(error.message))
+        throw new Error('网页解压后超过读取上限');
+      throw error;
+    }
+  }
+  const charset = /charset\s*=\s*"?([^";\s]+)/i.exec(contentType)?.[1];
+  try {
+    return new TextDecoder(charset || 'utf-8').decode(decoded);
+  } catch {
+    return new TextDecoder('utf-8').decode(decoded);
+  }
+}
 
 export interface WebResult {
   title: string;
@@ -25,6 +86,7 @@ export async function fetchPublicPage(
   rawUrl: string,
   signal?: AbortSignal,
   redirects = 0,
+  deadlineAt = Date.now() + WEB_TIMEOUT_MS,
 ): Promise<{ url: string; content: string; fetchedAt: string }> {
   const url = new URL(rawUrl);
   if (
@@ -34,16 +96,23 @@ export async function fetchPublicPage(
     !['', '80', '443'].includes(url.port)
   )
     throw new Error('只可读取公开 HTTP/HTTPS 网页');
+  const remaining = Math.max(1, deadlineAt - Date.now());
+  const combined = signal
+    ? AbortSignal.any([signal, AbortSignal.timeout(remaining)])
+    : AbortSignal.timeout(remaining);
   const hostname = url.hostname.replace(/^\[|\]$/g, '');
-  const addresses = isIP(hostname)
-    ? [{ address: hostname, family: isIP(hostname) }]
-    : await lookup(hostname, { all: true });
+  let addresses: { address: string; family: number }[];
+  try {
+    addresses = isIP(hostname)
+      ? [{ address: hostname, family: isIP(hostname) }]
+      : await Promise.race([lookup(hostname, { all: true }), abortRejection(combined)]);
+  } catch (error) {
+    if (combined.aborted) throw new Error('网页读取超时');
+    throw error;
+  }
   if (!addresses.length || addresses.some((a) => !isPublicAddress(a.address)))
     throw new Error('该地址不是允许读取的公开网页');
   const address = addresses[0];
-  const combined = signal
-    ? AbortSignal.any([signal, AbortSignal.timeout(10000)])
-    : AbortSignal.timeout(10000);
   const result = await new Promise<{ body: string; location?: string; status: number }>(
     (resolve, reject) => {
       const request = (url.protocol === 'https:' ? httpsRequest : httpRequest)(
@@ -79,20 +148,25 @@ export async function fetchPublicPage(
           }
           let length = 0;
           const chunks: Buffer[] = [];
+          const encoding = String(response.headers['content-encoding'] ?? '');
           response.on('data', (chunk: Buffer) => {
             length += chunk.length;
-            if (length > 1024 * 1024) {
+            if (length > PAGE_MAX_BYTES) {
               request.destroy(new Error('网页超过读取上限'));
               return;
             }
             chunks.push(chunk);
           });
-          response.on('end', () =>
-            resolve({
-              body: Buffer.concat(chunks).toString('utf8'),
-              status: response.statusCode ?? 0,
-            }),
-          );
+          response.on('end', () => {
+            try {
+              resolve({
+                body: decodePage(Buffer.concat(chunks), encoding, mime),
+                status: response.statusCode ?? 0,
+              });
+            } catch (error) {
+              reject(error);
+            }
+          });
           response.on('error', reject);
         },
       );
@@ -102,7 +176,7 @@ export async function fetchPublicPage(
   );
   if (result.location) {
     if (redirects >= 3) throw new Error('网页重定向次数过多');
-    return fetchPublicPage(new URL(result.location, url).href, signal, redirects + 1);
+    return fetchPublicPage(new URL(result.location, url).href, signal, redirects + 1, deadlineAt);
   }
   if (result.status < 200 || result.status >= 300)
     throw new Error(`网页读取失败（HTTP ${result.status}）`);
@@ -144,19 +218,33 @@ export class TavilyWeb implements WebTools {
         : AbortSignal.timeout(10000),
     });
     if (!response.ok) throw new Error(`联网搜索失败（HTTP ${response.status}）`);
-    const json = (await response.json()) as {
-      results?: { title?: string; content?: string; url?: string; published_date?: string }[];
-    };
+    let json: unknown;
+    try {
+      json = JSON.parse(await readBoundedText(response, SEARCH_MAX_BYTES));
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('读取上限')) throw error;
+      throw new Error('联网搜索返回了无效 JSON');
+    }
+    const record =
+      json && typeof json === 'object' && !Array.isArray(json)
+        ? (json as Record<string, unknown>)
+        : undefined;
+    const results = Array.isArray(record?.results)
+      ? record.results.filter(
+          (r): r is { title?: string; content?: string; url?: string; published_date?: string } =>
+            Boolean(r && typeof r === 'object' && !Array.isArray(r)),
+        )
+      : [];
     const fetchedAt = new Date().toISOString();
-    return (json.results ?? [])
+    return results
       .filter((r) => /^https?:\/\//.test(r.url ?? ''))
       .slice(0, 5)
       .map((r) => ({
-        title: r.title ?? '',
-        snippet: (r.content ?? '').slice(0, 1500),
+        title: typeof r.title === 'string' ? r.title : '',
+        snippet: typeof r.content === 'string' ? r.content.slice(0, 1500) : '',
         url: r.url!,
         fetchedAt,
-        publishedAt: r.published_date ?? null,
+        publishedAt: typeof r.published_date === 'string' ? r.published_date : null,
       }));
   }
   open(url: string, signal?: AbortSignal) {

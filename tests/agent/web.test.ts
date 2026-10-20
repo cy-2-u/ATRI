@@ -25,6 +25,21 @@ test('实时搜索保留 URL、抓取时间与可获得的发布时间', async (
   assert.equal(result[1].publishedAt, null);
   assert.ok(Date.parse(result[0].fetchedAt));
 });
+test('搜索接口返回畸形 results 时按空结果处理，不把类型错误抛给对话循环', async () => {
+  for (const body of [{ results: '不是数组' }, { results: [null, 42] }, null]) {
+    const web = new TavilyWeb(() => 'test-key', (async () => Response.json(body)) as typeof fetch);
+    assert.deepEqual(await web.search('测试'), []);
+  }
+});
+
+test('搜索响应超过读取上限时拒绝，不把整段内容读进内存', async () => {
+  const huge = JSON.stringify({
+    results: [{ url: 'https://example.com', content: 'x'.repeat(2 * 1024 * 1024 + 1024) }],
+  });
+  const web = new TavilyWeb(() => 'test-key', (async () => new Response(huge)) as typeof fetch);
+  await assert.rejects(web.search('大响应'), /读取上限/);
+});
+
 test('网页读取拒绝本机、私网和非 HTTP 资源', async () => {
   for (const address of [
     '127.0.0.1',

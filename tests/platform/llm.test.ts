@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  EmbeddingClient,
   HttpModel,
   estimateRequestTokens,
   estimateTextTokens,
@@ -194,6 +195,100 @@ test('Gemini 保留 functionCall 的 thoughtSignature 与图片块', async () =>
   assert.equal(bodies[1].contents[1].parts[0].thoughtSignature, 'opaque-signature');
   assert.equal(bodies[1].contents[2].parts[0].functionResponse.name, 'search_memory');
 });
+test('三种接口缺少工具调用 id 时补齐，并同步写回续传原文', async () => {
+  const payloads = {
+    openai: {
+      choices: [
+        {
+          message: {
+            role: 'assistant',
+            content: '',
+            tool_calls: [
+              { type: 'function', function: { name: 'search_memory', arguments: '{}' } },
+            ],
+          },
+        },
+      ],
+    },
+    anthropic: {
+      content: [{ type: 'tool_use', name: 'search_memory', input: {} }],
+    },
+    gemini: {
+      candidates: [{ content: { parts: [{ functionCall: { name: 'search_memory', args: {} } }] } }],
+    },
+  } as const;
+  for (const format of ['openai', 'anthropic', 'gemini'] as const) {
+    const client = new HttpModel({ ...config, format }, (async () =>
+      Response.json(payloads[format])) as typeof fetch);
+    const first = await client.complete([{ role: 'user', content: '查一下' }], [tool]);
+    const id = first.calls[0]!.id;
+    assert.match(id, /^call_/, format);
+    const raw = first.continuation.raw as any;
+    if (format === 'openai') assert.equal(raw.tool_calls[0].id, id);
+    else if (format === 'anthropic') assert.equal(raw[0].id, id);
+    else assert.equal(raw[0].functionCall.id, id);
+  }
+});
+
+test('工具调用数组里的非对象条目被忽略，不会把类型错误抛给调度器', async () => {
+  const payloads = {
+    openai: {
+      choices: [
+        {
+          message: {
+            role: 'assistant',
+            content: '',
+            tool_calls: ['坏数据', { function: { name: 'search_memory', arguments: '{}' } }],
+          },
+        },
+      ],
+    },
+    anthropic: {
+      content: ['坏数据', { type: 'tool_use', name: 'search_memory', input: {} }],
+    },
+    gemini: {
+      candidates: [
+        { content: { parts: ['坏数据', { functionCall: { name: 'search_memory', args: {} } }] } },
+      ],
+    },
+  } as const;
+  for (const format of ['openai', 'anthropic', 'gemini'] as const) {
+    const client = new HttpModel({ ...config, format }, (async () =>
+      Response.json(payloads[format])) as typeof fetch);
+    const result = await client.complete([{ role: 'user', content: '查一下' }], [tool]);
+    assert.equal(result.calls.length, 1, format);
+    assert.equal(result.calls[0]!.name, 'search_memory');
+  }
+});
+
+test('向量接口按 index 还原顺序，条数不符时整批拒绝', async () => {
+  const make = (body: unknown) =>
+    new EmbeddingClient(
+      () => ({
+        baseUrl: 'https://embed.example',
+        apiKey: 'embed-key',
+        model: 'embed-model',
+      }),
+      (async () => Response.json(body)) as typeof fetch,
+    );
+  const vectors = await make({
+    data: [
+      { index: 1, embedding: [0, 1] },
+      { index: 0, embedding: [1, 0] },
+    ],
+  }).embed(['甲', '乙']);
+  assert.deepEqual([...vectors[0]!], [1, 0]);
+  assert.deepEqual([...vectors[1]!], [0, 1]);
+  await assert.rejects(
+    make({ data: [{ index: 0, embedding: [1, 0] }] }).embed(['甲', '乙']),
+    /条数不符/,
+  );
+  await assert.rejects(
+    make({ data: [null, { index: 1, embedding: [0, 1] }] }).embed(['甲', '乙']),
+    /无效条目/,
+  );
+});
+
 test('模型错误信息不回显 API 密钥，空响应明确失败', async () => {
   const errorClient = new HttpModel(config, (async () =>
     Response.json(

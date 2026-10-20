@@ -164,8 +164,11 @@ export class ILinkClient {
         message_type: 2,
         message_state: 2,
         context_token: params.contextToken,
-        item_list: [{ type: 1, text_item: { text: params.text } }],
+        item_list: [{ type: ITEM_TYPE.text, text_item: { text: params.text } }],
       },
+      // sendImage/sendMedia already carry this; the text path was the odd one
+      // out even though the gateway expects base_info on every sendmessage.
+      base_info: { channel_version: this.channelVersion },
     });
   }
 
@@ -394,7 +397,18 @@ export class ILinkClient {
     const ciphertext = encryptAes128Ecb(params.plaintext, params.aesKey);
     let url: string | undefined;
     if (params.uploadFullUrl?.trim()) {
-      url = params.uploadFullUrl.trim();
+      const candidate = params.uploadFullUrl.trim();
+      // The upload URL comes from a server response, not our config. Treat it
+      // with the same host allowlist as inbound media so a compromised or
+      // misguided gateway cannot turn an upload into an SSRF probe.
+      if (
+        !isAllowedMediaUrl(candidate, {
+          cdnBaseUrl: this.cdnBaseUrl,
+          extraHosts: this.mediaHostAllowlist,
+        })
+      )
+        throw new ILinkError(`CDN upload URL host not allowed: ${ILinkClient.hostOf(candidate)}`);
+      url = candidate;
     } else if (params.uploadParam) {
       url = buildCdnUploadUrl(this.cdnBaseUrl, params.uploadParam, params.filekey);
     }
@@ -410,6 +424,9 @@ export class ILinkClient {
         headers: { 'Content-Type': 'application/octet-stream' },
         body: new Uint8Array(ciphertext),
         signal: ctrl.signal,
+        // A redirect can lead somewhere the allowlist never checked. CDN
+        // uploads never legitimately need one.
+        redirect: 'error',
       });
       if (!res.ok) {
         const msg =
@@ -453,6 +470,11 @@ export class ILinkClient {
   }): Promise<UploadedMedia> {
     const mediaType = params.mediaType ?? 1;
     const plaintext = params.data;
+    if (!plaintext.length) throw new ILinkError('media buffer is empty');
+    // sendMedia checked this but uploadMedia (and therefore sendImage) did not,
+    // so a caller could push an arbitrarily large buffer into memory and CDN.
+    if (plaintext.length > this.mediaMaxBytes)
+      throw new ILinkError(`media too large: ${plaintext.length} > ${this.mediaMaxBytes} bytes`);
     const rawSize = plaintext.length;
     const rawFileMd5 = md5Hex(plaintext);
     const fileSize = aesEcbPaddedSize(rawSize);
@@ -691,7 +713,7 @@ export class ILinkClient {
    */
   async downloadMedia(
     ref: InboundMediaRef,
-    opts: { maxBytes?: number } = {},
+    opts: { maxBytes?: number; signal?: AbortSignal } = {},
   ): Promise<DownloadedMedia> {
     const maxBytes = Math.max(1024, opts.maxBytes ?? this.mediaMaxBytes);
     if (ref.cipherSize && ref.cipherSize > maxBytes) {
@@ -719,7 +741,7 @@ export class ILinkClient {
       throw new ILinkError('media ref has neither full_url nor encrypt_query_param');
     }
 
-    const raw = await this.fetchBounded(url, maxBytes);
+    const raw = await this.fetchBounded(url, maxBytes, opts.signal);
 
     let data = raw;
     if (ref.aesKey && ref.encryptType !== 0) {
@@ -743,11 +765,14 @@ export class ILinkClient {
     };
   }
 
-  private async fetchBounded(url: string, maxBytes: number): Promise<Buffer> {
+  private async fetchBounded(url: string, maxBytes: number, signal?: AbortSignal): Promise<Buffer> {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), this.timeoutMs);
+    const combined = signal ? AbortSignal.any([signal, ctrl.signal]) : ctrl.signal;
     try {
-      const res = await fetch(url, { method: 'GET', signal: ctrl.signal });
+      // No redirects: only the first host was checked against the CDN
+      // allowlist, so following one would turn this into an SSRF hop.
+      const res = await fetch(url, { method: 'GET', signal: combined, redirect: 'error' });
       if (!res.ok) {
         throw new ILinkError(
           `CDN download failed: HTTP ${res.status}`,
@@ -788,6 +813,7 @@ export class ILinkClient {
       return Buffer.concat(chunks);
     } catch (err) {
       if (err instanceof ILinkError) throw err;
+      if (signal?.aborted) throw err;
       if (err instanceof Error && err.name === 'AbortError') {
         throw new ILinkError(
           `CDN download timed out after ${this.timeoutMs}ms`,
@@ -817,6 +843,84 @@ export class ILinkClient {
     }
   }
 
+  /** Read an iLink response without assuming it is JSON. A gateway 502 often
+   *  returns HTML and a 204 has an empty body; `res.json()` used to throw away
+   *  the HTTP status and surface a bare SyntaxError, which the bridge then
+   *  treated as a permanent transport failure. */
+  private async readJson<T>(res: Response): Promise<
+    T & {
+      ret?: number;
+      errcode?: number;
+      errmsg?: string;
+    }
+  > {
+    let text: string;
+    try {
+      text = await res.text();
+    } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') throw err;
+      throw new ILinkError(
+        `HTTP ${res.status} 响应读取失败`,
+        undefined,
+        undefined,
+        undefined,
+        res.status,
+      );
+    }
+    if (!text.trim()) {
+      throw new ILinkError(
+        res.ok ? 'iLink 返回了空响应' : `HTTP ${res.status}`,
+        undefined,
+        undefined,
+        undefined,
+        res.status,
+      );
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      throw new ILinkError(
+        res.ok ? 'iLink 返回了非 JSON 响应' : `HTTP ${res.status}`,
+        undefined,
+        undefined,
+        text.slice(0, 300),
+        res.status,
+      );
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new ILinkError(
+        res.ok ? 'iLink 返回了无效响应' : `HTTP ${res.status}`,
+        undefined,
+        undefined,
+        parsed,
+        res.status,
+      );
+    }
+    const data = parsed as T & { ret?: number; errcode?: number; errmsg?: string };
+    if (!res.ok)
+      throw new ILinkError(
+        data.errmsg ?? `HTTP ${res.status}`,
+        data.ret,
+        data.errcode,
+        data,
+        res.status,
+      );
+    // Both fields are used in the wild. Session expiry is commonly -14.
+    const ret = typeof data.ret === 'number' ? data.ret : 0;
+    const errcode = typeof data.errcode === 'number' ? data.errcode : 0;
+    if (ret !== 0 || errcode !== 0) {
+      throw new ILinkError(
+        data.errmsg ?? `iLink ret=${ret} errcode=${errcode}`,
+        data.ret,
+        data.errcode,
+        data,
+        res.status,
+      );
+    }
+    return data;
+  }
+
   private async getJson<T>(url: string, auth: boolean, timeoutMs = this.timeoutMs): Promise<T> {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -826,15 +930,7 @@ export class ILinkClient {
         headers: buildILinkHeaders(auth ? this.botToken : undefined),
         signal: ctrl.signal,
       });
-      const body = (await res.json()) as T & {
-        ret?: number;
-        errcode?: number;
-        errmsg?: string;
-      };
-      if (!res.ok) {
-        throw new ILinkError(`HTTP ${res.status}`, body.ret, body.errcode, body, res.status);
-      }
-      return body;
+      return await this.readJson<T>(res);
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') {
         throw new ILinkError(`request timed out after ${timeoutMs}ms`, undefined, undefined, {
@@ -857,19 +953,7 @@ export class ILinkClient {
         body: JSON.stringify(body),
         signal: ctrl.signal,
       });
-      const data = (await res.json()) as T & {
-        ret?: number;
-        errcode?: number;
-        errmsg?: string;
-      };
-      if (!res.ok) {
-        throw new ILinkError(`HTTP ${res.status}`, data.ret, data.errcode, data, res.status);
-      }
-      // Session expired often surfaces as ret/errcode -14
-      if (data.ret !== undefined && data.ret !== 0) {
-        throw new ILinkError(data.errmsg ?? `iLink ret=${data.ret}`, data.ret, data.errcode, data);
-      }
-      return data;
+      return await this.readJson<T>(res);
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') {
         throw new ILinkError(`request timed out after ${timeoutMs}ms`, undefined, undefined, {

@@ -44,13 +44,23 @@ let authenticated = false,
   polling = false,
   issuesSnapshot = '',
   chatSnapshot = '',
-  chatAnnouncedCount = 0,
+  // Message ids already pushed to the screen-reader live region. Null means
+  // "first load for this contact": seed it silently instead of reading the
+  // whole history aloud. An index cursor broke when messages were deleted.
+  chatAnnouncedIds = null,
+  chatRequestSeq = 0,
   journalSnapshot = '',
+  journalRequestSeq = 0,
   peersSnapshot = '',
+  peersRequestSeq = 0,
+  statusRequestSeq = 0,
+  peersPoll = 0,
   journalSub = 'diaries',
   journalPoll = 0,
   waitingReply = false,
   waitingBaseline = 0,
+  waitingSince = 0,
+  personaDirty = false,
   personaSelects = new Map(),
   formatDropdown = null,
   journalDropdown = null,
@@ -94,7 +104,7 @@ async function perform(action, node, { rethrow = false } = {}) {
     // poller's own retry counter unreachable, so a server hiccup re-showed the
     // error toast on every tick and the toast timer was reset forever.
     if (rethrow) throw error;
-    show(error.message, true);
+    show(error?.message || String(error), true);
   } finally {
     if (node) node.disabled = false;
   }
@@ -286,6 +296,9 @@ function createDropdown({
       items.at(-1)?.focus();
     } else if (event.key === 'Escape') {
       event.preventDefault();
+      // The document-level Escape handler closes drawers. Without this a
+      // dropdown inside the connection drawer closed the whole drawer too.
+      event.stopPropagation();
       close();
       toggle.focus();
     } else if (event.key === 'Tab') close();
@@ -310,25 +323,27 @@ function createDropdown({
   return api;
 }
 
-async function api(path, method = 'GET', body) {
-  const response = await fetch(path, {
-    method,
-    headers: body ? { 'content-type': 'application/json' } : {},
-    body: body ? JSON.stringify(body) : undefined,
-  });
+async function api(path, method = 'GET', body, timeoutMs = 30000) {
+  let response;
+  try {
+    response = await fetch(path, {
+      method,
+      headers: body ? { 'content-type': 'application/json' } : {},
+      body: body ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (error) {
+    if (error?.name === 'TimeoutError' || error?.name === 'AbortError')
+      throw new Error('请求超时，请稍后重试');
+    throw error;
+  }
   let result;
   try {
     result = await response.json();
   } catch {
     throw new Error('服务返回异常');
   }
-  if (response.status === 401 && authenticated) {
-    authenticated = false;
-    $('dashboard').hidden = true;
-    $('login').hidden = false;
-    $('connection-text').textContent = '管理空间';
-    $('connection').classList.remove('online');
-  }
+  if (response.status === 401 && authenticated) teardownSession();
   if (!response.ok) throw new Error(result.error || '请求失败');
   return result;
 }
@@ -416,7 +431,9 @@ function closeDrawers() {
     const backdrop = $(id);
     if (!backdrop.hidden) dismissDrawer(backdrop);
   }
-  lastDrawerOpener = null;
+  // Do NOT clear lastDrawerOpener here: openDrawer() stores the trigger and
+  // then calls closeDrawers() to dismiss any other drawer. Clearing it erased
+  // the opener before the new drawer even opened.
 }
 
 document.querySelectorAll('[data-drawer]').forEach((b) => {
@@ -497,8 +514,11 @@ function renderIssues(state) {
 }
 
 async function loadStatus() {
+  const seq = ++statusRequestSeq;
   const state = await api('/api/status');
-  if (!authenticated) return;
+  // A slow poll finishing after a user-triggered refresh must not repaint the
+  // page with older state.
+  if (seq !== statusRequestSeq || !authenticated) return state;
   const online = state.wechat.status === '已连接';
   $('connection-text').textContent = online ? '微信已连接' : '微信未连接';
   $('connection').classList.toggle('online', online);
@@ -519,6 +539,13 @@ async function loadStatus() {
     $('qr').hidden = false;
   } else $('qr').hidden = true;
 
+  if (waitingReply) {
+    const failed = Boolean(lastTask && state.issues.tasks.some((t) => t.id === lastTask));
+    // A permanent failure never grows the assistant transcript, so the typing
+    // bubble used to sit there forever. The long fallback covers a task that
+    // vanished without appearing in the issue list.
+    if (failed || Date.now() - waitingSince > 5 * 60000) waitingReply = false;
+  }
   const issueCount = state.issues.tasks.length + state.issues.deliveries.length;
   const bell = $('issues-count');
   bell.textContent = issueCount > 99 ? '99+' : String(issueCount);
@@ -636,7 +663,10 @@ function renderChatBadges(stuckPeers, states) {
 }
 
 async function loadPeers() {
-  peers = await api('/api/peers');
+  const seq = ++peersRequestSeq;
+  const loaded = await api('/api/peers');
+  if (seq !== peersRequestSeq || !authenticated) return;
+  peers = loaded;
   const wechatPeers = peers.filter((p) => p.channel === 'wechat');
   const previewPeer = peers.find((p) => p.id === 'preview:default');
   const signature = peers
@@ -765,10 +795,11 @@ function renderChatPeerList(previewPeer) {
       if (currentPeer === item.id) return;
       currentPeer = item.id;
       chatSnapshot = '';
-      // Reset the announce cursor too: carrying the previous contact's message
-      // count over would anounce a slice of the wrong conversation.
-      chatAnnouncedCount = 0;
+      // Reset the announce cursor too: carrying the previous contact's ids over
+      // would announce a slice of the wrong conversation.
+      chatAnnouncedIds = null;
       waitingReply = false;
+      waitingSince = 0;
       renderChatPeerList(previewPeer);
       perform(loadChat);
     };
@@ -854,8 +885,9 @@ function renderMessageContent(content) {
 
 async function loadChat() {
   const peer = currentPeer;
+  const seq = ++chatRequestSeq;
   const history = await api('/api/peers/' + enc(peer) + '/history');
-  if (peer !== currentPeer) return;
+  if (seq !== chatRequestSeq || peer !== currentPeer) return;
   const snapshot = JSON.stringify([peer, history]);
   if (snapshot === chatSnapshot) return;
   chatSnapshot = snapshot;
@@ -864,7 +896,6 @@ async function loadChat() {
   // Announce only what is new. #messages used to carry aria-live itself, and
   // this function rebuilds the whole list on every 2.5s poll — so one new reply
   // made a screen reader re-read the entire conversation from the top.
-  const announced = chatAnnouncedCount;
   container.replaceChildren();
   if (!history.length) empty(container, '这里还没有对话。发条消息，或等她先开口。');
   let lastDay = '';
@@ -930,15 +961,18 @@ async function loadChat() {
     container.append(typing);
   }
   if (nearBottom) container.scrollTop = container.scrollHeight;
-  // Push just the tail into the live region.
+  // Push just the tail into the live region, keyed by message id so deletions
+  // and reordering cannot shift the cursor. A null set means this is the first
+  // render for the contact: seed silently rather than reading the transcript.
   const live = $('messages-live');
   if (live) {
-    const fresh = history.slice(announced);
+    const seen = chatAnnouncedIds;
+    const fresh = seen ? history.filter((m) => !seen.has(m.id)) : [];
+    chatAnnouncedIds = new Set(history.map((m) => m.id));
     live.textContent = fresh
       .filter((m) => m.role === 'assistant')
       .map((m) => m.content)
       .join(' ');
-    chatAnnouncedCount = history.length;
   }
   const isPreview = peer === 'preview:default';
   $('chat-form').hidden = !isPreview;
@@ -973,6 +1007,7 @@ $('chat-form').onsubmit = (event) => {
     });
     lastTask = result.taskId;
     waitingReply = true;
+    waitingSince = Date.now();
     chatInput.value = '';
     chatInput.style.height = 'auto';
     chatSnapshot = '';
@@ -983,12 +1018,13 @@ $('chat-form').onsubmit = (event) => {
 
 async function loadJournal() {
   const peer = journalDropdown.value || 'preview:default';
+  const seq = ++journalRequestSeq;
   const [diaries, memories, loops] = await Promise.all([
     api('/api/peers/' + enc(peer) + '/diaries'),
     api('/api/peers/' + enc(peer) + '/memories'),
     api('/api/peers/' + enc(peer) + '/loops'),
   ]);
-  if (peer !== (journalDropdown.value || 'preview:default')) return;
+  if (seq !== journalRequestSeq || peer !== (journalDropdown.value || 'preview:default')) return;
   const snapshot = JSON.stringify([peer, diaries, memories, loops]);
   if (snapshot === journalSnapshot) return;
   journalSnapshot = snapshot;
@@ -1042,7 +1078,7 @@ async function loadJournal() {
     editor.hidden = true;
     const textarea = document.createElement('textarea');
     textarea.rows = 3;
-    textarea.maxLength = 3000;
+    textarea.maxLength = 800;
     textarea.required = true;
     textarea.value = item.content;
     const editorActions = el('div', undefined, 'actions');
@@ -1160,6 +1196,11 @@ $('write-diary').onclick = () =>
     show(result.taskId ? '已安排整理，稍后会显示新的日记。' : '目前没有尚未整理的经历。');
   }, $('write-diary'));
 
+function confirmPersonaSwitch(nextId) {
+  if (!personaDirty || nextId === personaSelected) return true;
+  return window.confirm('人物设定有尚未保存的修改，切换后将丢失。确定要切换吗？');
+}
+
 async function loadPersonas(selectId) {
   personaState = await api('/api/personas');
   const target = $('persona-list');
@@ -1184,6 +1225,7 @@ async function loadPersonas(selectId) {
     pick.append(name);
     if (isDefault) pick.append(el('span', ' 默认', 'tag'));
     pick.onclick = () => {
+      if (!confirmPersonaSwitch(persona.id)) return;
       personaSelected = persona.id;
       loadPersonas(persona.id);
     };
@@ -1208,6 +1250,7 @@ async function loadPersonas(selectId) {
     del.setAttribute('aria-label', del.title);
     del.onclick = () =>
       perform(async () => {
+        if (persona.id === personaSelected && !confirmPersonaSwitch('')) return;
         await api('/api/personas/' + enc(persona.id), 'DELETE');
         if (personaSelected === persona.id) personaSelected = '';
         await loadPersonas();
@@ -1249,6 +1292,7 @@ function selectPersona(id) {
   $('persona-name').value = persona.name;
   $('persona-content').value = persona.content;
   $('persona-greeting').value = persona.greeting ?? '';
+  personaDirty = false;
   countPersona();
   refreshPersonaSelects();
 }
@@ -1292,12 +1336,18 @@ $('persona-create').onsubmit = (event) => {
       '',
     );
     personaSelected = entry.id;
+    personaDirty = false;
     await loadPersonas(entry.id);
     show(preset ? `已从模板"${preset.name}"创建，可以继续编辑。` : '已创建，编辑内容后保存。');
   }, event.submitter);
 };
-$('persona-name').oninput = countPersona;
-$('persona-content').oninput = countPersona;
+const markPersonaDirty = () => {
+  personaDirty = true;
+  countPersona();
+};
+$('persona-name').oninput = markPersonaDirty;
+$('persona-content').oninput = markPersonaDirty;
+$('persona-greeting').oninput = markPersonaDirty;
 $('persona-form').onsubmit = (event) => {
   event.preventDefault();
   perform(async () => {
@@ -1309,6 +1359,7 @@ $('persona-form').onsubmit = (event) => {
       content: $('persona-content').value,
       greeting: $('persona-greeting').value,
     });
+    personaDirty = false;
     await loadPersonas(personaSelected);
     show('人物设定已保存，下次生成时使用。');
   }, event.submitter);
@@ -1419,16 +1470,23 @@ function applySettings(config) {
         ? '已勾选但尚未生效：向量检索需要同时填写向量模型名称和独立的向量密钥，缺一项就不会调用。'
         : '';
   }
-  $('apiKey').placeholder = config.hasApiKey ? '已配置，留空保持原值' : '尚未配置';
-  $('tavilyKey').placeholder = config.hasTavilyKey ? '已配置，留空保持原值' : '尚未配置';
-  $('embeddingApiKey').placeholder = config.hasEmbeddingApiKey
-    ? '已配置，留空保持原值'
-    : '独立填写，不回退到上方模型密钥';
+  applyKeyState(config);
   $('apiKey').value = '';
   $('tavilyKey').value = '';
   $('embeddingApiKey').value = '';
   settingsDirtyFlag = false;
   updateBudget();
+}
+
+/** Update the three secret fields' placeholders without touching any other
+ *  (possibly unsaved) form control. Clearing one key used to call
+ *  applySettings(), which silently discarded every other edit on the page. */
+function applyKeyState(config) {
+  $('apiKey').placeholder = config.hasApiKey ? '已配置，留空保持原值' : '尚未配置';
+  $('tavilyKey').placeholder = config.hasTavilyKey ? '已配置，留空保持原值' : '尚未配置';
+  $('embeddingApiKey').placeholder = config.hasEmbeddingApiKey
+    ? '已配置，留空保持原值'
+    : '独立填写，不回退到上方模型密钥';
 }
 
 function updateBudget() {
@@ -1469,7 +1527,7 @@ function updateBudget() {
 
 $('fetch-models').onclick = () =>
   perform(async () => {
-    const list = await api('/api/models');
+    const list = await api('/api/models', 'GET', undefined, 60000);
     let panel = $('model-suggestions');
     if (!panel) {
       panel = document.createElement('div');
@@ -1483,7 +1541,16 @@ $('fetch-models').onclick = () =>
         '</div>' +
         '<div class="model-suggestions-list" id="model-suggestions-list"></div>';
       $('model').closest('.field-with-action').after(panel);
-      $('model-filter').oninput = () => renderModelSuggestions();
+      $('model-filter').oninput = (event) => {
+        // The filter lives inside #settings-form. Letting input bubble marked
+        // the whole settings form dirty while the user was only searching.
+        event.stopPropagation();
+        renderModelSuggestions();
+      };
+      $('model-filter').onkeydown = (event) => {
+        // Enter in a search box must not submit the settings form.
+        if (event.key === 'Enter') event.preventDefault();
+      };
       $('model-filter-close').onclick = () => {
         panel.hidden = true;
       };
@@ -1509,6 +1576,9 @@ function renderModelSuggestions() {
       item.title = m;
       item.onclick = () => {
         $('model').value = m;
+        // Programmatic value assignment fires no input event, so without this
+        // the picked model was never marked as an unsaved change.
+        settingsChanged();
         panel.hidden = true;
       };
       return item;
@@ -1524,7 +1594,7 @@ function renderModelSuggestions() {
 
 $('test-llm').onclick = () =>
   perform(async () => {
-    const result = await api('/api/test-llm', 'POST');
+    const result = await api('/api/test-llm', 'POST', undefined, 120000);
     show(
       '模型连通正常：' +
         result.model +
@@ -1537,7 +1607,7 @@ $('test-llm').onclick = () =>
   }, $('test-llm'));
 $('test-embedding').onclick = () =>
   perform(async () => {
-    const result = await api('/api/test-embedding', 'POST');
+    const result = await api('/api/test-embedding', 'POST', undefined, 120000);
     show(
       '向量连通正常：' +
         result.model +
@@ -1604,15 +1674,16 @@ $('clear-sandbox').onclick = () =>
 // mis-tap next to 刷新状态 cannot wipe the directory.
 decorateConfirm($('clear-sandbox'), '确认清空？');
 
-for (const [id, field] of [
-  ['clear-api-key', 'clearApiKey'],
-  ['clear-tavily-key', 'clearTavilyKey'],
-  ['clear-embedding-key', 'clearEmbeddingApiKey'],
+for (const [id, field, input] of [
+  ['clear-api-key', 'clearApiKey', 'apiKey'],
+  ['clear-tavily-key', 'clearTavilyKey', 'tavilyKey'],
+  ['clear-embedding-key', 'clearEmbeddingApiKey', 'embeddingApiKey'],
 ])
   $(id).onclick = () =>
     perform(async () => {
       const saved = await api('/api/config', 'PUT', { [field]: true });
-      applySettings(saved);
+      applyKeyState(saved);
+      $(input).value = '';
       show('密钥已清除，对应服务在重新填写前不可用。');
     }, $(id));
 
@@ -1668,7 +1739,7 @@ $('settings-form').onsubmit = (event) => {
 
 $('backup').onclick = () =>
   perform(async () => {
-    const result = await api('/api/backup', 'POST');
+    const result = await api('/api/backup', 'POST', undefined, 120000);
     show('已备份 ' + result.messages + ' 条消息，位置：' + result.directory);
   }, $('backup'));
 
@@ -1692,15 +1763,36 @@ $('login-form').onsubmit = (event) => {
     await enter();
   }, event.submitter);
 };
+/** Leave the authenticated UI in a clean state for both explicit logout and a
+ *  session that expired mid-request. Previously a 401 only hid the dashboard,
+ *  leaving drawers, the typing indicator and cached chat state alive. */
+function teardownSession() {
+  authenticated = false;
+  $('dashboard').hidden = true;
+  $('login').hidden = false;
+  $('connection-text').textContent = '管理空间';
+  $('connection').classList.remove('online');
+  $('notice').hidden = true;
+  $('password').value = '';
+  closeDrawers();
+  chatSnapshot = '';
+  chatAnnouncedIds = null;
+  journalSnapshot = '';
+  peersSnapshot = '';
+  issuesSnapshot = '';
+  personaSelects.clear();
+  currentPeer = 'preview:default';
+  settingsDirtyFlag = false;
+  personaDirty = false;
+  waitingReply = false;
+  waitingSince = 0;
+  lastTask = null;
+  $('messages').replaceChildren();
+}
 $('logout').onclick = () =>
   perform(async () => {
     await api('/api/logout', 'POST');
-    authenticated = false;
-    $('dashboard').hidden = true;
-    $('login').hidden = false;
-    $('connection-text').textContent = '管理空间';
-    $('connection').classList.remove('online');
-    $('notice').hidden = true;
+    teardownSession();
     $('password').focus();
   });
 
@@ -1713,8 +1805,12 @@ async function selectTab(tab) {
   // Switching tabs used to discard a half-edited settings form with no warning:
   // the form only lives in the DOM, and applySettings() overwrites it from the
   // server on the next visit. Ask before throwing the edits away.
-  if (tab !== currentTab && settingsDirty()) {
-    const leave = window.confirm('设置里有尚未保存的修改，离开将会丢失。确定要离开吗？');
+  if (tab !== currentTab && (settingsDirty() || (currentTab === 'persona' && personaDirty))) {
+    const leave = window.confirm(
+      currentTab === 'persona'
+        ? '人物设定有尚未保存的修改，离开将会丢失。确定要离开吗？'
+        : '设置里有尚未保存的修改，离开将会丢失。确定要离开吗？',
+    );
     if (!leave) {
       document.querySelectorAll('[data-tab]').forEach((b) => {
         const selected = b.dataset.tab === currentTab;
@@ -1724,6 +1820,7 @@ async function selectTab(tab) {
       });
       return;
     }
+    if (currentTab === 'persona') personaDirty = false;
   }
   currentTab = tab;
   document.querySelectorAll('[data-panel]').forEach((p) => (p.hidden = p.dataset.panel !== tab));
@@ -1777,6 +1874,11 @@ formatDropdown = createDropdown({
   ],
   value: 'openai',
   ariaLabel: '接口格式',
+  onChange: () => {
+    // Custom dropdowns are not native form controls, so #settings-form's
+    // change listener never sees this selection.
+    settingsChanged();
+  },
 });
 $('format').append(formatDropdown.root);
 journalDropdown = createDropdown({
@@ -1841,20 +1943,37 @@ setInterval(async () => {
     await perform(
       async () => {
         const state = await loadStatus();
-        pollFailures = 0;
         if (lastTask) {
           const task = await api('/api/tasks/' + enc(lastTask));
           if (task.state === 'failed') {
             show(task.error + '，可在右上角铃铛里重试。', true);
             lastTask = null;
-          } else if (['done', 'superseded'].includes(task.state)) lastTask = null;
+            waitingReply = false;
+            waitingSince = 0;
+          } else if (['done', 'superseded'].includes(task.state)) {
+            lastTask = null;
+            waitingReply = false;
+            waitingSince = 0;
+          }
         }
         if (currentTab === 'chat') await loadChat();
         if (currentTab === 'journal' && Date.now() - journalPoll >= 10000) {
           journalPoll = Date.now();
           await loadJournal();
         }
-        if ($('drawer-connection').hidden === false) await loadPeers();
+        // The connection drawer already refreshes every tick; elsewhere a
+        // 10-second cadence keeps the chat peer list (and newly approved
+        // contacts) from staying stale until the drawer is opened.
+        if ($('drawer-connection').hidden === false) {
+          await loadPeers();
+          peersPoll = Date.now();
+        } else if (Date.now() - peersPoll >= 10000) {
+          peersPoll = Date.now();
+          await loadPeers();
+        }
+        // Only a complete round-trip counts as healthy. Resetting this right
+        // after loadStatus hid repeated failures in loadChat/loadJournal.
+        pollFailures = 0;
         return state;
       },
       null,

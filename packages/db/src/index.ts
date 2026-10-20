@@ -1,7 +1,7 @@
 import { DatabaseSync, backup } from 'node:sqlite';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { mkdirSync, unlinkSync } from 'node:fs';
+import { dirname, resolve, sep } from 'node:path';
 import { cosineSimilarity } from '@atri/llm';
 export { createBackup, restoreBackup } from './backup.js';
 
@@ -341,7 +341,7 @@ export class Store {
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
     this.sql = new DatabaseSync(path);
     const openedAt = Number(this.sql.prepare('PRAGMA user_version').get()?.user_version ?? 0);
-    if (openedAt > 6) {
+    if (openedAt > 7) {
       this.sql.close();
       throw new Error('数据库来自更新版本，不能用当前程序打开');
     }
@@ -389,6 +389,15 @@ export class Store {
       );
       CREATE TABLE IF NOT EXISTS usage (id INTEGER PRIMARY KEY, peer_id TEXT, task_id TEXT, purpose TEXT, input_tokens INTEGER, output_tokens INTEGER, duration_ms INTEGER, created_at INTEGER);
       CREATE TABLE IF NOT EXISTS usage_daily (purpose TEXT NOT NULL, day INTEGER NOT NULL, calls INTEGER NOT NULL, input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL, average_ms INTEGER NOT NULL, PRIMARY KEY(purpose,day));
+      -- Normal metadata table beside the FTS index. Every filter/delete used to
+      -- scan the virtual table because its metadata columns are UNINDEXED;
+      -- search_docs lets metadata queries and id deletes use real indexes while
+      -- search_index only answers MATCH. Rowids are kept in sync.
+      CREATE TABLE IF NOT EXISTS search_docs (
+        id TEXT PRIMARY KEY, peer_id TEXT NOT NULL, kind TEXT NOT NULL,
+        content TEXT NOT NULL, created_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS search_docs_peer_kind ON search_docs(peer_id,kind,created_at DESC);
       CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(id UNINDEXED, peer_id UNINDEXED, kind UNINDEXED, content, created_at UNINDEXED, tokenize='trigram');
       CREATE TABLE IF NOT EXISTS open_loops (
         id TEXT PRIMARY KEY, peer_id TEXT NOT NULL REFERENCES peers(id), content TEXT NOT NULL,
@@ -406,52 +415,71 @@ export class Store {
       );
       CREATE INDEX IF NOT EXISTS soft_threads_peer ON soft_threads(peer_id,status);
     `);
+    // Each version is one transaction. ALTER + PRAGMA used to autocommit
+    // separately, so a crash in between left the column present but the
+    // version old, and the next startup died on "duplicate column". The
+    // hasColumn guard also repairs databases already caught by that window.
     if (openedAt < 2) {
-      // Pinned memories opt out of decay-based ranking. The big DDL block keeps
-      // user_version untouched; only the version that needs the column sets it,
-      // so reopening a v2 database (e.g. restored backup) never re-runs this.
-      this.sql.exec('ALTER TABLE memories ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;');
-      this.sql.exec('PRAGMA user_version=2;');
+      this.transaction(() => {
+        if (!this.hasColumn('memories', 'pinned'))
+          this.sql.exec('ALTER TABLE memories ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;');
+        this.sql.exec('PRAGMA user_version=2;');
+      });
     }
     if (openedAt < 3) {
-      // Per-peer persona binding; empty string means "use the default persona".
-      this.sql.exec('ALTER TABLE peers ADD COLUMN persona_id TEXT NOT NULL DEFAULT "";');
-      this.sql.exec('PRAGMA user_version=3;');
+      this.transaction(() => {
+        if (!this.hasColumn('peers', 'persona_id'))
+          this.sql.exec('ALTER TABLE peers ADD COLUMN persona_id TEXT NOT NULL DEFAULT "";');
+        this.sql.exec('PRAGMA user_version=3;');
+      });
     }
     if (openedAt < 4) {
-      // Facts are invalidated, never deleted: invalid_at records when a later
-      // statement replaced them, so "she changed her mind" stays traceable.
-      // importance is a write-time seed (0–1) that scales ranking; 0.5 is
-      // neutral and reproduces the old ordering for existing rows.
-      this.sql.exec('ALTER TABLE memories ADD COLUMN invalid_at INTEGER NOT NULL DEFAULT 0;');
-      this.sql.exec('ALTER TABLE memories ADD COLUMN importance REAL NOT NULL DEFAULT 0.5;');
-      this.sql.exec('PRAGMA user_version=4;');
+      this.transaction(() => {
+        if (!this.hasColumn('memories', 'invalid_at'))
+          this.sql.exec('ALTER TABLE memories ADD COLUMN invalid_at INTEGER NOT NULL DEFAULT 0;');
+        if (!this.hasColumn('memories', 'importance'))
+          this.sql.exec('ALTER TABLE memories ADD COLUMN importance REAL NOT NULL DEFAULT 0.5;');
+        this.sql.exec('PRAGMA user_version=4;');
+      });
     }
     if (openedAt < 5) {
-      // The delivery pump scans pending outbox rows per peer every 300 ms and
-      // usage is aggregated by a 30-day created_at window; both used to be
-      // full scans on growing tables.
-      this.sql.exec(
-        'CREATE INDEX IF NOT EXISTS outbox_peer_status ON outbox(peer_id,status);\n' +
-          'CREATE INDEX IF NOT EXISTS usage_created ON usage(created_at);\n' +
-          'CREATE INDEX IF NOT EXISTS memory_embeddings_peer_model ON memory_embeddings(peer_id,model);',
-      );
-      this.sql.exec('PRAGMA user_version=5;');
+      this.transaction(() => {
+        this.sql.exec(
+          'CREATE INDEX IF NOT EXISTS outbox_peer_status ON outbox(peer_id,status);\n' +
+            'CREATE INDEX IF NOT EXISTS usage_created ON usage(created_at);\n' +
+            'CREATE INDEX IF NOT EXISTS memory_embeddings_peer_model ON memory_embeddings(peer_id,model);',
+        );
+        this.sql.exec('PRAGMA user_version=5;');
+      });
     }
     if (openedAt < 6) {
-      // Every reply reads the active memory set, the trailing-two-week activity
-      // histogram, the uncertain-delivery gate and the issue lists. Without
-      // these the planner fell back to scanning the whole peer's rows and
-      // sorting in a temp B-tree.
-      this.sql.exec(
-        'CREATE INDEX IF NOT EXISTS memories_peer_status_created ON memories(peer_id,status,created_at DESC);\n' +
-          'CREATE INDEX IF NOT EXISTS messages_rhythm ON messages(peer_id,role,status,created_at);\n' +
-          'CREATE INDEX IF NOT EXISTS outbox_status_created ON outbox(status,created_at DESC);\n' +
-          'CREATE INDEX IF NOT EXISTS tasks_kind ON tasks(kind);\n' +
-          'CREATE INDEX IF NOT EXISTS diary_peer_status_day ON diary_sections(peer_id,status,day);',
-      );
-      this.sql.exec('PRAGMA user_version=6;');
+      this.transaction(() => {
+        this.sql.exec(
+          'CREATE INDEX IF NOT EXISTS memories_peer_status_created ON memories(peer_id,status,created_at DESC);\n' +
+            'CREATE INDEX IF NOT EXISTS messages_rhythm ON messages(peer_id,role,status,created_at);\n' +
+            'CREATE INDEX IF NOT EXISTS outbox_status_created ON outbox(status,created_at DESC);\n' +
+            'CREATE INDEX IF NOT EXISTS tasks_kind ON tasks(kind);\n' +
+            'CREATE INDEX IF NOT EXISTS diary_peer_status_day ON diary_sections(peer_id,status,day);',
+        );
+        this.sql.exec('PRAGMA user_version=6;');
+      });
     }
+    if (openedAt < 7) {
+      this.transaction(() => {
+        // Backfill the metadata mirror from existing FTS rows, preserving rowid
+        // so future deletes are O(1) instead of a virtual-table scan.
+        this.sql.exec(
+          `INSERT OR REPLACE INTO search_docs(rowid,id,peer_id,kind,content,created_at)
+           SELECT rowid,id,peer_id,kind,content,created_at FROM search_index;`,
+        );
+        this.sql.exec('PRAGMA user_version=7;');
+      });
+    }
+  }
+  private hasColumn(table: string, column: string): boolean {
+    return (
+      this.sql.prepare(`PRAGMA table_info(${table})`).all() as unknown as { name: string }[]
+    ).some((row) => row.name === column);
   }
   close() {
     this.sql.close();
@@ -545,6 +573,7 @@ export class Store {
       ),
     });
     const before = counts();
+    const mediaFiles = this.mediaPathsFor(id);
     this.sql.exec('BEGIN IMMEDIATE');
     try {
       // outbox → diary_sections → other children → peers.
@@ -556,8 +585,13 @@ export class Store {
       this.sql.prepare('DELETE FROM open_loops WHERE peer_id=?').run(id);
       this.sql.prepare('DELETE FROM soft_threads WHERE peer_id=?').run(id);
       this.sql.prepare('DELETE FROM messages WHERE peer_id=?').run(id);
-      // FTS has no foreign keys; peer_id is UNINDEXED but still queryable.
-      this.sql.prepare('DELETE FROM search_index WHERE peer_id=?').run(id);
+      // FTS has no foreign keys. Delete the metadata mirror first, then FTS.
+      this.sql
+        .prepare(
+          'DELETE FROM search_index WHERE rowid IN (SELECT rowid FROM search_docs WHERE peer_id=?)',
+        )
+        .run(id);
+      this.sql.prepare('DELETE FROM search_docs WHERE peer_id=?').run(id);
       // usage keeps its counters: it is billing history, keyed by peer id and
       // not reachable from any peer-scoped page once the peer row is gone.
       this.sql.prepare('DELETE FROM peers WHERE id=?').run(id);
@@ -578,7 +612,34 @@ export class Store {
     // measured, not theoretical: without this line a removed contact still
     // recalled its old facts after the same id came back.
     this.memoryCache.delete(id);
+    this.removeMediaFiles(mediaFiles);
     return before;
+  }
+  /** Delete media files referenced by rows that were just removed/emptied.
+   *  Privacy and disk usage both require this: a deleted contact's photos used
+   *  to sit in data/media forever. */
+  private removeMediaFiles(paths: string[]): void {
+    if (this.path === ':memory:') return;
+    const root = resolve(dirname(this.path));
+    for (const path of new Set(paths)) {
+      const full = resolve(root, path);
+      if (!full.startsWith(root + sep)) continue;
+      try {
+        unlinkSync(full);
+      } catch {
+        // Already gone or not a regular file; the DB is authoritative.
+      }
+    }
+  }
+  private mediaPathsFor(peer: string, id?: string): string[] {
+    const rows = id
+      ? this.sql.prepare('SELECT media FROM messages WHERE peer_id=? AND id=?').all(peer, id)
+      : this.sql.prepare('SELECT media FROM messages WHERE peer_id=?').all(peer);
+    const out: string[] = [];
+    for (const row of rows)
+      for (const item of parse<{ path?: string }[]>(row.media, []))
+        if (typeof item.path === 'string') out.push(item.path);
+    return out;
   }
   setPeerPersona(id: string, personaId: string) {
     this.sql.prepare('UPDATE peers SET persona_id=? WHERE id=?').run(personaId, id);
@@ -711,6 +772,19 @@ export class Store {
         .get(peer, kind, key)!.id,
     );
   }
+  /** Whether an equivalent task is already queued or running. The scheduler
+   *  uses this to avoid re-picking the same loop every minute while its jitter
+   *  delay is still pending; the old first-due-only choice starved every later
+   *  loop behind it. */
+  hasPendingTask(peer: string, kind: TaskKind, key: string): boolean {
+    return Boolean(
+      this.sql
+        .prepare(
+          "SELECT 1 FROM tasks WHERE peer_id=? AND kind=? AND dedupe_key=? AND state IN ('queued','running') LIMIT 1",
+        )
+        .get(peer, kind, key),
+    );
+  }
   enqueueChat(peer: string, seq: number, debounceMs: number) {
     const existing = this.sql
       .prepare(
@@ -761,7 +835,9 @@ export class Store {
     return this.sql
       .prepare(
         `SELECT DISTINCT p.id FROM peers p WHERE p.approved=1 AND
-      NOT EXISTS(SELECT 1 FROM outbox WHERE peer_id=p.id AND (status='failed' OR (status='uncertain' AND created_at>=?))) AND
+      -- A permanently failed bubble stays in issues() for the operator, but it
+      -- must not silence the peer forever: new messages are separate work.
+      NOT EXISTS(SELECT 1 FROM outbox WHERE peer_id=p.id AND status='uncertain' AND created_at>=?) AND
       (EXISTS(SELECT 1 FROM tasks WHERE peer_id=p.id AND state='queued' AND run_at<=?) OR EXISTS(SELECT 1 FROM outbox WHERE peer_id=p.id AND status='pending'))`,
       )
       .all(holdSince, now)
@@ -838,7 +914,10 @@ export class Store {
         return false;
       }
       for (const update of updates) this.writeMemory(task.peer_id, update, now);
-      parts.forEach((part, ordinal) => {
+      const validParts = parts.filter(
+        (part) => part.type !== 'text' || Boolean((part.text ?? '').trim()),
+      );
+      validParts.forEach((part, ordinal) => {
         const id = `${task.id}:${ordinal}`;
         const content =
           part.type === 'text' ? part.text! : `[表情：${part.description ?? part.slug}]`;
@@ -853,7 +932,7 @@ export class Store {
           )
           .run(id, task.id, task.peer_id, ordinal, JSON.stringify(part), now);
       });
-      this.finish(task.id, parts.length ? 'ready' : 'done');
+      this.finish(task.id, validParts.length ? 'ready' : 'done');
       if (task.kind === 'chat' && typeof task.payload.through === 'number')
         this.sql
           .prepare(
@@ -871,22 +950,54 @@ export class Store {
       ? { id: String(row.id), peer_id: String(row.peer_id), status: String(row.status) }
       : undefined;
   }
-  startDelivery(id: string) {
-    this.sql
-      .prepare(
-        "UPDATE outbox SET status='sending',attempts=attempts+1 WHERE id=? AND status='pending'",
-      )
-      .run(id);
+  startDelivery(id: string): boolean {
+    return (
+      this.sql
+        .prepare(
+          "UPDATE outbox SET status='sending',attempts=attempts+1 WHERE id=? AND status='pending'",
+        )
+        .run(id).changes > 0
+    );
+  }
+  /** Cancel every still-pending bubble of a task after one bubble failed
+   *  permanently. Without this the pump later sent the tail of a reply whose
+   *  opening the user never received. */
+  cancelPendingForTask(taskId: string, exceptId: string, error: string): void {
+    this.transaction(() => {
+      this.sql
+        .prepare(
+          "UPDATE outbox SET status='cancelled',error=? WHERE task_id=? AND status='pending' AND id<>?",
+        )
+        .run(error.slice(0, 400), taskId, exceptId);
+      this.sql
+        .prepare(
+          "UPDATE messages SET status='cancelled' WHERE id IN (SELECT id FROM outbox WHERE task_id=? AND status='cancelled')",
+        )
+        .run(taskId);
+    });
   }
   markDelivery(
     id: string,
     status: 'sent' | 'uncertain' | 'failed' | 'pending' | 'cancelled',
     error = '',
     now = Date.now(),
-  ) {
-    this.transaction(() => {
+  ): boolean {
+    return this.transaction(() => {
       const row = this.sql.prepare('SELECT * FROM outbox WHERE id=?').get(id);
       if (!row) throw new Error('发送记录不存在');
+      const current = String(row.status);
+      // Explicit transitions protect operator actions and the sender from
+      // racing: a late `sent` must not overwrite a deliberate cancel, and a
+      // retry must not resurrect a row that has already been confirmed.
+      const allowed: Record<typeof status, readonly string[]> = {
+        sent: ['pending', 'sending', 'uncertain'],
+        uncertain: ['pending', 'sending'],
+        failed: ['pending', 'sending', 'uncertain'],
+        pending: ['failed', 'uncertain'],
+        cancelled: ['pending', 'sending', 'failed', 'uncertain'],
+      };
+      if (current === status) return true;
+      if (!allowed[status].includes(current)) return false;
       this.sql
         .prepare('UPDATE outbox SET status=?,error=? WHERE id=?')
         .run(status, error.slice(0, 400), id);
@@ -905,6 +1016,7 @@ export class Store {
           .get(String(row.task_id))!.n,
       );
       if (!count) this.finish(String(row.task_id));
+      return true;
     });
   }
   /** Terminal tasks are pure operations debris — chat rows are created per
@@ -937,25 +1049,31 @@ export class Store {
            AND NOT EXISTS(SELECT 1 FROM diary_sections WHERE diary_sections.task_id=tasks.id)`,
         )
         .run(cutoff);
+      // A crash between "bubbles queued" and "effects committed" leaves a
+      // pending_effects snapshot behind so the retry can finish the job. Once
+      // the owning task is pruned that snapshot can never be read again.
+      this.sql
+        .prepare(
+          "DELETE FROM settings WHERE key LIKE 'pending_effects:%' AND substr(key, 17) NOT IN (SELECT id FROM tasks)",
+        )
+        .run();
       return Number(gone.changes);
     });
   }
   cancelUnsent(task: Task): boolean {
     return this.transaction(() => {
-      if (
-        this.sql
-          .prepare(
-            "SELECT 1 FROM outbox WHERE task_id=? AND status IN ('sent','sending','uncertain')",
-          )
-          .get(task.id)
-      )
-        return false;
+      // Cancel only bubbles that were never sent. The old guard refused the
+      // whole operation as soon as any earlier bubble was `sent`, which left
+      // the tail of a partially delivered reply pending forever: a new user
+      // message bumped the peer version, the sender kept entering this path
+      // and bailing out, and the stale tail could never be delivered or
+      // retired. Sent bubbles keep their real status.
       this.sql
         .prepare("UPDATE outbox SET status='cancelled' WHERE task_id=? AND status='pending'")
         .run(task.id);
       this.sql
         .prepare(
-          "UPDATE messages SET status='cancelled' WHERE id IN (SELECT id FROM outbox WHERE task_id=?)",
+          "UPDATE messages SET status='cancelled' WHERE id IN (SELECT id FROM outbox WHERE task_id=? AND status='cancelled')",
         )
         .run(task.id);
       this.finish(task.id, 'superseded');
@@ -963,15 +1081,27 @@ export class Store {
     });
   }
   private index(id: string, peer: string, kind: SourceKind, content: string, at: number) {
-    this.sql.prepare('DELETE FROM search_index WHERE id=?').run(id);
+    this.unindex(id);
     // Content changed: the stale vector must not survive the refresh.
     this.sql.prepare('DELETE FROM memory_embeddings WHERE id=?').run(id);
-    this.sql
-      .prepare('INSERT INTO search_index(id,peer_id,kind,content,created_at) VALUES(?,?,?,?,?)')
+    const inserted = this.sql
+      .prepare('INSERT INTO search_docs(id,peer_id,kind,content,created_at) VALUES(?,?,?,?,?)')
       .run(id, peer, kind, content, at);
+    const rowid = Number(inserted.lastInsertRowid);
+    this.dfCache.delete(peer);
+    this.sql
+      .prepare(
+        'INSERT INTO search_index(rowid,id,peer_id,kind,content,created_at) VALUES(?,?,?,?,?,?)',
+      )
+      .run(rowid, id, peer, kind, content, at);
   }
   private unindex(id: string) {
-    this.sql.prepare('DELETE FROM search_index WHERE id=?').run(id);
+    const row = this.sql.prepare('SELECT rowid,peer_id FROM search_docs WHERE id=?').get(id);
+    if (row) {
+      this.sql.prepare('DELETE FROM search_index WHERE rowid=?').run(Number(row.rowid));
+      this.dfCache.delete(String(row.peer_id));
+    }
+    this.sql.prepare('DELETE FROM search_docs WHERE id=?').run(id);
   }
   private describeHit(hit: SearchHit): SearchHit {
     if (hit.kind === 'message') {
@@ -1004,7 +1134,7 @@ export class Store {
                 m.role AS role,
                 mem.kind AS memory_kind, mem.sources AS memory_sources,
                 d.sources AS diary_sources
-         FROM search_index s
+         FROM search_docs s
          LEFT JOIN messages m ON m.id = s.id
          LEFT JOIN memories mem ON mem.id = s.id
          LEFT JOIN diary_sections d ON d.id = s.id
@@ -1189,9 +1319,20 @@ export class Store {
     if (duplicate) {
       const merged = [...new Set([...parse<string[]>(duplicate.sources, []), ...ids])].slice(0, 20);
       this.sql
-        .prepare('UPDATE memories SET sources=?,importance=MAX(importance,?) WHERE id=?')
-        .run(JSON.stringify(merged), update.importance ?? 0.5, String(duplicate.id));
-      this.supersede(peer, update.supersedes ?? [], now);
+        .prepare('UPDATE memories SET sources=?,kind=?,importance=MAX(importance,?) WHERE id=?')
+        .run(
+          JSON.stringify(merged),
+          update.kind,
+          Math.max(0, Math.min(1, update.importance ?? 0.5)),
+          String(duplicate.id),
+        );
+      // Never let an update supersede the very row it just matched. Admin
+      // correction of unchanged text did exactly that and left the fact gone.
+      this.supersede(
+        peer,
+        (update.supersedes ?? []).filter((previous) => previous !== String(duplicate.id)),
+        now,
+      );
       this.memoryCache.delete(peer);
       return String(duplicate.id);
     }
@@ -1219,9 +1360,11 @@ export class Store {
       if (existing) {
         this.sql
           .prepare(
-            "UPDATE memories SET status='active',invalid_at=0,sources=?,importance=MAX(importance,?) WHERE id=?",
+            "UPDATE memories SET content=?,kind=?,status='active',invalid_at=0,sources=?,importance=MAX(importance,?) WHERE id=?",
           )
           .run(
+            content.slice(0, 800),
+            update.kind,
             JSON.stringify(ids),
             Math.max(0, Math.min(1, update.importance ?? 0.5)),
             String(existing.id),
@@ -1240,8 +1383,7 @@ export class Store {
   addMemory(peer: string, update: MemoryUpdate, expectedVersion: number) {
     return this.transaction(() => {
       if (this.peer(peer)?.version !== expectedVersion) return false;
-      this.writeMemory(peer, update, Date.now());
-      return true;
+      return this.writeMemory(peer, update, Date.now()) !== undefined;
     });
   }
   correctMemory(peer: string, id: string, content: string) {
@@ -1339,18 +1481,33 @@ export class Store {
             JSON.stringify(section.sources),
             now,
           );
-        this.index(id, task.peer_id, 'diary', section.content, now);
+        // Index what the table actually holds. On a retry INSERT OR IGNORE can
+        // leave an older row in place; indexing the freshly generated text
+        // would make full-text search return words the stored diary never had.
+        const saved = this.sql
+          .prepare('SELECT content FROM diary_sections WHERE id=? AND peer_id=?')
+          .get(id, task.peer_id) as Row | undefined;
+        if (saved) this.index(id, task.peer_id, 'diary', String(saved.content), now);
       });
       if (this.peer(task.peer_id)?.version === task.version)
         for (const update of updates) this.writeMemory(task.peer_id, update, now);
-      if (typeof task.payload.through === 'number')
-        this.setSetting(`diary_cursor:${task.peer_id}`, task.payload.through);
+      if (typeof task.payload.through === 'number' && Number.isFinite(task.payload.through)) {
+        // Older diary tasks can finish after a newer one (a retry, or a task
+        // claimed before a second batch was queued). Cursor is a high-water
+        // mark: moving it backwards would re-diary messages already covered.
+        const cursor = this.getSetting<number>(`diary_cursor:${task.peer_id}`, 0);
+        if (task.payload.through > cursor)
+          this.setSetting(`diary_cursor:${task.peer_id}`, task.payload.through);
+      }
       this.finish(task.id);
     });
   }
   setNotes(task: Task, notes: string, through: number) {
     this.transaction(() => {
-      if (this.peer(task.peer_id)?.version === task.version)
+      const peer = this.peer(task.peer_id);
+      // Notes are a snapshot of "everything through seq N". A stale task must
+      // not replace a newer snapshot, even if it happened to finish later.
+      if (peer?.version === task.version && through >= peer.notes_until)
         this.sql
           .prepare('UPDATE peers SET notes=?,notes_until=? WHERE id=?')
           .run(notes.slice(0, NOTES_MAX_CHARS), through, task.peer_id);
@@ -1358,6 +1515,7 @@ export class Store {
     });
   }
   forget(peer: string, id: string) {
+    const mediaFiles = this.mediaPathsFor(peer, id);
     this.transaction(() => {
       this.memoryCache.delete(peer);
       // Resolve the target from the tables themselves, not from search_index:
@@ -1365,7 +1523,7 @@ export class Store {
       // the old lookup threw "记录不存在" and a superseded fact with sensitive
       // content could never be deleted.
       const kind =
-        (this.sql.prepare('SELECT kind FROM search_index WHERE peer_id=? AND id=?').get(peer, id)
+        (this.sql.prepare('SELECT kind FROM search_docs WHERE peer_id=? AND id=?').get(peer, id)
           ?.kind as SourceKind | undefined) ??
         (this.sql.prepare('SELECT 1 AS hit FROM messages WHERE peer_id=? AND id=?').get(peer, id)
           ? 'message'
@@ -1474,6 +1632,7 @@ export class Store {
         .prepare("UPDATE peers SET notes='',notes_until=0,version=version+1 WHERE id=?")
         .run(peer);
     });
+    this.removeMediaFiles(mediaFiles);
   }
   /** Rows needing embedding: indexed, not yet vectorized, newest first. */
   pendingEmbeddings(
@@ -1482,7 +1641,7 @@ export class Store {
   ): { id: string; kind: SourceKind; content: string; created_at: number }[] {
     return this.sql
       .prepare(
-        `SELECT s.id,s.kind,s.content,s.created_at FROM search_index s
+        `SELECT s.id,s.kind,s.content,s.created_at FROM search_docs s
        LEFT JOIN memory_embeddings e ON e.id=s.id
        WHERE s.peer_id=? AND e.id IS NULL
        ORDER BY s.created_at DESC LIMIT ?`,
@@ -1526,7 +1685,7 @@ export class Store {
     if (!terms.length && normalized.trim()) terms.push(normalized.trim());
     if (!terms.length) return [];
     const rows: Row[] = [];
-    const kindClause = kind ? ' AND kind=?' : '',
+    const kindClause = kind ? ' AND d.kind=?' : '',
       kindParameters = kind ? [kind] : [];
     const longTerms = terms.filter((t) => [...t].length >= 3).slice(0, 20);
     if (longTerms.length) {
@@ -1534,21 +1693,23 @@ export class Store {
       rows.push(
         ...this.sql
           .prepare(
-            'SELECT id,kind,content,created_at FROM search_index WHERE peer_id=? AND search_index MATCH ?' +
+            'SELECT d.id,d.kind,d.content,d.created_at FROM search_docs d JOIN search_index ON search_index.rowid=d.rowid WHERE d.peer_id=? AND search_index MATCH ?' +
               kindClause +
               ' ORDER BY rank LIMIT 150',
           )
           .all(peer, match, ...kindParameters),
       );
     }
-    // LIKE scan only when FTS came up short — it is the fallback for short
-    // Chinese bigrams, not a duplicate pass over the same hits.
-    if (rows.length < 20) {
+    // LIKE scan only when FTS came up short AND the query contains a term
+    // shorter than the trigram index can match. When every term is 3+ chars the
+    // FTS pass is already complete, so a second full scan found nothing new.
+    const hasShortTerm = terms.some((t) => [...t].length < 3);
+    if (rows.length < 20 && hasShortTerm) {
       const likeTerms = terms.slice(0, 32).map((t) => '%' + t.replace(/[\\%_]/g, '\\$&') + '%');
       rows.push(
         ...this.sql
           .prepare(
-            `SELECT id,kind,content,created_at FROM search_index WHERE peer_id=? AND (${likeTerms.map(() => "content LIKE ? ESCAPE '\\'").join(' OR ')})${kindClause} ORDER BY CAST(created_at AS INTEGER) DESC LIMIT 300`,
+            `SELECT d.id,d.kind,d.content,d.created_at FROM search_docs d WHERE d.peer_id=? AND (${likeTerms.map(() => "d.content LIKE ? ESCAPE '\\'").join(' OR ')})${kindClause} ORDER BY CAST(d.created_at AS INTEGER) DESC LIMIT 300`,
           )
           .all(peer, ...likeTerms, ...kindParameters),
       );
@@ -1563,7 +1724,7 @@ export class Store {
       rows.push(
         ...this.sql
           .prepare(
-            `SELECT s.id,s.kind,s.content,s.created_at FROM memory_embeddings e JOIN search_index s ON s.id=e.id
+            `SELECT s.id,s.kind,s.content,s.created_at FROM memory_embeddings e JOIN search_docs s ON s.id=e.id
            WHERE e.peer_id=? ${kind ? 'AND s.kind=?' : ''} ${modelFilter}
            ORDER BY s.created_at DESC LIMIT ${SEARCH_VECTOR_CANDIDATES}`,
           )
@@ -1617,7 +1778,9 @@ export class Store {
       // +1 smoothing keeps an unseen term (at most one query) from dividing by
       // zero. Unseen terms also carry no usable signal: no row can match them,
       // so they must not set the bar a hit has to clear.
-      weight.set(t, Math.log(1 + total / (1 + seen)));
+      // A term nobody has written carries no signal. Giving it the maximum
+      // idf inflated idfSum and diluted every term that did match.
+      weight.set(t, seen > 0 ? Math.log(1 + total / (1 + seen)) : 0);
     }
     const idfSum = [...weight.values()].reduce((a, b) => a + b, 0) || 1;
     const scored = [...new Map(rows.map((r) => [r.id, r])).values()]
@@ -1729,11 +1892,8 @@ export class Store {
     }
     if (!cached) {
       const total = Number(
-        (
-          this.sql
-            .prepare('SELECT COUNT(*) AS n FROM search_index WHERE peer_id=?')
-            .get(peer) as Row
-        )?.n ?? 0,
+        (this.sql.prepare('SELECT COUNT(*) AS n FROM search_docs WHERE peer_id=?').get(peer) as Row)
+          ?.n ?? 0,
       );
       cached = { at: now, total, counts: new Map() };
       this.dfCache.set(peer, cached);
@@ -1749,7 +1909,7 @@ export class Store {
       );
       const patterns = missing.map((t) => '%' + t.replace(/[\\%_]/g, '\\$&') + '%');
       const row = this.sql
-        .prepare(`SELECT ${arms.join(',')} FROM search_index WHERE peer_id=?`)
+        .prepare(`SELECT ${arms.join(',')} FROM search_docs WHERE peer_id=?`)
         .get(...patterns, peer) as Row | undefined;
       missing.forEach((t, i) => cached!.counts.set(t, Number(row?.[`t${i}`] ?? 0)));
     }
@@ -1975,8 +2135,7 @@ export class Store {
       )
       .run(peer, now - SOFT_THREAD_EXPIRE_DAYS * 86400000);
   }
-  mood(peer: string): MoodState {
-    const raw = this.getSetting<Partial<MoodState> | undefined>(`mood:${peer}`, undefined);
+  private moodState(raw: Partial<MoodState> | undefined): MoodState {
     if (!raw || typeof raw.valence !== 'number' || typeof raw.energy !== 'number') {
       return { valence: 0, energy: 0, patience: 0, at: 0 };
     }
@@ -1996,6 +2155,38 @@ export class Store {
       reason: typeof raw.reason === 'string' ? raw.reason : undefined,
       at,
     };
+  }
+  mood(peer: string): MoodState {
+    return this.moodState(
+      this.getSetting<Partial<MoodState> | undefined>(`mood:${peer}`, undefined),
+    );
+  }
+  /** One settings read for every peer's mood. /api/status polled once per peer
+   *  and issued two queries each; the UI refreshes it every 2.5 s. */
+  moods(): Map<string, MoodState> {
+    const out = new Map<string, MoodState>();
+    for (const row of this.sql
+      .prepare("SELECT key,value FROM settings WHERE key LIKE 'mood:%'")
+      .all() as Row[]) {
+      const key = String(row.key);
+      out.set(
+        key.slice(5),
+        this.moodState(parse<Partial<MoodState> | undefined>(row.value, undefined)),
+      );
+    }
+    return out;
+  }
+  dueLoopCounts(now = Date.now()): Map<string, number> {
+    const out = new Map<string, number>();
+    for (const row of this.sql
+      .prepare(
+        `SELECT peer_id,COUNT(*) AS n FROM open_loops
+         WHERE status='open' AND asked=0 AND due_at<=? AND due_at>?
+         GROUP BY peer_id`,
+      )
+      .all(now, now - OPEN_LOOP_EXPIRE_DAYS * 86400000) as Row[])
+      out.set(String(row.peer_id), Number(row.n));
+    return out;
   }
   /** Fold a pulse into the current state.
    *
@@ -2135,11 +2326,14 @@ export class Store {
       )
       .get(peer) as Row | undefined;
     const lastUserAt = lastUser ? Number(lastUser.created_at) : 0;
+    // One proactive turn is one unanswered ping, no matter how many bubbles
+    // it was split into. Counting outbox rows made a three-bubble message
+    // look like three ignored pings and tripped the cooldown immediately.
     const rows = this.sql
       .prepare(
-        `SELECT m.created_at FROM outbox o JOIN messages m ON m.id=o.id
+        `SELECT MAX(m.created_at) AS created_at FROM outbox o JOIN messages m ON m.id=o.id
          WHERE o.peer_id=? AND o.status='sent' AND o.task_id IN (SELECT id FROM tasks WHERE kind='proactive')
-         ORDER BY m.created_at DESC LIMIT ?`,
+         GROUP BY o.task_id ORDER BY created_at DESC LIMIT ?`,
       )
       .all(peer, PROACTIVE_IGNORE_LIMIT) as Row[];
     let streak = 0;

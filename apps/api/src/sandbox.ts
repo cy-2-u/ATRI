@@ -6,9 +6,14 @@ import {
   rmSync,
   statSync,
   existsSync,
+  lstatSync,
   readFileSync,
   writeFileSync,
   realpathSync,
+  openSync,
+  closeSync,
+  fstatSync,
+  constants as fsConstants,
 } from 'node:fs';
 import { join, resolve, dirname, isAbsolute, relative, sep } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -16,10 +21,10 @@ import { promisify } from 'node:util';
 
 const exec = promisify(execFile);
 
-/** Output ceiling. Unlimited by default because the operator asked for no
- *  length cap; kept as a guard rail so a runaway `yes` cannot exhaust the
- *  server's memory when the operator does set one. */
-export const SANDBOX_OUTPUT_LIMIT = 0;
+/** Output ceiling per stream. A runaway `yes` must never be able to grow the
+ *  API process heap without bound, so the safe default is finite. */
+export const SANDBOX_OUTPUT_LIMIT = 256 * 1024;
+const SANDBOX_READ_LIMIT = 2 * 1024 * 1024;
 
 export interface SandboxResult {
   ok: boolean;
@@ -40,6 +45,11 @@ export interface SandboxOptions {
   sizeLimitBytes: () => number;
   /** Output ceiling per stream; 0 means unlimited. */
   outputLimit?: number;
+  /** Development escape hatch. Production leaves this false: if nsjail cannot
+   *  create namespaces, commands are refused rather than run against the host
+   *  with only a working-directory change. Tests that exercise command
+   *  mechanics on a non-Linux host opt in explicitly. */
+  allowDirectoryFallback?: boolean;
   /** Address space cap in MB; 0 means unlimited. Bounds a runaway allocation
    *  without needing cgroup access, which a plain container cannot provide. */
   memoryLimitMb?: () => number;
@@ -79,6 +89,7 @@ export class Sandbox {
   readonly root: string;
   readonly tmpDir: string;
   private readonly outputLimit: number;
+  private readonly allowDirectoryFallback: boolean;
   /** Cached probe result. nsjail's availability cannot change at runtime, but the
    *  probe depends on the network flag, so the key covers that too. */
   private nsjailProbe: string | null = null;
@@ -95,7 +106,8 @@ export class Sandbox {
     // against a read-only /tmp. Kept outside the sandbox directory so tool
     // caches never eat into the operator's quota or show up in list_files.
     this.tmpDir = mkdirTemp(join(tmpdir(), 'atri-sandbox-'));
-    this.outputLimit = options.outputLimit ?? SANDBOX_OUTPUT_LIMIT;
+    this.outputLimit = Math.max(0, options.outputLimit ?? SANDBOX_OUTPUT_LIMIT);
+    this.allowDirectoryFallback = options.allowDirectoryFallback === true;
   }
 
   get enabled(): boolean {
@@ -133,20 +145,22 @@ export class Sandbox {
     return this.nsjailUsable;
   }
 
-  /** Directory size, skipping node_modules/.git which the operator never
-   *  counts against the quota but which would dominate a naive walk. */
+  /** Directory size. Every stored byte counts: exempting node_modules or
+   *  .git would let a command fill the disk while the quota still read zero. */
   usage(): { files: number; bytes: number } {
     let files = 0,
       bytes = 0;
     const walk = (dir: string): void => {
       for (const entry of readdirSync(dir, { withFileTypes: true })) {
-        if (entry.name === 'node_modules' || entry.name === '.git') continue;
         const full = join(dir, entry.name);
         if (entry.isDirectory()) walk(full);
         else {
           files++;
           try {
-            bytes += statSync(full).size;
+            // lstat, not stat: a symlink planted by a sandboxed command must
+            // count as the link itself, never as the size of an outside file
+            // it happens to point at.
+            bytes += lstatSync(full).size;
           } catch {
             // A file removed mid-walk is not worth failing the whole count.
           }
@@ -211,7 +225,21 @@ export class Sandbox {
     this.assertWithinQuota(Buffer.byteLength(content));
     const target = this.safePath(path);
     mkdirSync(dirname(target), { recursive: true });
-    writeFileSync(target, content, 'utf8');
+    // O_NOFOLLOW closes the check-then-open race a sandboxed command could win
+    // by replacing the leaf with a symlink between safePath() and the write.
+    const fd = openSync(
+      target,
+      fsConstants.O_WRONLY |
+        fsConstants.O_CREAT |
+        fsConstants.O_TRUNC |
+        (fsConstants.O_NOFOLLOW ?? 0),
+      0o600,
+    );
+    try {
+      writeFileSync(fd, content, 'utf8');
+    } finally {
+      closeSync(fd);
+    }
     return { path: relative(this.root, target) || '.', bytes: Buffer.byteLength(content) };
   }
 
@@ -219,12 +247,22 @@ export class Sandbox {
     if (!this.enabled) throw new Error('沙箱未启用');
     const target = this.safePath(path);
     if (!existsSync(target)) throw new Error('文件不存在');
-    const stat = statSync(target);
-    if (stat.isDirectory()) throw new Error('这是一个目录，请改用 list_files');
-    return {
-      path: relative(this.root, target) || '.',
-      content: readFileSync(target, 'utf8'),
-    };
+    // Open with O_NOFOLLOW and fstat the descriptor: lstat alone still let a
+    // sandboxed process swap in a FIFO or symlink after the check, which would
+    // block the event loop forever on readFileSync.
+    const fd = openSync(target, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+    try {
+      const stat = fstatSync(fd);
+      if (!stat.isFile()) throw new Error('只能读取普通文件');
+      if (stat.size > SANDBOX_READ_LIMIT)
+        throw new Error(`文件过大（上限 ${SANDBOX_READ_LIMIT / 1024 / 1024} MB）`);
+      return {
+        path: relative(this.root, target) || '.',
+        content: readFileSync(fd, 'utf8'),
+      };
+    } finally {
+      closeSync(fd);
+    }
   }
 
   async list(path: string): Promise<{
@@ -255,9 +293,10 @@ export class Sandbox {
     };
   }
 
-  /** Run one shell command inside the sandbox. Prefers nsjail (namespace
-   *  isolation) and falls back to a plain subshell when nsjail is unavailable,
-   *  so the feature still works on hosts that block user namespaces. */
+  /** Run one shell command inside the sandbox. nsjail is mandatory: falling
+   *  back to `/bin/sh -c` on the API host is not "degraded isolation", it is
+   *  arbitrary code execution with the database and every API key readable.
+   *  Hosts without user namespaces get a clear error instead. */
   async run(command: string, signal?: AbortSignal): Promise<SandboxResult> {
     const started = Date.now();
     if (!this.enabled) throw new Error('沙箱未启用');
@@ -267,12 +306,22 @@ export class Sandbox {
     this.assertWithinQuota();
 
     const useNsjail = await this.nsjailAvailable();
-    return this.spawn(
+    if (!useNsjail && !this.allowDirectoryFallback)
+      throw new Error(
+        '当前主机无法使用 nsjail 命名空间隔离，沙箱命令已拒绝执行。' +
+          '请部署在支持 user namespace 的 Linux 主机，或在开发环境显式开启目录回退。',
+      );
+    const result = await this.spawn(
       useNsjail ? this.nsjailArgs(trimmed) : this.fallbackArgs(trimmed),
       useNsjail ? 'nsjail' : 'directory',
       started,
       signal,
     );
+    // A command can create many files in one go; checking only before the run
+    // let it exceed the quota permanently. Surface it so the next tool call is
+    // blocked and the operator can see why.
+    if (result.ok) this.assertWithinQuota();
+    return result;
   }
 
   /** nsjail argv. Namespace isolation: mount/pid/ipc/uts/user namespaces, so the
@@ -328,7 +377,9 @@ export class Sandbox {
     }
     if (this.options.network()) args.push('--disable_clone_newnet');
     const mem = this.options.memoryLimitMb?.() ?? 0;
-    if (mem > 0) args.push('--rlimit_as', String(mem * 1024));
+    // nsjail expresses rlimits in MiB; multiplying by 1024 turned a 2 GiB cap
+    // into ~2 TiB, i.e. no cap at all.
+    if (mem > 0) args.push('--rlimit_as', String(mem));
     args.push('--', '/bin/sh', '-c', command);
     return { bin: NSJAIL, args };
   }
@@ -419,9 +470,7 @@ export class Sandbox {
     if (process.platform === 'win32')
       return {
         level: 'directory',
-        note: '本地 Windows 预览：目录级隔离。生产 Linux 容器内使用 nsjail。',
-        // Wording kept identical to the Linux branch so the settings page reads
-        // the same in both places; the note above is where the difference shows.
+        note: '当前是 Windows 预览环境：无法提供 nsjail，沙箱命令会被拒绝执行。生产环境请使用 Linux 容器。',
         network,
       };
     const nsjail = await this.nsjailAvailable();
@@ -429,7 +478,7 @@ export class Sandbox {
       level: nsjail ? 'nsjail' : 'directory',
       note: nsjail
         ? 'nsjail 命名空间隔离：独立 mount/pid/ipc/uts/user 命名空间，系统目录只读挂载，沙箱目录是唯一可写路径，应用目录与数据库已被空 tmpfs 遮蔽。'
-        : 'nsjail 不可用，已回退到目录级隔离（工作目录 + 环境变量白名单 + 配额 + 软链防护）；此时网络开关与文件系统隔离均无法强制，命令实际可联网。',
+        : 'nsjail 不可用：沙箱命令会被拒绝执行，避免以 API 进程权限直接运行。请检查内核 user namespace 或容器权限。',
       network,
     };
   }

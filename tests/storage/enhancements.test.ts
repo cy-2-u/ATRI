@@ -133,16 +133,17 @@ test('文本里漏出的 [表情：x] 会被转换为目录内表情，匹配不
     stickers,
   );
   assert.deepEqual(direct.parts, [
-    { type: 'sticker', slug: 'shy', description: '有些害羞，不好意思' },
     { type: 'text', text: '你太夸奖啦' },
+    { type: 'sticker', slug: 'shy', description: '有些害羞，不好意思' },
   ]);
   const slugForm = parseReply(
     '{"messages":["哈哈 [表情：happy] 收到"],"memoryUpdates":[]}',
     stickers,
   );
   assert.deepEqual(slugForm.parts, [
+    { type: 'text', text: '哈哈' },
     { type: 'sticker', slug: 'happy', description: '开心地笑，分享好消息' },
-    { type: 'text', text: '哈哈 收到' },
+    { type: 'text', text: '收到' },
   ]);
   const unmatched = parseReply(
     '{"messages":["随便说说 [表情：不存在的表情]"],"memoryUpdates":[]}',
@@ -168,8 +169,8 @@ test('英文伪协议 [sticker:slug] / (sticker:slug) 同样被转换或删除�
     assert.deepEqual(
       r.parts,
       [
-        { type: 'sticker', slug: 'cat053', description: '猫猫挥手' },
         { type: 'text', text: '你好呀' },
+        { type: 'sticker', slug: 'cat053', description: '猫猫挥手' },
       ],
       variant,
     );

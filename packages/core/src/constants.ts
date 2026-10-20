@@ -64,9 +64,11 @@ export const MAX_REPLY_ATTEMPTS = 4;
 export const TOOL_RESULT_BUDGET_TOKENS = 6000;
 /** Cap on assistant bubbles and memory updates per reply. */
 export const MAX_REPLY_PARTS = 6;
-export const MAX_MEMORY_UPDATES = 6;
-export const MAX_IMAGE_DESCRIPTIONS = 4; /** Notes (topic summary) token cap inside prompts. */
-export const NOTES_MAX_TOKENS = 1500;
+export const MAX_MEMORY_UPDATES = 3;
+export const MAX_IMAGE_DESCRIPTIONS = 4;
+/** Notes (topic summary) token cap inside prompts. The prompt asks for at most
+ *  1000 Chinese characters; 1500 tokens truncated compliant notes. */
+export const NOTES_MAX_TOKENS = 3000;
 /** Notes trigger: recent window length and its share of the input budget. */
 export const NOTES_MIN_MESSAGES = 20;
 export const NOTES_WINDOW = 200;

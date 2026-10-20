@@ -149,3 +149,22 @@ test('IPv4 映射地址的十六进制写法不能被当作公网', async () => 
   // 公网地址仍然放行，避免把闸门写成一律拒绝。
   assert.equal(isPrivateAddress('::ffff:808:808'), false, '8.8.8.8 应放行');
 });
+
+test('IPv6 各种特殊前缀都按不可公开地址处理', async () => {
+  const { isPrivateAddress } = await import('@atri/net');
+  for (const address of [
+    '::',
+    '::1',
+    'fe80::1',
+    'fc00::1',
+    'fd12:3456::1',
+    '2001:db8::1',
+    '2001::1',
+    '2002:7f00:1::1',
+    '64:ff9b::7f00:1',
+    '::ffff:a00:1',
+  ])
+    assert.equal(isPrivateAddress(address), true, address);
+  for (const address of ['2001:4860:4860::8888', '2606:4700:4700::1111'])
+    assert.equal(isPrivateAddress(address), false, address);
+});

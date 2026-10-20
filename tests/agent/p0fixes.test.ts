@@ -141,6 +141,29 @@ test('P0-6 embeddingEnabled 关闭后不再提供向量', async (t) => {
   assert.equal(settings.embeddingEnabled(), false, '开关真正生效');
 });
 
+test('PORT=0 可以启动（交给系统分配端口）', async (t) => {
+  const f = fixture(t);
+  const { Settings } = await import('../../apps/api/src/config.js');
+  const settings = new Settings(f.store, process.cwd(), {
+    ADMIN_PASSWORD: 'x'.repeat(16),
+    DATA_DIR: f.directory,
+    PORT: '0',
+  } as NodeJS.ProcessEnv);
+  assert.equal(settings.port, 0);
+});
+
+test('无效的存量配置在启动阶段就报错，而不是带病运行', async (t) => {
+  const f = fixture(t);
+  const { Settings } = await import('../../apps/api/src/config.js');
+  f.store.setSetting('config', { temperature: 9 });
+  const env = {
+    ADMIN_PASSWORD: 'x'.repeat(16),
+    DATA_DIR: f.directory,
+  } as NodeJS.ProcessEnv;
+  assert.throws(() => new Settings(f.store, process.cwd(), env), /温度设置无效/);
+  assert.throws(() => new Settings(f.store, process.cwd(), env), /温度设置无效/);
+});
+
 test('P0-7 置顶记忆不被 500 条滑动窗口截断', (t) => {
   const f = fixture(t);
   const insert = f.store.sql.prepare(

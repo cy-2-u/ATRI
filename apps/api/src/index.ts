@@ -8,6 +8,10 @@ import { Sandbox } from './sandbox.js';
 import { WeChatBridge } from './wechat.js';
 import { createServer } from './server.js';
 
+// Keep SQLite, WAL/SHM and any media created by the process private even when
+// the host runs with a permissive umask. The data directory contains raw chat
+// logs and model keys; backups already use explicit 0600/0700 modes.
+process.umask(0o077);
 const root = resolve(process.env.APP_ROOT || process.cwd());
 const dataDir = resolve(process.env.DATA_DIR || join(root, 'data'));
 const store = new Store(join(dataDir, 'atri.db'));
@@ -51,14 +55,14 @@ const runtime = new Runtime({
   timeZone: () => settings.config().timeZone,
   contextTokens: () => settings.runtime().contextTokens,
   turnTimeoutMs: () => settings.runtime().turnTimeoutMs,
-  images: (message) => bridge.images(message),
+  images: (message, signal) => bridge.images(message, signal),
   transport: bridge,
   log: (message, details) => console.warn(message, details),
   embedder,
   sandbox,
-  embedQuery: async (query) => {
+  embedQuery: async (query, signal) => {
     if (!settings.embeddingEnabled()) return undefined;
-    const [vector] = await embeddings.embed([query]);
+    const [vector] = await embeddings.embed([query], signal);
     return vector && vector.some((v) => v !== 0) ? vector : undefined;
   },
   embeddingModel: () => settings.embedding().model,
@@ -72,8 +76,24 @@ async function shutdown() {
   if (stopping) return;
   stopping = true;
   bridge.stop();
-  await runtime.stop();
-  await app.close();
+  // A wedged provider/transport must not hold the container past Docker's
+  // stop grace period and get SIGKILLed with an open SQLite WAL. Give the
+  // graceful path a hard ceiling, then leave without touching the store.
+  const graceful = (async () => {
+    await runtime.stop();
+    await app.close();
+  })();
+  const timedOut = await Promise.race([
+    graceful.then(() => false),
+    new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => resolve(true), 30000);
+      timer.unref();
+    }),
+  ]);
+  if (timedOut) {
+    console.error('关闭超时，强制退出');
+    process.exit(1);
+  }
   sandbox.dispose();
   store.close();
   process.exit(0);
