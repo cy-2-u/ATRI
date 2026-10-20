@@ -159,8 +159,9 @@
         <section class="view" data-panel="persona" role="tabpanel" aria-labelledby="tab-persona">
           <div class="persona-layout">
             <div class="persona-side">
-              <div class="view-toolbar">
+              <div class="persona-head">
                 <button class="btn primary" id="persona-new" type="button">新建人格</button>
+                <div id="persona-list" class="persona-list"></div>
               </div>
               <form id="persona-create" class="card inline-form" hidden>
                 <label class="field">
@@ -176,7 +177,6 @@
                   <button class="btn ghost" type="button" id="persona-create-cancel">取消</button>
                 </div>
               </form>
-              <div id="persona-list" class="persona-list"></div>
             </div>
             <form id="persona-form" class="persona-editor card">
               <h2 id="persona-edit-title">人物设定</h2>

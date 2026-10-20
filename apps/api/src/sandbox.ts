@@ -54,6 +54,27 @@ export class SandboxQuotaError extends Error {}
 
 const NSJAIL = '/usr/local/bin/nsjail';
 
+/** PATH every sandboxed command gets, nsjail or fallback alike. */
+const SANDBOX_PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
+
+/** Locale for sandboxed commands. nsjail replaces the environment wholesale, so
+ *  PATH/LANG/TZ all have to be passed as argv rather than inherited. */
+const SANDBOX_LANG = process.env.LANG || 'C.UTF-8';
+
+/** Env handed to sandboxed commands. Anything secret (LLM keys, admin password,
+ *  the SQLite path) is deliberately absent so a stray `printenv` cannot leak it
+ *  into a chat message. HOME points at the scratch dir: npm and git need a
+ *  writable cache there, and an empty HOME breaks `#!/usr/bin/env node`
+ *  shebangs outright. */
+const safeEnv = (tmpDir: string, timeZone: string | undefined): NodeJS.ProcessEnv => ({
+  PATH: SANDBOX_PATH,
+  HOME: tmpDir,
+  LANG: SANDBOX_LANG,
+  // Same clock the persona uses; otherwise `date` in the sandbox and "现在是…"
+  // in her prompt disagree about what time it is.
+  TZ: timeZone || process.env.TZ,
+});
+
 export class Sandbox {
   readonly root: string;
   readonly tmpDir: string;
@@ -286,6 +307,13 @@ private nsjailArgs(command: string): { bin: string; args: string[] } {
     // "$HOME/.cargo/bin" and then reports "node: No such file or directory"
     // even though node is right there on PATH.
     args.push(`--env=PATH=${SANDBOX_PATH}`, `--env=HOME=/tmp`);
+    // nsjail also drops TZ and LANG, so `date` fell back to UTC and the sandbox
+    // clock disagreed with the persona's own "现在是…" line by the UTC offset.
+    // Only the non-nsjail fallback path inherited these, which is why it looked
+    // correct wherever namespaces were unavailable.
+    const tz = this.options.timeZone?.() || process.env.TZ;
+    args.push(`--env=LANG=${SANDBOX_LANG}`);
+    if (tz) args.push(`--env=TZ=${tz}`);
     // Blank out the app and its data volume so the command cannot read the
     // source or the SQLite database. Never mask the sandbox's own directory:
     // mounting an empty tmpfs over the cwd would leave the shell with no
@@ -404,20 +432,3 @@ private nsjailArgs(command: string): { bin: string; args: string[] } {
     };
   }
 }
-
-/** PATH every sandboxed command gets, nsjail or fallback alike. */
-const SANDBOX_PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
-
-/** Env handed to sandboxed commands. Anything secret (LLM keys, admin password,
- *  the SQLite path) is deliberately absent so a stray `printenv` cannot leak it
- *  into a chat message. HOME points at the scratch dir: npm and git need a
- *  writable cache there, and an empty HOME breaks `#!/usr/bin/env node`
- *  shebangs outright. */
-const safeEnv = (tmpDir: string, timeZone: string | undefined): NodeJS.ProcessEnv => ({
-  PATH: SANDBOX_PATH,
-  HOME: tmpDir,
-  LANG: process.env.LANG || 'C.UTF-8',
-  // Same clock the persona uses; otherwise `date` in the sandbox and "现在是…"
-  // in her prompt disagree about what time it is.
-  TZ: timeZone || process.env.TZ,
-});

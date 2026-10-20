@@ -187,6 +187,9 @@ function createDropdown({ options = [], value = '', onChange, ariaLabel = '', pl
   function renderLabel() {
     const found = list.find((o) => o.value === current);
     label.textContent = found ? found.label : placeholder;
+    // A shortened label stays readable on one line; the full value is still one
+    // hover away, and screen readers get it through the toggle's aria-label.
+    toggle.title = found ? (found.title ?? found.label) : '';
     toggle.classList.toggle('placeholder', !found);
   }
   function renderMenu() {
@@ -197,7 +200,7 @@ function createDropdown({ options = [], value = '', onChange, ariaLabel = '', pl
       item.setAttribute('role', 'option');
       item.setAttribute('aria-selected', String(opt.value === current));
       item.textContent = opt.label;
-      item.title = opt.label;
+      item.title = opt.title ?? opt.label;
       item.onclick = () => {
         setValue(opt.value, true);
         close();
@@ -652,10 +655,24 @@ async function loadPeers() {
   refreshJournalPeerSelect(wechatPeers);
 }
 
+/**
+ * WeChat ids are `wechat:<bot>@im.bot:<openid>@im.wechat` — 40+ characters of
+ * nothing readable, and the dropdown label can only show one line. Keep both
+ * ends so two contacts are still distinguishable, and drop the middle.
+ */
+function shortAddress(address) {
+  if (!address || address.length <= 22) return address;
+  return address.slice(0, 11) + '…' + address.slice(-8);
+}
+
 function refreshJournalPeerSelect(wechatPeers) {
   const options = [
     { value: 'preview:default', label: '本地试聊' },
-    ...wechatPeers.map((p) => ({ value: p.id, label: p.address })),
+    ...wechatPeers.map((p) => ({
+      value: p.id,
+      label: shortAddress(p.address),
+      title: p.address,
+    })),
   ];
   const current = journalDropdown.value;
   journalDropdown.setOptions(options, options.some((o) => o.value === current) ? current : 'preview:default');

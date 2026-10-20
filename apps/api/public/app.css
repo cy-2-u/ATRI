@@ -122,8 +122,8 @@ svg {
 }
 
 .login-art {
-  width: 132px;
-  height: 132px;
+  width: clamp(180px, 44vw, 260px);
+  height: clamp(180px, 44vw, 260px);
   border-radius: 50%;
   object-fit: cover;
   border: 3px solid var(--accent-soft);
@@ -569,7 +569,9 @@ svg {
   border-radius: 999px;
   background: var(--surface-2);
   font-size: 12.5px;
-  overflow-wrap: anywhere;
+  /* Values here are short phrases (�ѿ��� / nsjail �����ռ�). `anywhere` split
+     them mid-word on narrow screens; wrapping the chip as a whole is enough. */
+  max-width: 100%;
 }
 
 .status-chip-label {
@@ -580,6 +582,8 @@ svg {
 .status-chip-value {
   color: var(--text);
   font-weight: 500;
+  min-width: 0;
+  overflow-wrap: break-word;
 }
 
 /* Degraded isolation is a security fact, not a preference: it must read as a
@@ -638,6 +642,11 @@ svg {
   grid-auto-flow: column;
   align-items: center;
   gap: 10px;
+  /* The second column is the control. Without minmax(0, ...) a long contact id
+     sizes the column to its full intrinsic width, which blows the toolbar out and
+     pushes the adjacent button onto its own row. */
+  grid-template-columns: auto minmax(0, 1fr);
+  min-width: 0;
 }
 
 .field.grow {
@@ -888,7 +897,17 @@ svg {
   font-size: 14px;
   text-align: left;
   cursor: pointer;
-  overflow-wrap: anywhere;
+  /* WeChat ids are 40+ opaque characters. Wrapping them turned a one-line pill
+     into a two-line block on a phone; the full id is available in the connection
+     drawer, so truncate here. */
+  min-width: 0;
+}
+
+.peer-item > span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .peer-item:hover {
@@ -1159,6 +1178,22 @@ svg {
   margin-bottom: 16px;
 }
 
+/* An inline field is the flexible half of a toolbar: it takes the leftover room
+   and gives it back when the row gets tight, so the button beside it never gets
+   bumped to a second line by a long contact id. */
+.view-toolbar > .field.inline {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.view-toolbar > .field.inline > .dropdown-host {
+  min-width: 0;
+}
+
+.view-toolbar > .btn {
+  flex: none;
+}
+
 .subtabs {
   display: inline-flex;
   gap: 4px;
@@ -1247,9 +1282,26 @@ svg {
   align-items: start;
 }
 
-.persona-list {
-  display: grid;
+/* �½��˸� sits on the same row as the persona chips. Wrapping keeps it from
+   overflowing once there are many personas, and the button never shrinks so the
+   label stays readable. */
+.persona-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 8px;
+  margin-bottom: 12px;
+}
+
+.persona-head > .btn {
+  flex: none;
+}
+
+.persona-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
 }
 
 .persona-item {
@@ -1798,6 +1850,9 @@ dialog .row {
     border: 1px solid var(--border-soft);
     border-radius: 999px;
     background: var(--surface);
+    /* The row scrolls horizontally, so an unbounded pill would push every other
+       contact off-screen. Cap it and let the id ellipsize. */
+    max-width: 62vw;
   }
 
   .messages {

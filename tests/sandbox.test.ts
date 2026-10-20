@@ -19,6 +19,7 @@ const make = (
     network: boolean;
     sizeLimitBytes: number;
     outputLimit: number;
+    timeZone: string;
   }> = {},
 ) =>
   new Sandbox(join(dir, 'sandbox'), {
@@ -26,6 +27,7 @@ const make = (
     network: () => patch.network ?? false,
     sizeLimitBytes: () => patch.sizeLimitBytes ?? 0,
     outputLimit: patch.outputLimit ?? 0,
+    ...(patch.timeZone ? { timeZone: () => patch.timeZone! } : {}),
   });
 
 test('沙箱关闭时不执行任何命令', async (t) => {
@@ -205,6 +207,22 @@ test('网络开关改变 nsjail 参数', async (t) => {
   };
   assert.ok(!offline.nsjailArgs('true').args.includes('--disable_clone_newnet'));
   assert.ok(online.nsjailArgs('true').args.includes('--disable_clone_newnet'));
+});
+
+test('沙箱命令拿到配置的时区，而不是 UTC', async (t) => {
+  // nsjail 会整体替换环境变量，TZ 必须在 argv 里显式传入。之前只传了 PATH 和
+  // HOME，于是 `date` 回退到 UTC，和提示词里"现在是…"相差一个时区；而没装
+  // nsjail 的回退路径会继承环境，所以这个问题在开发机上反而看不出来。
+  const sandbox = make(temporary(t), { timeZone: 'Asia/Shanghai' }) as unknown as {
+    nsjailArgs(c: string): { args: string[] };
+  };
+  const { args } = sandbox.nsjailArgs('date');
+  assert.ok(
+    args.includes('--env=TZ=Asia/Shanghai'),
+    `nsjail args 缺少时区: ${args.join(' ')}`,
+  );
+  // LANG 同理，它决定中文输出是否乱码。
+  assert.ok(args.some((a) => a.startsWith('--env=LANG=')), 'nsjail args 缺少 LANG');
 });
 
 test('联网开关变化会重新探测 nsjail', async (t) => {
