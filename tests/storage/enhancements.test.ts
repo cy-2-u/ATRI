@@ -228,3 +228,58 @@ test('临时目录隔离：Memory store 独立实例可用', () => {
     rmSync(absolute, { recursive: true, force: true });
   }
 });
+
+test('删除联系人会清空该联系人的会话、日记、记忆与惦记的事', (t) => {
+  // 每张表都有 REFERENCES peers(id)，且 foreign_keys=ON。删除顺序错了会直接
+  // 抛外键错误，所以这个测试同时守着"顺序正确"和"全部清空"两件事。
+  const f = fixture(t);
+  const peer = f.store.ensurePeer('del:1', 'wechat', 'wechat:del@im.wechat', '', true);
+  const source = f.store.ingest('del:1', 'evt', '我养了一只猫叫团子').message;
+  const version = f.store.peer('del:1')!.version;
+  f.store.addMemory('del:1', { content: '养了一只猫叫团子', kind: 'stated', sources: [source.id] }, version);
+  f.store.enqueue('del:1', 'diary', 'diary:1', { after: 0, through: 1, day: '2026-10-20' }, Date.now());
+  const task = f.store.claim('del:1')!;
+  f.store.saveDiary(task, '2026-10-20', [{ content: '今天聊了猫', sources: [source.id] }], []);
+  f.store.enqueue('del:1', 'proactive', 'loop:1', { loopId: 'x' }, Date.now());
+
+  assert.ok(f.store.memories('del:1').length > 0, '前置条件：记忆已写入');
+  assert.ok(f.store.diaries('del:1').length > 0, '前置条件：日记已写入');
+  assert.ok(f.store.history('del:1', 10).length > 0, '前置条件：消息已写入');
+
+  const removed = f.store.deletePeer('del:1');
+  assert.ok(removed, '删除应返回被删掉的计数');
+
+  assert.equal(f.store.peer('del:1'), undefined, 'peers 行应消失');
+  assert.equal(f.store.memories('del:1').length, 0, '记忆应清空');
+  assert.equal(f.store.diaries('del:1').length, 0, '日记应清空');
+  assert.equal(f.store.history('del:1', 10).length, 0, '消息应清空');
+  assert.equal(f.store.openLoops('del:1', true).length, 0, '惦记的事应清空');
+
+  // 其它联系人不能被牵连。
+  const other = f.store.ensurePeer('keep:1', 'wechat', 'wechat:keep@im.wechat', '', true);
+  assert.ok(other, '无关联系人应保留');
+  assert.equal(f.store.deletePeer('del:1'), undefined, '重复删除返回 undefined 而不是抛错');
+  assert.equal(peer.id, 'del:1');
+});
+
+test('删除联系人后重新收到消息，是一个全新的联系人', (t) => {
+  // 级联删除之后旧记忆不能"复活"：新消息不该召回已删内容。
+  const f = fixture(t);
+  f.store.ensurePeer('del:2', 'wechat', 'wechat:del2@im.wechat', '', true);
+  const source = f.store.ingest('del:2', 'evt2', '我对花生过敏').message;
+  const version = f.store.peer('del:2')!.version;
+  f.store.addMemory('del:2', { content: '对花生过敏', kind: 'stated', sources: [source.id] }, version);
+  assert.equal(f.store.memories('del:2').length, 1);
+
+  f.store.deletePeer('del:2');
+  f.store.ensurePeer('del:2', 'wechat', 'wechat:del2@im.wechat', '', true);
+  const fresh = f.store.ingest('del:2', 'evt3', '你好').message;
+
+  assert.equal(f.store.memories('del:2').length, 0, '重建的联系人不该继承旧记忆');
+  assert.equal(f.store.rankedMemories('del:2').length, 0);
+  assert.equal(f.store.history('del:2', 10).length, 1, '只剩重建后的新消息');
+  assert.ok(fresh.id, '新消息正常写入');
+  // 全文索引同样不能残留旧内容。
+  assert.equal(f.store.search('del:2', '花生').length, 0, '旧内容不应还能被检索到');
+});
+

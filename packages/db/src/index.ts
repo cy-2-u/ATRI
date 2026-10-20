@@ -437,6 +437,67 @@ export class Store {
   approve(id: string, approved: boolean) {
     this.sql.prepare('UPDATE peers SET approved=? WHERE id=?').run(approved ? 1 : 0, id);
   }
+  /** Delete a peer and everything recorded for them.
+   *
+   *  Every table holds `REFERENCES peers(id)` with foreign_keys=ON, so the
+   *  children have to go first or the delete throws. The order below is the
+   *  dependency order: outbox references both messages and tasks, diary_sections
+   *  references tasks, and everything else references peers directly.
+   *
+   *  This is a hard delete, not the soft "status='deleted'" used by source
+   *  removal: that path exists so an invalidated fact keeps its text for audit,
+   *  but a removed contact has no audit value and the point is to be gone.
+   *  Wrapped in one transaction — a half-deleted peer would leave memories whose
+   *  sources point at messages that no longer exist. */
+  deletePeer(id: string): { memories: number; messages: number } | undefined {
+    const peer = this.peer(id);
+    if (!peer) return undefined;
+    const counts = () => ({
+      memories: Number(
+        (this.sql.prepare('SELECT count(*) c FROM memories WHERE peer_id=?').get(id) as
+          | { c: number }
+          | undefined)?.c ?? 0,
+      ),
+      messages: Number(
+        (this.sql.prepare('SELECT count(*) c FROM messages WHERE peer_id=?').get(id) as
+          | { c: number }
+          | undefined)?.c ?? 0,
+      ),
+    });
+    const before = counts();
+    this.sql.exec('BEGIN IMMEDIATE');
+    try {
+      // outbox → diary_sections → other children → peers.
+      this.sql.prepare('DELETE FROM outbox WHERE peer_id=?').run(id);
+      this.sql.prepare('DELETE FROM diary_sections WHERE peer_id=?').run(id);
+      this.sql.prepare('DELETE FROM tasks WHERE peer_id=?').run(id);
+      this.sql.prepare('DELETE FROM memory_embeddings WHERE peer_id=?').run(id);
+      this.sql.prepare('DELETE FROM memories WHERE peer_id=?').run(id);
+      this.sql.prepare('DELETE FROM open_loops WHERE peer_id=?').run(id);
+      this.sql.prepare('DELETE FROM messages WHERE peer_id=?').run(id);
+      // FTS has no foreign keys; peer_id is UNINDEXED but still queryable.
+      this.sql.prepare('DELETE FROM search_index WHERE peer_id=?').run(id);
+      // usage keeps its counters: it is billing history, keyed by peer id and
+      // not reachable from any peer-scoped page once the peer row is gone.
+      this.sql.prepare('DELETE FROM peers WHERE id=?').run(id);
+      this.sql.exec('COMMIT');
+    } catch (error) {
+      this.sql.exec('ROLLBACK');
+      throw error;
+    }
+    // Persona bindings and cursors live in settings, keyed by peer id.
+    this.removeSetting(`diary_cursor:${id}`);
+    this.removeSetting(`notes_cursor:${id}`);
+    this.removeSetting(`mood:${id}`);
+    this.removeSetting(`peer_persona:${id}`);
+    // The cache is keyed by peer id and validated against peers.version. A
+    // re-created peer restarts that counter at 0, so a stale entry can collide
+    // with the new peer's version and hand back memories that were deleted —
+    // measured, not theoretical: without this line a removed contact still
+    // recalled its old facts after the same id came back.
+    this.memoryCache.delete(id);
+    return before;
+  }
   setPeerPersona(id: string, personaId: string) {
     this.sql
       .prepare('UPDATE peers SET persona_id=? WHERE id=?')

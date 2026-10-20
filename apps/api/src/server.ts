@@ -371,13 +371,23 @@ export function createServer(o: ServerOptions) {
     o.runtime.pump();
     return { ok: true };
   });
+  // Removes the peer and every record attached to them. Deliberately not
+  // idempotent-by-silence: a missing peer is an error, because the operator
+  // should learn the row was already gone rather than believe they deleted it.
+  app.delete<{ Params: { id: string } }>('/api/peers/:id', (request) => {
+    if (request.params.id.startsWith('preview:'))
+      throw new Error('本地试聊是内置联系人，不能删除');
+    const removed = o.store.deletePeer(request.params.id);
+    if (!removed) throw new Error('联系人不存在');
+    o.runtime.pump();
+    return { ok: true, removed };
+  });
   app.get<{ Params: { id: string } }>('/api/peers/:id/history', (request) =>
     o.store.history(request.params.id, 100).map(({ media, ...m }) => ({
       ...m,
       media: media.map(({ kind, description }) => ({ kind, description })),
     })),
-  );
-  app.get<{ Params: { id: string } }>('/api/peers/:id/memories', (request) =>
+  );  app.get<{ Params: { id: string } }>('/api/peers/:id/memories', (request) =>
     o.store.memories(request.params.id),
   );
   app.get<{ Params: { id: string } }>('/api/peers/:id/diaries', (request) =>

@@ -643,6 +643,32 @@ async function loadPeers() {
             await loadStatus();
           }),
       buildPersonaSelect(peer),
+      // Hard delete: the conversation, memories, diaries, loops and tasks all go
+      // with it, so the armed label spells that out instead of a bare "确认删除？".
+      confirmButton(
+        '删除联系人',
+        '删除全部数据？',
+        async () => {
+          const result = await api('/api/peers/' + enc(peer.id), 'DELETE');
+          // The chat panel polls by peer id, so pointing it elsewhere is what
+          // stops the next tick from requesting history for a deleted peer.
+          if (currentPeer === peer.id) {
+            currentPeer = 'preview:default';
+            chatSnapshot = '';
+            await loadChat();
+          }
+          await loadPeers();
+          await loadStatus();
+          show(
+            '已删除该联系人：' +
+              (result.removed?.messages ?? 0) +
+              ' 条消息、' +
+              (result.removed?.memories ?? 0) +
+              ' 条记忆及日记、惦记的事。',
+          );
+        },
+        'ghost small danger',
+      ),
     );
     target.append(row);
   }
