@@ -32,6 +32,10 @@ export interface ModelMessage {
   callId?: string;
   name?: string;
   raw?: unknown;
+  /** Last message of a reusable prefix. Anthropic needs an explicit
+   *  `cache_control` marker or it caches nothing; OpenAI-compatible and Gemini
+   *  endpoints cache the longest identical prefix on their own and ignore this. */
+  cacheBreakpoint?: boolean;
 }
 export interface Completion {
   text: string;
@@ -160,6 +164,15 @@ export class HttpModel implements Model {
       headers['x-api-key'] = c.apiKey;
       headers['anthropic-version'] = '2023-06-01';
       const converted: Json[] = [];
+      // The marker goes on the element that message contributed, attached as
+      // soon as it is added: a later same-role message appends to the same
+      // block, and marking at the end would move the breakpoint to content that
+      // changes every turn.
+      const markCached = (entry: Json) => {
+        const tail = Array.isArray(entry.content) ? entry.content.at(-1) : undefined;
+        if (tail && typeof tail === 'object' && !Array.isArray(tail))
+          tail.cache_control = { type: 'ephemeral' };
+      };
       for (const m of messages.filter((m) => m.role !== 'system')) {
         const role = m.role === 'assistant' ? 'assistant' : 'user';
         const content =
@@ -169,17 +182,29 @@ export class HttpModel implements Model {
               ? m.raw
               : imageParts(m, 'anthropic');
         const last = converted.at(-1);
-        if (last?.role === role) last.content.push(...(content as unknown[]));
-        else converted.push({ role, content });
+        if (last?.role === role) {
+          last.content.push(...(content as unknown[]));
+          if (m.cacheBreakpoint) markCached(last);
+        } else {
+          const entry: Json = { role, content };
+          converted.push(entry);
+          if (m.cacheBreakpoint) markCached(entry);
+        }
       }
+      const systemText = messages
+        .filter((m) => m.role === 'system')
+        .map((m) => m.content)
+        .join('\n\n');
       body = {
         model: c.model,
         max_tokens: maxTokens,
-        system: messages
-          .filter((m) => m.role === 'system')
-          .map((m) => m.content)
-          .join('\n\n'),
         messages: converted,
+        // Anthropic only caches what is marked explicitly. The system block is
+        // the whole stable prefix (persona rules, sticker catalogue), which is
+        // identical turn after turn, so it is the highest-value breakpoint.
+        ...(systemText
+          ? { system: [{ type: 'text', text: systemText, cache_control: { type: 'ephemeral' } }] }
+          : {}),
       };
       if (tools.length)
         body.tools = tools.map((t) => ({
@@ -280,14 +305,15 @@ export class HttpModel implements Model {
           error instanceof ModelError
             ? error
             : new ModelError(error instanceof Error ? error.message : '未知错误');
-        if (outer?.aborted)
-          throw new ModelError('模型请求超时或已取消');
-        if (attempt >= 2 || !ModelError.transient(lastError.status, lastError.network)) throw lastError;
+        if (outer?.aborted) throw new ModelError('模型请求超时或已取消');
+        if (attempt >= 2 || !ModelError.transient(lastError.status, lastError.network))
+          throw lastError;
       }
       const retryAfter = Number(lastError.headers?.['retry-after']);
-      const base = Number.isFinite(retryAfter) && retryAfter >= 0
-        ? Math.min(retryAfter, 30) * 1000
-        : Math.min(1000 * 2 ** attempt, 8000);
+      const base =
+        Number.isFinite(retryAfter) && retryAfter >= 0
+          ? Math.min(retryAfter, 30) * 1000
+          : Math.min(1000 * 2 ** attempt, 8000);
       // Full jitter: several peers failing at once must not retry in lockstep
       // and rebuild the same spike that upset the upstream.
       const delay = base * (0.8 + Math.random() * 0.4);
@@ -324,8 +350,7 @@ export class HttpModel implements Model {
       if (outer?.aborted) throw new ModelError('模型请求超时或已取消');
       // A per-attempt timeout is its own transient failure: the next try gets
       // a fresh budget, so it belongs in the retryable bucket.
-      if (signal.aborted)
-        throw new ModelError('模型请求超时', undefined, undefined, true);
+      if (signal.aborted) throw new ModelError('模型请求超时', undefined, undefined, true);
       throw new ModelError(
         `模型连接失败：${error instanceof Error ? error.message : '未知错误'}`,
         undefined,

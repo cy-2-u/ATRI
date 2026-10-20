@@ -13,9 +13,12 @@ try {
   const out = execFileSync(
     'ssh',
     [
-      '-o', 'StrictHostKeyChecking=no',
-      '-o', 'UserKnownHostsFile=NUL',
-      '-o', 'LogLevel=ERROR',
+      '-o',
+      'StrictHostKeyChecking=no',
+      '-o',
+      'UserKnownHostsFile=NUL',
+      '-o',
+      'LogLevel=ERROR',
       `root@${host}`,
       'docker exec -i atri-atri-1 sh -s',
     ],

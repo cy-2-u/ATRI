@@ -81,6 +81,10 @@ export function taskBackoffMs(attempts: number): number {
  *  assistant message is a proactive ping answering silence, so the rule-based
  *  mood pulse must not read the old user message as fresh evidence. */
 const REPLY_PAIR_WINDOW_MS = 30 * 60000;
+/** A reply can be up to MAX_REPLY_PARTS bubbles. Looking back only two
+ *  messages made both of them assistant rows, so the user side of the exchange
+ *  disappeared and the mood pulse never ran. */
+const MOOD_LOOKBACK_MESSAGES = 16;
 /** Per-drain task budget for one peer. Delivery rounds also consume it, so it
  *  bounds one pump cycle rather than one kind of work. */
 const MAX_WORK_ITERATIONS = 12;
@@ -141,8 +145,24 @@ export class Runtime {
   start() {
     this.store.recover();
     this.stopped = false;
-    this.timer = setInterval(() => this.pump(), 300);
-    this.scheduleTimer = setInterval(() => this.schedule(), 60000);
+    this.timer = setInterval(() => {
+      try {
+        this.pump();
+      } catch (error) {
+        this.options.log?.('队列泵失败，本轮跳过', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }, 300);
+    this.scheduleTimer = setInterval(() => {
+      try {
+        this.schedule();
+      } catch (error) {
+        this.options.log?.('调度器失败，本轮跳过', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }, 60000);
     // Vector backfill: one full drain at startup (an import of thousands of
     // rows must not take a day of 64-row drips to become searchable), then a
     // 5-minute drip keeps new content indexed without competing with chat.
@@ -179,7 +199,10 @@ export class Runtime {
         // the normal backfill re-embeds everything with the current model.
         for (const stale of this.store.staleEmbeddingModels(peer.id, embedder.model)) {
           this.store.dropEmbeddingsOfModel(stale);
-          this.options.log?.('检测到向量模型更换，已清理旧向量', { from: stale, to: embedder.model });
+          this.options.log?.('检测到向量模型更换，已清理旧向量', {
+            from: stale,
+            to: embedder.model,
+          });
         }
         for (;;) {
           const pending = this.store.pendingEmbeddings(peer.id, quick ? EMBED_BACKFILL_BATCH : 512);
@@ -225,7 +248,9 @@ export class Runtime {
     // background writes with no visible target — aborting them on every new
     // user message meant a chatty contact's diary restarted forever and never
     // finished (each abort also re-queued it 60s later, burning an LLM call).
-    if (active && (active.kind === 'chat' || active.kind === 'proactive'))
+    // A duplicate event produced no new message, so there is nothing for the
+    // active turn to be stale against; aborting here only burned a rerun.
+    if (!result.duplicate && active && (active.kind === 'chat' || active.kind === 'proactive'))
       active.controller.abort();
     this.pump();
     return result;
@@ -319,6 +344,21 @@ export class Runtime {
       ]);
       try {
         if (task.kind === 'chat' || task.kind === 'proactive') {
+          // A queued loop ping is only a claim about the moment it was
+          // scheduled. The loop may have been resolved by a chat turn, already
+          // asked by another ping, or rolled past its due window while this
+          // task waited in the queue. Replying anyway would "remind" the user
+          // about something they just settled.
+          if (task.kind === 'proactive') {
+            const loopId = typeof task.payload?.loop === 'string' ? task.payload.loop : '';
+            if (
+              loopId &&
+              !this.store.dueOpenLoops(peer.id, Date.now()).some((l) => l.id === loopId)
+            ) {
+              this.store.finish(task.id, 'done');
+              continue;
+            }
+          }
           // Greeting tasks are the first-contact hello queued on approval; the
           // normal proactive gate (silence clock, quiet hours) would veto a
           // peer that has never messaged, so a non-empty greeting skips it.
@@ -349,12 +389,12 @@ export class Runtime {
             const saved = this.store.saveReply(task, reply.parts, reply.memories);
             if (saved) {
               this.applyOpenLoops(task, reply);
+              this.applySoftThreads(task, reply);
               // Every prompt inclusion is a memory "use", not only tool hits —
               // otherwise the hits-based ranking sees a fraction of reality.
               if (reply.pickedMemoryIds?.length)
                 this.store.markMemoriesUsed(peerId, reply.pickedMemoryIds);
-              if (reply.moodPulse)
-                this.store.pulseMood(peerId, { ...reply.moodPulse }, Date.now());
+              if (reply.moodPulse) this.store.pulseMood(peerId, { ...reply.moodPulse }, Date.now());
               for (const description of reply.descriptions) {
                 const msg = this.store.getMessage(peerId, description.messageId);
                 if (msg) {
@@ -376,8 +416,18 @@ export class Runtime {
         } else await this.agent.reflect(task, signal);
       } catch (error) {
         if (this.stopped || entry.controller.signal.aborted) {
-          this.store.finish(task.id, 'interrupted');
-          this.store.retry(task.id, task.kind === 'chat' ? 0 : 60000);
+          // A new user message already queued a newer chat turn. Re-queueing
+          // this aborted one as well made both run: the user got an answer to
+          // the old message and then a second answer to the new one. The newer
+          // turn supersedes it; the same applies to a proactive ping that was
+          // interrupted by the reply it was waiting for.
+          const through = typeof task.payload.through === 'number' ? task.payload.through : -1;
+          if (this.store.newerChatQueued(task.peer_id, through)) {
+            this.store.finish(task.id, 'superseded');
+          } else {
+            this.store.finish(task.id, 'interrupted');
+            this.store.retry(task.id, task.kind === 'chat' ? 0 : 60000);
+          }
         } else {
           this.store.finish(task.id, 'failed', error instanceof Error ? error.message : '任务失败');
           this.options.log?.('任务失败', { task: task.id, kind: task.kind, error: String(error) });
@@ -445,42 +495,84 @@ export class Runtime {
     const store = this.store,
       peer = task.peer_id,
       now = Date.now();
-    store.expireOpenLoops(peer, now);
-    for (const id of reply.resolveLoops ?? [])
-      store.resolveOpenLoop(peer, id, now, this.options.config().timeZone);
-    for (const loop of reply.openLoops ?? []) {
-      if (!Number.isFinite(loop.dueAt) || loop.dueAt < now - 86400000) continue;
-      if (!loop.sources.length) continue;
-      store.addOpenLoop(peer, loop, now);
+    store.expireOpenLoops(peer, now, this.options.config().timeZone);
+    // A proactive message has no user turn behind it. Letting the model create
+    // or resolve dated plans there invents commitments out of old messages;
+    // the same rule already applies to soft threads. Proactive turns may only
+    // mark the due loop they actually mentioned.
+    if (task.kind !== 'proactive') {
+      for (const id of reply.resolveLoops ?? [])
+        store.resolveOpenLoop(peer, id, now, this.options.config().timeZone);
+      for (const loop of reply.openLoops ?? []) {
+        if (!Number.isFinite(loop.dueAt) || loop.dueAt < now - 86400000) continue;
+        if (!loop.sources.length) continue;
+        store.addOpenLoop(peer, loop, now);
+      }
+      return;
     }
-    if (task.kind !== 'proactive') return;
     // A ping that says nothing (the model chose to skip) asked nothing; a ping
     // that talks about something else also asked nothing. Mark only what the
     // model reports mentioning, so "每件只问一次" holds.
     const due = new Map(store.dueOpenLoops(peer, now).map((l) => [l.id, l]));
     const explicit = (reply.askedLoops ?? []).filter((id) => due.has(id));
-    const spoken = reply.parts?.map((p) => ('text' in p ? String(p.text ?? '') : '')).join(' ') ?? '';
+    const spoken =
+      reply.parts?.map((p) => ('text' in p ? String(p.text ?? '') : '')).join(' ') ?? '';
     if (!spoken.trim()) return;
     const matched = explicit.length
       ? explicit
-      : // The prompt asks for askedLoops, but a model that omits it must not
-        // silence every reminder forever: fall back to the loop this ping was
-        // scheduled for, then to a lexical match in what was actually said.
-        typeof task.payload?.loop === 'string' && due.has(task.payload.loop)
-        ? [task.payload.loop]
-        : [...due.values()]
-            .filter((loop) => sharesTerm(loop.content, spoken))
-            .map((loop) => loop.id);
-    for (const id of new Set(matched)) store.markLoopAsked(peer, id, now);
+      : // The prompt asks for askedLoops; a model that omits it gets one
+        // fallback only: what the sent text actually mentions. Trusting the
+        // task's loop id here marked the reminder as asked even when the model
+        // talked about something else, silently dropping the promise.
+        [...due.values()].filter((loop) => sharesTerm(loop.content, spoken)).map((loop) => loop.id);
+    for (const id of new Set(matched)) store.markLoopAsked(peer, id);
+  }
+  /** Undated concerns/promises: record, resolve, and mark the one this reply
+   *  actually brought up. They never create tasks or pings; the scheduler only
+   *  ever sees `open_loops`. */
+  private applySoftThreads(
+    task: Task,
+    reply: {
+      threads?: {
+        content: string;
+        kind: 'concern' | 'promise';
+        revisitAfter?: number;
+        sources: string[];
+      }[];
+      resolveThreads?: string[];
+      askedThreads?: string[];
+    },
+  ) {
+    const store = this.store,
+      peer = task.peer_id,
+      now = Date.now();
+    store.expireSoftThreads(peer, now);
+    // A proactive message has no user turn behind it; letting the model write
+    // new concerns there would let it invent worries out of nothing.
+    if (task.kind === 'proactive') return;
+    for (const id of reply.resolveThreads ?? []) store.resolveSoftThread(peer, id, now);
+    for (const thread of reply.threads ?? []) {
+      if (!thread.sources.length) continue;
+      store.addSoftThread(peer, thread, now);
+    }
+    const open = new Set(store.softThreads(peer, true).map((t) => t.id));
+    for (const id of reply.askedThreads ?? [])
+      if (open.has(id)) store.markSoftThreadAsked(peer, id);
   }
   /** After a delivered exchange, pulse the light mood state from the last
    *  user/assistant pair; runs at most once per finished task batch. */
   private maybeMood(peerId: string) {
     const peer = this.store.peer(peerId);
     if (!peer) return;
-    const recent = this.store.history(peerId, 2);
-    const user = [...recent].reverse().find((m) => m.role === 'user');
+    const recent = this.store.history(peerId, MOOD_LOOKBACK_MESSAGES);
+    // Find the newest assistant bubble first, then the user message it answers.
+    // Looking back only two rows (or picking each role independently) breaks as
+    // soon as the reply is split into multiple bubbles: the latest rows are all
+    // assistant and the user side is no longer in the window.
     const assistant = [...recent].reverse().find((m) => m.role === 'assistant');
+    const user = assistant
+      ? [...recent].reverse().find((m) => m.role === 'user' && m.created_at <= assistant.created_at)
+      : undefined;
     // Only a genuine exchange pulses: the user message must be inside the reply
     // window before the assistant turn. Without this guard, a proactive ping
     // paired itself with a days-old user message and re-injected the same stale
@@ -542,52 +634,52 @@ export class Runtime {
   proactiveAllowed(peer: Peer, now: number): boolean {
     const c = this.options.config(),
       hour = hourAt(now, c.timeZone);
-    if (
-      !(
-        c.proactiveEnabled &&
-        !!peer.approved &&
-        !!peer.context_token &&
-        peer.channel === 'wechat' &&
-        peer.last_user_at > 0 &&
-        now - peer.last_user_at >= c.proactiveAfterHours * 3600000 &&
-        now - peer.last_proactive_at >= 12 * 3600000 &&
-        !inQuietHours(hour, c.quietStart, c.quietEnd) &&
-        (!peer.last_proactive_at ||
-          dayAt(peer.last_proactive_at, c.timeZone) !== dayAt(now, c.timeZone))
-      )
-    )
+    if (!(
+      c.proactiveEnabled &&
+      !!peer.approved &&
+      !!peer.context_token &&
+      peer.channel === 'wechat' &&
+      peer.last_user_at > 0 &&
+      now - peer.last_user_at >= c.proactiveAfterHours * 3600000 &&
+      now - peer.last_proactive_at >= 12 * 3600000 &&
+      !inQuietHours(hour, c.quietStart, c.quietEnd) &&
+      (!peer.last_proactive_at ||
+        dayAt(peer.last_proactive_at, c.timeZone) !== dayAt(now, c.timeZone))
+    ))
       return false;
     // 读空气 brake: unanswered pings stretch the cooldown from hours to days.
     const streak = this.store.unansweredProactiveStreak(peer.id);
     if (streak >= PROACTIVE_IGNORE_LIMIT)
       return now - peer.last_proactive_at >= PROACTIVE_IGNORE_COOLDOWN_DAYS * 86400000;
-    // Very low energy means she would not start a conversation at all; this is
-    // the mood doing something, not just tinting sentences. A due loop still
-    // gets through (loopPingAllowed), because a promise outranks a mood.
-    return this.store.mood(peer.id).energy > -0.6;
+    // Very low energy or a fed-up mood means she would not start a
+    // conversation at all; this is the mood doing something, not just tinting
+    // sentences. A due loop still gets through (loopPingAllowed), because a
+    // promise outranks a mood.
+    const mood = this.store.mood(peer.id);
+    return mood.energy > -0.6 && mood.patience > -0.6;
   }
   /** Which gate a claimed proactive task must pass: loop pings (payload.loop)
    *  use the dedicated due-loop quota, casual pings the daily one. */
   private proactiveGate(task: Task, peer: Peer, now: number): boolean {
-    if (typeof task.payload?.loop === 'string')
-      return this.loopPingAllowed(peer, now);
+    if (typeof task.payload?.loop === 'string') return this.loopPingAllowed(peer, now);
     return this.proactiveAllowed(peer, now);
   }
   /** A due open loop may ping even when the daily casual quota is spent —
-   *  remembering beats small talk — but quiet hours and the brake still hold. */
+   *  remembering beats small talk — but silence, quiet hours and the brake
+   *  still hold. The independent quota only exempts the calendar-day check;
+   *  it must not turn a promise into an interruption while the user is here. */
   loopPingAllowed(peer: Peer, now: number): boolean {
     const c = this.options.config(),
       hour = hourAt(now, c.timeZone);
-    if (
-      !(
-        c.proactiveEnabled &&
-        !!peer.approved &&
-        !!peer.context_token &&
-        peer.channel === 'wechat' &&
-        peer.last_user_at > 0 &&
-        !inQuietHours(hour, c.quietStart, c.quietEnd)
-      )
-    )
+    if (!(
+      c.proactiveEnabled &&
+      !!peer.approved &&
+      !!peer.context_token &&
+      peer.channel === 'wechat' &&
+      peer.last_user_at > 0 &&
+      now - peer.last_user_at >= c.proactiveAfterHours * 3600000 &&
+      !inQuietHours(hour, c.quietStart, c.quietEnd)
+    ))
       return false;
     const streak = this.store.unansweredProactiveStreak(peer.id);
     if (streak >= PROACTIVE_IGNORE_LIMIT)
@@ -617,24 +709,31 @@ export class Runtime {
     }
     for (const peer of this.store.peers().filter((p) => p.approved)) {
       if (hour >= c.diaryHour) this.queueDiary(peer.id, false, now);
-      const casualAllowed = this.proactiveAllowed(peer, now);
+      // A due loop is checked first and wins over casual small talk. The old
+      // order only looked at loops when the daily casual quota was already
+      // spent, so a due loop could be starved forever on days the casual ping
+      // went out first. Keeping them mutually exclusive also spends at most
+      // one proactive message per scheduler pass.
       // dueOpenLoops already filters asked=0 in SQL; re-filtering here did
       // nothing except suggest the query was untrusted.
-      const dueLoops = casualAllowed
-        ? []
-        : this.store.dueOpenLoops(peer.id, now);
-      const loopPing = !casualAllowed && dueLoops.length && this.loopPingAllowed(peer, now);
-      if (casualAllowed || loopPing) {
+      const dueLoops = this.store.dueOpenLoops(peer.id, now);
+      const loop = dueLoops.length > 0 && this.loopPingAllowed(peer, now) ? dueLoops[0] : undefined;
+      const casual = !loop && this.proactiveAllowed(peer, now);
+      if (loop || casual) {
         // Randomized delay so proactive pings do not land at the same minute
         // every day — a small step toward a human-like rhythm.
         const jitter = Math.floor(Math.random() * PROACTIVE_JITTER_MINUTES) * 60000;
-        const loop = loopPing ? dueLoops[0] : undefined;
         this.store.enqueue(
           peer.id,
           'proactive',
           // The due date is part of the key: a yearly loop rolled forward must
           // produce a new task instead of hitting last year's finished one.
-          loop ? this.store.loopTaskKey(loop) : `casual:${dayAt(now, c.timeZone)}`,
+          // The day is included too: a model that skips ("send nothing") leaves
+          // the promise open, and without a per-day key that finished task
+          // would suppress every future attempt for the same due date.
+          loop
+            ? `${this.store.loopTaskKey(loop)}:${dayAt(now, c.timeZone)}`
+            : `casual:${dayAt(now, c.timeZone)}`,
           loop ? { loop: loop.id } : {},
           now + jitter,
         );

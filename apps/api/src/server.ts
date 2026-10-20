@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Store } from '@atri/db';
 import { createBackup } from '@atri/db';
-import { EmbeddingClient } from '@atri/llm';
+import { EmbeddingClient, HttpModel } from '@atri/llm';
 import type { Runtime } from '@atri/core';
 import { sniffMediaMime } from '@atri/ilink';
 import type { Settings } from './config.js';
@@ -33,8 +33,7 @@ const text = (v: unknown, max = 12000) => {
 /** Same as text() but accepts '' — for optional fields where clearing the value
  *  is a real intention ("no opening line"). */
 const optionalText = (v: unknown, max = 12000) => {
-  if (typeof v !== 'string' || v.length > max)
-    throw new Error(`文本需要在 ${max} 个字符以内`);
+  if (typeof v !== 'string' || v.length > max) throw new Error(`文本需要在 ${max} 个字符以内`);
   return v.trim();
 };
 export function createServer(o: ServerOptions) {
@@ -51,8 +50,7 @@ export function createServer(o: ServerOptions) {
     }
     return bytes;
   };
-  let qrKey: string | undefined,
-    qrDataUrl: string | undefined;
+  let qrKey: string | undefined, qrDataUrl: string | undefined;
   const qrData = async (content: string) => {
     if (qrKey !== content) {
       qrKey = content;
@@ -83,7 +81,7 @@ export function createServer(o: ServerOptions) {
       }
     }
   });
-  app.setErrorHandler((error, request, reply) => {
+  app.setErrorHandler((error, _request, reply) => {
     const e = error as Error & { statusCode?: number };
     // 业务校验抛的是普通 Error，约定回 400；框架自身错误（解析失败、404）
     // 自带 statusCode 会原样透传，不会被这里覆盖。
@@ -101,14 +99,12 @@ export function createServer(o: ServerOptions) {
   app.get('/app.css', (_request, reply) =>
     reply.type('text/css; charset=utf-8').send(asset('app.css')),
   );
-  for (const file of ['atri.webp', 'avatar.webp']) {
-    app.get('/' + file, (_request, reply) =>
-      reply
-        .type('image/webp')
-        .header('cache-control', 'public, max-age=86400')
-        .send(asset(file)),
-    );
-  }
+  app.get('/atri.webp', (_request, reply) =>
+    reply
+      .type('image/webp')
+      .header('cache-control', 'public, max-age=86400')
+      .send(asset('atri.webp')),
+  );
   app.post<{ Body: { password?: string } }>('/api/login', async (request, reply) => {
     if (request.headers.origin) {
       try {
@@ -220,16 +216,13 @@ export function createServer(o: ServerOptions) {
     o.sandbox.clear();
     return { ok: true };
   });
-  app.get('/api/persona', () => ({ content: o.settings.personaPrompt() }));
-  app.put<{ Body: { content: string } }>('/api/persona', (request) => {
-    o.settings.savePersona(text(request.body.content));
-    return { ok: true };
-  });
+  // The single-persona endpoints (GET/PUT /api/persona) were superseded by
+  // /api/personas when per-peer personas landed and no client has called them
+  // since; they are gone rather than kept as a second write path into the same
+  // setting.
   app.get('/api/personas', () => {
     const { list, defaultId } = o.settings.personaList();
-    const bindings = Object.fromEntries(
-      o.store.peers().map((p) => [p.id, p.persona_id ?? '']),
-    );
+    const bindings = Object.fromEntries(o.store.peers().map((p) => [p.id, p.persona_id ?? '']));
     return { list, defaultId, bindings };
   });
   // `content` is included on purpose: the create form builds the new persona
@@ -293,39 +286,21 @@ export function createServer(o: ServerOptions) {
   app.post('/api/test-llm', async () => {
     const c = o.settings.config();
     if (!c.apiKey || !c.model) throw new Error('请先保存模型名称和 API 密钥');
-    const base = c.baseUrl.replace(/\/+$/, '');
-    const headers: Record<string, string> = { 'content-type': 'application/json' };
-    let url: string, payload: Record<string, unknown>;
-    if (c.format === 'anthropic') {
-      url = `${/\/v\d+$/.test(base) ? base : base + '/v1'}/messages`;
-      headers['x-api-key'] = c.apiKey;
-      headers['anthropic-version'] = '2023-06-01';
-      payload = { model: c.model, max_tokens: 1, messages: [{ role: 'user', content: 'hi' }] };
-    } else if (c.format === 'gemini') {
-      url = `${/\/v\d+(beta)?$/.test(base) ? base : base + '/v1beta'}/models/${encodeURIComponent(c.model)}:generateContent`;
-      headers['x-goog-api-key'] = c.apiKey;
-      payload = {
-        contents: [{ role: 'user', parts: [{ text: 'hi' }] }],
-        generationConfig: { maxOutputTokens: 1 },
-      };
-    } else {
-      url = `${/\/v\d+$/.test(base) ? base : base + '/v1'}/chat/completions`;
-      headers.authorization = `Bearer ${c.apiKey}`;
-      payload = { model: c.model, max_tokens: 1, messages: [{ role: 'user', content: 'hi' }] };
-    }
+    // Use the same request builder as every real turn. The old endpoint
+    // hand-rolled three providers here, so a protocol fix could land in
+    // HttpModel and leave the connection test passing against different code.
+    const model = new HttpModel(o.settings.model());
     const started = Date.now();
-    const response = await fetch(url, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(payload),
+    await model.complete([{ role: 'user', content: 'hi' }], [], {
+      maxTokens: 1,
       signal: AbortSignal.timeout(Math.min(c.requestTimeoutSeconds, 60) * 1000),
     });
-    const elapsed = Date.now() - started;
-    if (!response.ok) {
-      const detail = (await response.text().catch(() => '')).slice(0, 200);
-      throw new Error(`连通失败（HTTP ${response.status}，${elapsed} ms）：${detail}`);
-    }
-    return { ok: true, latencyMs: elapsed, model: c.model, format: c.format };
+    return {
+      ok: true,
+      latencyMs: Date.now() - started,
+      model: c.model,
+      format: c.format,
+    };
   });
   app.post('/api/test-embedding', async () => {
     const e = o.settings.embedding();
@@ -375,8 +350,7 @@ export function createServer(o: ServerOptions) {
   // idempotent-by-silence: a missing peer is an error, because the operator
   // should learn the row was already gone rather than believe they deleted it.
   app.delete<{ Params: { id: string } }>('/api/peers/:id', (request) => {
-    if (request.params.id.startsWith('preview:'))
-      throw new Error('本地试聊是内置联系人，不能删除');
+    if (request.params.id.startsWith('preview:')) throw new Error('本地试聊是内置联系人，不能删除');
     const removed = o.store.deletePeer(request.params.id);
     if (!removed) throw new Error('联系人不存在');
     o.runtime.pump();
@@ -387,7 +361,8 @@ export function createServer(o: ServerOptions) {
       ...m,
       media: media.map(({ kind, description }) => ({ kind, description })),
     })),
-  );  app.get<{ Params: { id: string } }>('/api/peers/:id/memories', (request) =>
+  );
+  app.get<{ Params: { id: string } }>('/api/peers/:id/memories', (request) =>
     o.store.memories(request.params.id),
   );
   app.get<{ Params: { id: string } }>('/api/peers/:id/diaries', (request) =>
@@ -421,9 +396,18 @@ export function createServer(o: ServerOptions) {
       return { ok: true };
     },
   );
-  app.get<{ Params: { id: string } }>('/api/peers/:id/loops', (request) =>
-    o.store.openLoops(request.params.id),
-  );
+  app.get<{ Params: { id: string } }>('/api/peers/:id/loops', (request) => {
+    const peer = request.params.id;
+    // The journal tab is the one place an operator can see both kinds of
+    // unfinished business. Expiring here keeps "expired" honest even if no
+    // message arrived in the last two weeks.
+    o.store.expireSoftThreads(peer, Date.now());
+    o.store.expireOpenLoops(peer, Date.now(), o.settings.config().timeZone);
+    return [
+      ...o.store.openLoops(peer).map((loop) => ({ ...loop, type: 'loop' as const })),
+      ...o.store.softThreads(peer).map((thread) => ({ ...thread, type: 'thread' as const })),
+    ];
+  });
   app.post<{ Params: { peer: string; id: string } }>(
     '/api/peers/:peer/loops/:id/resolve',
     (request) => {
@@ -434,6 +418,14 @@ export function createServer(o: ServerOptions) {
         Date.now(),
         o.settings.config().timeZone,
       );
+      return { ok: true };
+    },
+  );
+  app.post<{ Params: { peer: string; id: string } }>(
+    '/api/peers/:peer/threads/:id/resolve',
+    (request) => {
+      if (!o.store.peer(request.params.peer)) throw new Error('联系人不存在');
+      o.store.resolveSoftThread(request.params.peer, request.params.id);
       return { ok: true };
     },
   );
@@ -507,9 +499,7 @@ export function createServer(o: ServerOptions) {
     const custom = new Set(
       o.store.getSetting<{ slug: string }[]>('stickers:custom', []).map((s) => s.slug),
     );
-    return o.stickers
-      .list(true)
-      .map(({ file, ...s }) => ({ ...s, custom: custom.has(s.slug) }));
+    return o.stickers.list(true).map(({ file, ...s }) => ({ ...s, custom: custom.has(s.slug) }));
   });
   app.get<{ Params: { slug: string } }>('/api/stickers/:slug/image', (request, reply) => {
     const bytes = o.stickers.bytes(request.params.slug);

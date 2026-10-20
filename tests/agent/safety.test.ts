@@ -27,6 +27,23 @@ test('pruneTasks 不会删除仍被 outbox 引用的任务（外键不崩）', (
   assert.ok(f.store.taskById(taskId), '仍被引用的任务必须保留');
 });
 
+test('pruneTasks 会清理已取消的旧投递，不再永久占住任务', (t) => {
+  const f = fixture(t);
+  const old = Date.now() - 40 * 86400000;
+  const taskId = f.store.enqueue('p1', 'chat', 'k-cancelled', { text: '早' });
+  const task = f.store.claim('p1')!;
+  assert.equal(f.store.saveReply(task, [{ type: 'text', text: '早呀' }], []), true);
+  f.store.markDelivery(taskId + ':0', 'cancelled', '测试取消');
+  f.store.sql.prepare('UPDATE tasks SET created_at=? WHERE id=?').run(old, taskId);
+  f.store.sql.prepare('UPDATE outbox SET created_at=? WHERE task_id=?').run(old, taskId);
+  f.store.pruneTasks(Date.now());
+  assert.equal(f.store.taskById(taskId), undefined, '取消记录清理后任务也应回收');
+  assert.equal(
+    Number(f.store.sql.prepare('SELECT count(*) AS n FROM outbox WHERE task_id=?').get(taskId)!.n),
+    0,
+  );
+});
+
 test('pruneTasks 会删除既过期又无引用的任务', (t) => {
   const f = fixture(t);
   const old = Date.now() - 40 * 86400000;
@@ -108,9 +125,7 @@ test('pruneTasks 不会删除仍被 diary_sections 引用的任务', (t) => {
   const f = fixture(t);
   const old = Date.now() - 40 * 86400000;
   const taskId = f.store.enqueue('p1', 'diary', 'day:old', {}, old);
-  f.store.sql
-    .prepare('UPDATE tasks SET state=?, created_at=? WHERE id=?')
-    .run('done', old, taskId);
+  f.store.sql.prepare('UPDATE tasks SET state=?, created_at=? WHERE id=?').run('done', old, taskId);
   f.store.sql
     .prepare(
       'INSERT INTO diary_sections(id,peer_id,task_id,ordinal,day,content,sources,created_at) VALUES(?,?,?,?,?,?,?,?)',

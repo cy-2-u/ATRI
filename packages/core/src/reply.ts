@@ -1,9 +1,12 @@
-import type { MemoryUpdate, OpenLoopInput, ReplyPart } from '@atri/db';
+import type { MemoryUpdate, OpenLoopInput, ReplyPart, SoftThreadInput } from '@atri/db';
 import {
   MAX_REPLY_PARTS,
   MAX_MEMORY_UPDATES,
   MAX_IMAGE_DESCRIPTIONS,
   OPEN_LOOP_PROMPT_MAX,
+  SOFT_THREAD_PROMPT_MAX,
+  SOFT_THREAD_REVISIT_DAYS,
+  SOFT_THREAD_REVISIT_MAX_DAYS,
 } from './constants.js';
 export interface Sticker {
   slug: string;
@@ -21,8 +24,14 @@ export interface ParsedReply {
   resolveLoops: string[];
   /** Loop IDs this reply actually brought up, so only those are marked asked. */
   askedLoops: string[];
+  /** Undated concerns or promises to revisit when the topic naturally allows. */
+  threads: SoftThreadInput[];
+  /** Thread IDs that are settled, or that the user explicitly dropped. */
+  resolveThreads: string[];
+  /** Thread IDs this reply actually brought up. */
+  askedThreads: string[];
   /** Optional self-assessed mood pulse for this exchange. */
-  moodPulse?: { valence: number; energy: number; reason?: string };
+  moodPulse?: { valence: number; energy: number; patience?: number; reason?: string };
   /** Memory IDs included in this turn's prompt; the runtime marks them used. */
   pickedMemoryIds?: string[];
 }
@@ -100,30 +109,36 @@ export function extractInlineStickers(
     // the two \s* groups made a run of unclosed "[表情：" backtrack quadratically
     // (19k chars took 619 ms, on the event loop, freezing every peer). A sticker
     // name is never near 40 characters, so the cap costs nothing.
-    .replace(/(\s*)[(\[{【]\s*(?:表情|sticker)\s*[：:]\s*([^\]】)}]{1,40}?)\s*[\]】)}](\s*)/gi, (_all, before: string, name: string, after: string) => {
-      const query = name.trim().toLowerCase();
-      if (!query) return before;
-      const bySlug = stickers.find((s) => s.slug.toLowerCase() === query);
-      const byDescription = stickers.find(
-        (s) =>
-          s.description.toLowerCase().includes(query) ||
-          (s.tags ?? []).some((t) => t.toLowerCase() === query),
-      );
-      const byTag = stickers.find((s) =>
-        (s.tags ?? []).some((t) => query.includes(t.toLowerCase()) || t.toLowerCase().includes(query)),
-      );
-      const sticker = bySlug ?? byDescription ?? byTag;
-      if (sticker) {
-        parts.push({ type: 'sticker', slug: sticker.slug, description: sticker.description });
-        // Keep one separator when text continues on both sides.
-        return before && after ? ' ' : '';
-      }
-      // Unmatched: drop the pseudo-protocol rather than leak it to the chat.
-      return before;
-    })
+    .replace(
+      /(\s*)[(\[{【]\s*(?:表情|sticker)\s*[：:]\s*([^\]】)}]{1,40}?)\s*[\]】)}](\s*)/gi,
+      (_all, before: string, name: string, after: string) => {
+        const query = name.trim().toLowerCase();
+        if (!query) return before;
+        const bySlug = stickers.find((s) => s.slug.toLowerCase() === query);
+        const byDescription = stickers.find(
+          (s) =>
+            s.description.toLowerCase().includes(query) ||
+            (s.tags ?? []).some((t) => t.toLowerCase() === query),
+        );
+        const byTag = stickers.find((s) =>
+          (s.tags ?? []).some(
+            (t) => query.includes(t.toLowerCase()) || t.toLowerCase().includes(query),
+          ),
+        );
+        const sticker = bySlug ?? byDescription ?? byTag;
+        if (sticker) {
+          parts.push({ type: 'sticker', slug: sticker.slug, description: sticker.description });
+          // Keep one separator when text continues on both sides.
+          return before && after ? ' ' : '';
+        }
+        // Unmatched: drop the pseudo-protocol rather than leak it to the chat.
+        return before;
+      },
+    )
     .replace(/^[ \t]+|[ \t]+$/gm, '')
     .replace(/\n{3,}/g, '\n\n')
-    .trim();  return { parts, text: cleaned };
+    .trim();
+  return { parts, text: cleaned };
 }
 /**
  * Models sometimes copy the "[来源 id | time]" annotation from rendered history
@@ -131,9 +146,7 @@ export function extractInlineStickers(
  * carries several of them, split it back into separate bubbles the way the
  * model was supposed to emit them via the messages array.
  */
-export function stripSourceAnnotations(
-  text: string,
-): { parts: ReplyPart[]; text: string } {
+export function stripSourceAnnotations(text: string): { parts: ReplyPart[]; text: string } {
   const withoutPrefix = text.replace(/^\s*\[来源[^\]]*\]\s*\n?/g, '');
   if (withoutPrefix === text) return { parts: [], text };
   const chunks = withoutPrefix
@@ -146,10 +159,7 @@ export function stripSourceAnnotations(
     text: '',
   };
 }
-function normalizeTextParts(
-  raw: unknown[],
-  stickers: Sticker[],
-): ReplyPart[] {
+function normalizeTextParts(raw: unknown[], stickers: Sticker[]): ReplyPart[] {
   // The slice bounds how many input messages are read, but one message can hold
   // many inline stickers and each becomes its own part. Without the final cap a
   // 6-message reply produced 66 bubbles, and the sender paces every bubble
@@ -222,6 +232,32 @@ export function parseOpenLoops(
     ];
   });
 }
+/** Undated soft threads: things worth keeping in mind without a due date.
+ *  Sources are validated the same way as open loops; `revisitAfter` is clamped
+ *  so a model cannot schedule "ask in 300 days" or "ask immediately". */
+export function parseSoftThreads(value: unknown, available?: Set<string>): SoftThreadInput[] {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, SOFT_THREAD_PROMPT_MAX).flatMap((v) => {
+    if (!v || typeof v.content !== 'string' || !v.content.trim()) return [];
+    const sources = Array.isArray(v.sources)
+      ? v.sources.filter((s: unknown): s is string => typeof s === 'string')
+      : [];
+    if (!sources.length) return [];
+    if (available && !sources.every((id: string) => available.has(id))) return [];
+    const days = Number(v.revisitAfter);
+    const revisitAfter = Number.isFinite(days)
+      ? Math.min(SOFT_THREAD_REVISIT_MAX_DAYS, Math.max(1, Math.round(days)))
+      : SOFT_THREAD_REVISIT_DAYS;
+    return [
+      {
+        content: v.content.slice(0, 300),
+        kind: v.kind === 'promise' ? ('promise' as const) : ('concern' as const),
+        revisitAfter,
+        sources: sources.slice(0, 10),
+      },
+    ];
+  });
+}
 /** Resolve a loop's due time: numeric timestamps win; "明天 08:00", "MM-DD HH:mm",
  *  "HH:mm" or ISO strings are interpreted in the configured local timezone.
  *  Any resolved time outside [now − 1d, now + 5y] is rejected: schema-valid
@@ -289,7 +325,14 @@ export function resolveDue(
     const hour = Number(md[3] ?? 9),
       minute = Number(md[4] ?? 0);
     if (hour > 23 || minute > 59) return undefined;
-    const thisYear = localWallTimeFromYMD(year, Number(md[1]), Number(md[2]), hour, minute, timeZone);
+    const thisYear = localWallTimeFromYMD(
+      year,
+      Number(md[1]),
+      Number(md[2]),
+      hour,
+      minute,
+      timeZone,
+    );
     // A date already behind us is the next occurrence, not an expired plan.
     if (!Number.isNaN(thisYear) && thisYear > now) return thisYear;
     const nextYear = localWallTimeFromYMD(
@@ -305,7 +348,13 @@ export function resolveDue(
   return undefined;
 }
 /** Milliseconds for a local wall-clock time N days from `now` in `timeZone`. */
-function localWallTime(now: number, dayOffset: number, hour: number, minute: number, timeZone: string): number {
+function localWallTime(
+  now: number,
+  dayOffset: number,
+  hour: number,
+  minute: number,
+  timeZone: string,
+): number {
   // Calendar arithmetic in UTC, not `now + dayOffset * 86400000`: adding a fixed
   // 24 hours per day lands on the wrong local date across a DST transition, so
   // "明天 08:00" resolved to the day after tomorrow in any zone with DST.
@@ -376,15 +425,21 @@ function localWallTimeFromYMD(
   return result;
 }
 /** Model self-assessed mood pulse, clamped; undefined when absent or invalid. */
-export function parseMoodPulse(value: unknown): { valence: number; energy: number; reason?: string } | undefined {
+export function parseMoodPulse(
+  value: unknown,
+): { valence: number; energy: number; patience?: number; reason?: string } | undefined {
   if (!value || typeof value !== 'object') return undefined;
   const v = value as Record<string, unknown>;
-  const valence = typeof v.valence === 'number' && Number.isFinite(v.valence) ? Math.max(-1, Math.min(1, v.valence)) : 0;
-  const energy = typeof v.energy === 'number' && Number.isFinite(v.energy) ? Math.max(-1, Math.min(1, v.energy)) : 0;
-  if (!valence && !energy) return undefined;
+  const clamp = (n: unknown) =>
+    typeof n === 'number' && Number.isFinite(n) ? Math.max(-1, Math.min(1, n)) : 0;
+  const valence = clamp(v.valence);
+  const energy = clamp(v.energy);
+  const patience = clamp(v.patience);
+  if (!valence && !energy && !patience) return undefined;
   return {
     valence,
     energy,
+    ...(patience ? { patience } : {}),
     ...(typeof v.reason === 'string' && v.reason.trim() ? { reason: v.reason.slice(0, 60) } : {}),
   };
 }
@@ -414,9 +469,7 @@ export function parseReply(
       // still starts with an annotation, so after one pass the remaining three
       // source blocks collapsed into a single bubble.
       const annotated = stripSourceAnnotations(blob);
-      const blocks = annotated.parts.length
-        ? annotated.parts.map((p) => p.text ?? '')
-        : [blob];
+      const blocks = annotated.parts.length ? annotated.parts.map((p) => p.text ?? '') : [blob];
       const all: ReplyPart[] = [];
       for (const block of blocks) {
         const { parts: stickerParts, text: stickerText } = extractInlineStickers(block, stickers);
@@ -424,17 +477,19 @@ export function parseReply(
         const body = stickerText.trim();
         const stripped = stripSourceAnnotations(body);
         if (stripped.parts.length) all.push(...stripped.parts);
-        else if (stripped.text) all.push({ type: 'text' as const, text: stripped.text.slice(0, 6000) });
+        else if (stripped.text)
+          all.push({ type: 'text' as const, text: stripped.text.slice(0, 6000) });
       }
       return {
-        parts: all.length
-          ? all.slice(0, MAX_REPLY_PARTS)
-          : [{ type: 'text' as const, text: blob }],
+        parts: all.length ? all.slice(0, MAX_REPLY_PARTS) : [{ type: 'text' as const, text: blob }],
         memories: [],
         descriptions: [],
         openLoops: [],
         resolveLoops: [],
         askedLoops: [],
+        threads: [],
+        resolveThreads: [],
+        askedThreads: [],
       };
     }
     throw new Error('回复格式无效');
@@ -459,6 +514,16 @@ export function parseReply(
         .filter((s: unknown): s is string => typeof s === 'string')
         .slice(0, OPEN_LOOP_PROMPT_MAX)
     : [];
+  const resolveThreads = Array.isArray(raw.resolveThreads)
+    ? raw.resolveThreads
+        .filter((s: unknown): s is string => typeof s === 'string')
+        .slice(0, SOFT_THREAD_PROMPT_MAX)
+    : [];
+  const askedThreads = Array.isArray(raw.askedThreads)
+    ? raw.askedThreads
+        .filter((s: unknown): s is string => typeof s === 'string')
+        .slice(0, SOFT_THREAD_PROMPT_MAX)
+    : [];
   const moodPulse = parseMoodPulse(raw.moodPulse);
   return {
     parts,
@@ -467,6 +532,9 @@ export function parseReply(
     openLoops: parseOpenLoops(raw.openLoops, undefined, Date.now(), timeZone),
     resolveLoops,
     askedLoops,
+    threads: parseSoftThreads(raw.threads),
+    resolveThreads,
+    askedThreads,
     ...(moodPulse ? { moodPulse } : {}),
   };
 }

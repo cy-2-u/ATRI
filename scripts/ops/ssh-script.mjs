@@ -14,9 +14,12 @@ try {
   const out = execFileSync(
     'ssh',
     [
-      '-o', 'StrictHostKeyChecking=no',
-      '-o', 'UserKnownHostsFile=NUL',
-      '-o', 'LogLevel=ERROR',
+      '-o',
+      'StrictHostKeyChecking=no',
+      '-o',
+      'UserKnownHostsFile=NUL',
+      '-o',
+      'LogLevel=ERROR',
       `${user}@${host}`,
       `echo ${b64} | base64 -d | sh`,
     ],

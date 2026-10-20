@@ -157,7 +157,10 @@ function withAscii(text: string, pad = 0): Buffer {
 
 describe('sniffMediaMime', () => {
   it('identifies images', () => {
-    assert.equal(sniffMediaMime(bytes(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)), 'image/png');
+    assert.equal(
+      sniffMediaMime(bytes(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)),
+      'image/png',
+    );
     assert.equal(sniffMediaMime(bytes(0xff, 0xd8, 0xff, 0xe0)), 'image/jpeg');
     assert.equal(sniffMediaMime(withAscii('GIF89a....')), 'image/gif');
     assert.equal(sniffMediaMime(Buffer.concat([Buffer.from('RIFF____WEBPVP8 ')])), 'image/webp');
@@ -226,7 +229,9 @@ describe('extractMediaRefs', () => {
 
   it('falls back to item-level aeskey and url', () => {
     const msg: WeixinMessage = {
-      item_list: [{ type: 2, image_item: { aeskey: 'b'.repeat(32), url: 'https://cdn.example/img' } }],
+      item_list: [
+        { type: 2, image_item: { aeskey: 'b'.repeat(32), url: 'https://cdn.example/img' } },
+      ],
     };
     const refs = extractMediaRefs(msg);
     assert.equal(refs.length, 1);
@@ -237,7 +242,10 @@ describe('extractMediaRefs', () => {
   it('carries the iLink voice transcript through', () => {
     const msg: WeixinMessage = {
       item_list: [
-        { type: 3, voice_item: { media: { encrypt_query_param: 'eqp-v' }, voice_text: '  语音转写  ' } },
+        {
+          type: 3,
+          voice_item: { media: { encrypt_query_param: 'eqp-v' }, voice_text: '  语音转写  ' },
+        },
       ],
     };
     const refs = extractMediaRefs(msg);
@@ -315,10 +323,7 @@ describe('isAllowedMediaUrl', () => {
   });
 
   it('rejects an arbitrary external host', () => {
-    assert.equal(
-      isAllowedMediaUrl('https://evil.example/payload.png', { cdnBaseUrl: CDN }),
-      false,
-    );
+    assert.equal(isAllowedMediaUrl('https://evil.example/payload.png', { cdnBaseUrl: CDN }), false);
   });
 
   it('rejects loopback, private ranges and cloud metadata', () => {
@@ -348,10 +353,7 @@ describe('isAllowedMediaUrl', () => {
       }),
       true,
     );
-    assert.equal(
-      isAllowedMediaUrl('http://172.15.0.1/x', { extraHosts: ['172.15.0.1'] }),
-      true,
-    );
+    assert.equal(isAllowedMediaUrl('http://172.15.0.1/x', { extraHosts: ['172.15.0.1'] }), true);
   });
 
   it('rejects non-http schemes and embedded credentials', () => {
@@ -547,7 +549,8 @@ describe('sendVoice', () => {
     const calls = installMediaFetch();
     // mediaMaxBytes has a 1KB floor, so stay above it to exercise the check.
     await assert.rejects(
-      () => mediaClient({ mediaMaxBytes: 2048 }).sendVoice({ ...mediaPeer, voice: Buffer.alloc(4096) }),
+      () =>
+        mediaClient({ mediaMaxBytes: 2048 }).sendVoice({ ...mediaPeer, voice: Buffer.alloc(4096) }),
       /media too large/,
     );
     assert.equal(calls.length, 0);
@@ -659,7 +662,8 @@ describe('downloadMedia', () => {
   it('refuses an off-CDN full_url with no fallback rather than fetching it', async () => {
     const calls = installMediaFetch({ cdnDownload: { body: PNG } });
     await assert.rejects(
-      () => mediaClient().downloadMedia({ kind: 'image', index: 0, fullUrl: 'http://127.0.0.1:6379/' }),
+      () =>
+        mediaClient().downloadMedia({ kind: 'image', index: 0, fullUrl: 'http://127.0.0.1:6379/' }),
       /full_url host not allowed/,
     );
     assert.equal(calls.length, 0, 'must not have issued any request');

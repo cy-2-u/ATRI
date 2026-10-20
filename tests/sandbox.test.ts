@@ -54,10 +54,7 @@ test('沙箱命令在独立目录里执行，不落在项目目录', { skip: !ca
   const result = await sandbox.run('pwd && echo x > probe.txt && ls');
   assert.equal(result.ok, true, result.stderr);
   assert.ok(existsSync(join(dir, 'sandbox', 'probe.txt')), '文件应写在沙箱目录里');
-  assert.ok(
-    !existsSync(join(process.cwd(), 'probe.txt')),
-    '绝不能在项目根目录留下文件',
-  );
+  assert.ok(!existsSync(join(process.cwd(), 'probe.txt')), '绝不能在项目根目录留下文件');
 });
 
 test('沙箱环境里没有模型密钥', { skip: !canRun }, async (t) => {
@@ -217,12 +214,12 @@ test('沙箱命令拿到配置的时区，而不是 UTC', async (t) => {
     nsjailArgs(c: string): { args: string[] };
   };
   const { args } = sandbox.nsjailArgs('date');
-  assert.ok(
-    args.includes('--env=TZ=Asia/Shanghai'),
-    `nsjail args 缺少时区: ${args.join(' ')}`,
-  );
+  assert.ok(args.includes('--env=TZ=Asia/Shanghai'), `nsjail args 缺少时区: ${args.join(' ')}`);
   // LANG 同理，它决定中文输出是否乱码。
-  assert.ok(args.some((a) => a.startsWith('--env=LANG=')), 'nsjail args 缺少 LANG');
+  assert.ok(
+    args.some((a) => a.startsWith('--env=LANG=')),
+    'nsjail args 缺少 LANG',
+  );
 });
 
 test('联网开关变化会重新探测 nsjail', async (t) => {

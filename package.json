@@ -16,10 +16,9 @@
     "start": "node --env-file-if-exists=.env dist/server.js",
     "typecheck": "tsc --noEmit",
     "test": "node scripts/test.mjs",
-    "check:api": "node scripts/check-api-pairs.mjs",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "check": "npm run typecheck && npm test && npm run build",
+    "check": "npm run typecheck && npm run format:check && npm test && npm run build",
     "backup": "node --env-file-if-exists=.env dist/backup.js"
   },
   "dependencies": {

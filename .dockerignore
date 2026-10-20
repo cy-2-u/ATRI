@@ -10,14 +10,10 @@ coverage
 !.env.example
 *.bat
 *.log
-ATRI
-worker
 **/*.db
 **/*.db-wal
 **/*.db-shm
 restore.compose.yaml
-# 19MB logo with no runtime reference — keep it out of the build context.
-ATRI.png
 sandbox
 atri-sandbox-*
 docs

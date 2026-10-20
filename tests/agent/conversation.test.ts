@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DeliveryError } from '@atri/core';
 import { estimateRequestTokens } from '@atri/llm';
-import { FakeModel, completion, fixture, userSources } from '../helpers.js';
+import { FakeModel, completion, fixture, promptText, userSources } from '../helpers.js';
 
 test('已保存普通消息读取记忆，一次生成；重投不重复生成', async (t) => {
   const model = new FakeModel((messages) =>
@@ -18,7 +18,7 @@ test('已保存普通消息读取记忆，一次生成；重投不重复生成',
   f.runtime.accept('p1', 'new', '你还记得我爱喝什么吗？');
   await f.runtime.drain();
   assert.equal(model.calls.length, 1);
-  assert.match(model.calls[0].messages[0].content, /喜欢喝茶/);
+  assert.match(promptText(model.calls[0].messages), /喜欢喝茶/);
   assert.equal(f.delivered.length, 1);
   f.runtime.accept('p1', 'new', '你还记得我爱喝什么吗？');
   await f.runtime.drain();
@@ -165,7 +165,10 @@ test('输入状态接口很慢时不阻塞实际回复', async (t) => {
 });
 
 test('有限上下文优先保留本轮原话，笔记与自动召回按预算缩减', async (t) => {
-  const f = fixture(t, undefined, { contextTokens: 16000 });
+  // 18k, not 16k: the fixed prompt plus a ~10k-token utterance leaves under 200
+  // tokens of slack at 16k, so the test failed on prompt wording changes rather
+  // than on the trimming behaviour it is here to check.
+  const f = fixture(t, undefined, { contextTokens: 18000 });
   const old = f.store.ingest('p1', 'old', '从前的偏好').message;
   for (let i = 0; i < 10; i++)
     f.store.addMemory(

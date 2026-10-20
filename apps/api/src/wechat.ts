@@ -251,6 +251,10 @@ export class WeChatBridge implements Transport {
           error.message,
           (error.ret !== undefined && error.ret !== 0) ||
             (error.errcode !== undefined && error.errcode !== 0) ||
+            // A 4xx from the gateway/CDN is a permanent rejection. 5xx and
+            // transport failures stay uncertain: marking them `failed` blocked
+            // the peer's whole queue until an operator intervened.
+            (error.httpStatus !== undefined && error.httpStatus >= 400 && error.httpStatus < 500) ||
             /^HTTP 4\d\d$/.test(error.message),
         );
       throw error;

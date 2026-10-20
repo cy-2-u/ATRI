@@ -13,10 +13,14 @@ try {
   const out = execFileSync(
     'ssh',
     [
-      '-o', 'StrictHostKeyChecking=no',
-      '-o', 'UserKnownHostsFile=NUL',
-      '-o', 'LogLevel=ERROR',
-      '-o', `SetEnv=SSH_ASKPASS_REQUIRE=force`,
+      '-o',
+      'StrictHostKeyChecking=no',
+      '-o',
+      'UserKnownHostsFile=NUL',
+      '-o',
+      'LogLevel=ERROR',
+      '-o',
+      `SetEnv=SSH_ASKPASS_REQUIRE=force`,
       `${user}@${host}`,
       cmd.join(' '),
     ],

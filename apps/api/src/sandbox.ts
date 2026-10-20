@@ -84,7 +84,10 @@ export class Sandbox {
   private nsjailProbe: string | null = null;
   private nsjailUsable = false;
 
-  constructor(rootDir: string, private readonly options: SandboxOptions) {
+  constructor(
+    rootDir: string,
+    private readonly options: SandboxOptions,
+  ) {
     this.root = resolve(rootDir);
     mkdirSync(this.root, { recursive: true });
     // Only the sandbox root is writable, so give toolchains somewhere to put
@@ -196,8 +199,7 @@ export class Sandbox {
     if (existsSync(probe)) {
       const real = realpathSync(probe);
       const realRel = relative(realpathSync(this.root), real);
-      if (realRel.startsWith('..') || isAbsolute(realRel))
-        throw new Error('路径超出沙箱范围');
+      if (realRel.startsWith('..') || isAbsolute(realRel)) throw new Error('路径超出沙箱范围');
     }
     return target;
   }
@@ -273,22 +275,22 @@ export class Sandbox {
     );
   }
 
-/** nsjail argv. Namespace isolation: mount/pid/ipc/uts/user namespaces, so the
- *  command is PID 1 inside with a changed hostname, system paths are read-only,
- *  and /app and /data get an empty tmpfs over them so the command cannot read
- *  the application source or the SQLite database.
- *
- *  Networking is the operator's call. The default gives the command its own
- *  empty net namespace with no route out. `--disable_clone_newnet` *shares the
- *  host's* network instead, which is what enables npm/pip/curl; the flag reads
- *  backwards but that is its actual meaning. Every other isolation property is
- *  unaffected either way, which was verified on a real host.
- *
- *  No cgroup limits: a plain container mounts cgroupfs read-only and nsjail
- *  needs --cgroupns=host for those, which would require host setup. Resource
- *  bounds come from rlimits instead, which need no extra privilege.
- */
-private nsjailArgs(command: string): { bin: string; args: string[] } {
+  /** nsjail argv. Namespace isolation: mount/pid/ipc/uts/user namespaces, so the
+   *  command is PID 1 inside with a changed hostname, system paths are read-only,
+   *  and /app and /data get an empty tmpfs over them so the command cannot read
+   *  the application source or the SQLite database.
+   *
+   *  Networking is the operator's call. The default gives the command its own
+   *  empty net namespace with no route out. `--disable_clone_newnet` *shares the
+   *  host's* network instead, which is what enables npm/pip/curl; the flag reads
+   *  backwards but that is its actual meaning. Every other isolation property is
+   *  unaffected either way, which was verified on a real host.
+   *
+   *  No cgroup limits: a plain container mounts cgroupfs read-only and nsjail
+   *  needs --cgroupns=host for those, which would require host setup. Resource
+   *  bounds come from rlimits instead, which need no extra privilege.
+   */
+  private nsjailArgs(command: string): { bin: string; args: string[] } {
     const args = ['--really_quiet', '--chroot', '/', '--cwd', this.root, '--bindmount', this.root];
     for (const dir of ['/usr', '/lib', '/lib64', '/bin', '/sbin', '/etc'])
       if (existsSync(dir)) args.push('--bindmount_ro', dir);

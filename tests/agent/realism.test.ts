@@ -5,12 +5,25 @@ import {
   renderOpenLoops,
   renderRhythm,
   renderMemories,
+  renderSoftThreads,
   rotateStickers,
   type Sticker,
 } from '@atri/core';
-import { parseOpenLoops, parseReply, resolveDue, parseMoodPulse } from '@atri/core';
-import { OPEN_LOOP_EXPIRE_DAYS, PROACTIVE_IGNORE_COOLDOWN_DAYS } from '@atri/db';
-import { fixture, FakeModel, completion } from '../helpers.js';
+import {
+  parseOpenLoops,
+  parseReply,
+  resolveDue,
+  parseMoodPulse,
+  parseSoftThreads,
+} from '@atri/core';
+import {
+  OPEN_LOOP_EXPIRE_DAYS,
+  PROACTIVE_IGNORE_COOLDOWN_DAYS,
+  SOFT_THREAD_EXPIRE_DAYS,
+  SOFT_THREAD_MAX,
+  SOFT_THREAD_REVISIT_DAYS,
+} from '@atri/db';
+import { fixture, FakeModel, completion, promptText } from '../helpers.js';
 
 const stickers: Sticker[] = [
   { slug: 'happy', description: '开心', tags: ['开心'], file: 'happy.png' },
@@ -46,7 +59,7 @@ test('开环：到期后进入提示词，proactive 问过一次就不再问，�
   );
   assert.equal(f.store.dueOpenLoops('p1', now).length, 1);
   // 问过一次后不再进入到期清单
-  f.store.markLoopAsked('p1', loop.id, now);
+  f.store.markLoopAsked('p1', loop.id);
   assert.equal(f.store.dueOpenLoops('p1', now).length, 0);
   // 了结
   f.store.resolveOpenLoop('p1', loop.id, now);
@@ -54,7 +67,11 @@ test('开环：到期后进入提示词，proactive 问过一次就不再问，�
   // 过期：超过窗口后静默退场，不再打扰
   const stale = f.store.addOpenLoop(
     'p1',
-    { content: '迟到的约定', dueAt: now - (OPEN_LOOP_EXPIRE_DAYS + 1) * 86400000, sources: [source.id] },
+    {
+      content: '迟到的约定',
+      dueAt: now - (OPEN_LOOP_EXPIRE_DAYS + 1) * 86400000,
+      sources: [source.id],
+    },
     now,
   );
   assert.equal(f.store.dueOpenLoops('p1', now).length, 0, '过期的不进入到期清单');
@@ -142,6 +159,164 @@ test('parseReply 对 openLoops/resolveLoops 的格式校验', () => {
   assert.equal(parseOpenLoops('不是数组', new Set(['a'])).length, 0);
 });
 
+test('parseSoftThreads：来源校验、kind 与 revisitAfter 夹取', () => {
+  const parsed = parseSoftThreads(
+    [
+      { content: '他在赶项目', kind: 'concern', sources: ['a'] },
+      { content: '答应下次讲那个故事', kind: 'promise', revisitAfter: 30, sources: ['a'] },
+      { content: '马上问', revisitAfter: 0, sources: ['a'] },
+      { content: '没有依据', kind: 'concern', sources: [] },
+    ],
+    new Set(['a']),
+  );
+  assert.equal(parsed.length, 3);
+  assert.equal(parsed[0]!.kind, 'concern');
+  assert.equal(parsed[0]!.revisitAfter, SOFT_THREAD_REVISIT_DAYS);
+  assert.equal(parsed[1]!.kind, 'promise');
+  assert.equal(parsed[1]!.revisitAfter, 7);
+  assert.equal(parsed[2]!.revisitAfter, 1);
+  // 来源不在本轮可见集合内 → 丢弃
+  assert.equal(parseSoftThreads([{ content: 'x', sources: ['b'] }], new Set(['a'])).length, 0);
+
+  const reply = parseReply(
+    JSON.stringify({
+      messages: ['嗯'],
+      memoryUpdates: [],
+      threads: [{ content: '他在赶项目', kind: 'concern', sources: ['a'] }],
+      resolveThreads: ['t1', 2],
+      askedThreads: ['t2'],
+    }),
+    stickers,
+  );
+  assert.equal(reply.threads.length, 1);
+  assert.deepEqual(reply.resolveThreads, ['t1']);
+  assert.deepEqual(reply.askedThreads, ['t2']);
+});
+
+test('挂念：到期前不出现，上限 3 条，了结与 14 天过期', (t) => {
+  const now = Date.now();
+  const f = fixture(t);
+  const source = f.store.ingest('p1', 'src', '这周在赶项目，压力很大').message;
+  const thread = f.store.addSoftThread(
+    'p1',
+    { content: '他在赶项目', kind: 'concern', sources: [source.id] },
+    now - 86400000,
+  );
+  assert.equal(f.store.ripeSoftThreads('p1', now).length, 0, '一天还不够');
+  assert.equal(f.store.ripeSoftThreads('p1', now + 2 * 86400000).length, 1);
+  assert.equal(f.store.dueOpenLoops('p1', now + 2 * 86400000).length, 0, '挂念不占开环的到期配额');
+  f.store.markSoftThreadAsked('p1', thread.id);
+  assert.equal(f.store.ripeSoftThreads('p1', now + 2 * 86400000)[0]!.asked, 1);
+  f.store.resolveSoftThread('p1', thread.id, now);
+  assert.equal(f.store.softThreads('p1', true).length, 0);
+
+  // 上限：第 4 条挤掉最旧的一条
+  for (let i = 0; i < 4; i++)
+    f.store.addSoftThread(
+      'p1',
+      { content: '挂念' + i, kind: 'concern', sources: [source.id] },
+      now - 86400000 + i * 1000,
+    );
+  const open = f.store.softThreads('p1', true);
+  assert.equal(open.length, SOFT_THREAD_MAX);
+  assert.equal(
+    open.some((x) => x.content === '挂念0'),
+    false,
+  );
+
+  // 14 天后静默过期，不再进入提示
+  f.store.expireSoftThreads('p1', now + (SOFT_THREAD_EXPIRE_DAYS + 1) * 86400000);
+  assert.equal(f.store.softThreads('p1', true).length, 0);
+});
+
+test('删除来源会让挂念失效，不再进入提示词', (t) => {
+  const now = Date.now();
+  const f = fixture(t);
+  const source = f.store.ingest('p1', 'src', '我在准备答辩').message;
+  const thread = f.store.addSoftThread(
+    'p1',
+    { content: '他在准备答辩', kind: 'concern', sources: [source.id] },
+    now - 2 * 86400000,
+  );
+  assert.equal(f.store.ripeSoftThreads('p1', now).length, 1);
+  f.store.forget('p1', source.id);
+  const after = f.store.softThreads('p1').find((x) => x.id === thread.id)!;
+  assert.equal(after.status, 'expired');
+  assert.equal(after.content, '');
+  assert.equal(f.store.ripeSoftThreads('p1', now).length, 0);
+});
+
+test('挂念经来源校验落库，只在到期后的聊天提示里出现，问了就标记', async (t) => {
+  let clock = Date.now();
+  t.mock.method(Date, 'now', () => clock);
+  let phase = 0;
+  let seenPrompt = '';
+  const model = new FakeModel((messages) => {
+    if (phase === 0)
+      return completion({
+        messages: ['嗯'],
+        memoryUpdates: [],
+        threads: [{ content: '他在赶项目', kind: 'concern', sources: [] }],
+      });
+    if (phase === 1)
+      return completion({
+        messages: ['辛苦啦'],
+        memoryUpdates: [],
+        threads: [{ content: '他在赶项目', kind: 'concern', sources: [sourceId] }],
+      });
+    seenPrompt = promptText(messages);
+    const id = f.store.softThreads('p1', true)[0]?.id;
+    if (phase === 2) return completion({ messages: ['还在忙吗'], memoryUpdates: [] });
+    if (phase === 3)
+      return completion({
+        messages: ['后来那个项目怎么样了？'],
+        memoryUpdates: [],
+        askedThreads: id ? [id] : [],
+      });
+    return completion({
+      messages: ['那就好'],
+      memoryUpdates: [],
+      resolveThreads: id ? [id] : [],
+    });
+  });
+  const f = fixture(t, model);
+  let sourceId = '';
+
+  f.runtime.accept('p1', 'e1', '这周在赶项目，压力很大');
+  await f.runtime.drain();
+  // 没有来源的挂念被丢弃
+  assert.equal(f.store.softThreads('p1', true).length, 0);
+  sourceId = f.store.history('p1').find((m) => m.role === 'user')!.id;
+
+  phase = 1;
+  f.runtime.accept('p1', 'e2', '嗯，还是有点累');
+  await f.runtime.drain();
+  const thread = f.store.softThreads('p1', true)[0]!;
+  assert.equal(thread.content, '他在赶项目');
+  assert.equal(thread.status, 'open');
+
+  // 三天后，普通聊天提示里出现“还没放下的事”
+  clock += 3 * 86400000;
+  phase = 2;
+  f.runtime.accept('p1', 'e3', '今天好点');
+  await f.runtime.drain();
+  assert.match(seenPrompt, /还没放下的事/);
+  assert.match(seenPrompt, /他在赶项目/);
+  assert.equal(f.store.dueOpenLoops('p1', clock).length, 0, '不会变成主动提醒');
+
+  // 问过一次后，提示里标明别再追问
+  phase = 3;
+  f.runtime.accept('p1', 'e4', '项目交了');
+  await f.runtime.drain();
+  assert.equal(f.store.softThreads('p1', true)[0]!.asked, 1);
+
+  phase = 4;
+  f.runtime.accept('p1', 'e5', '嗯');
+  await f.runtime.drain();
+  assert.match(seenPrompt, /已经问过一次/);
+  assert.equal(f.store.softThreads('p1', true).length, 0);
+});
+
 test('读空气：连发长笑不算长回复，折叠重复字符后触发收着说', async (t) => {
   const model = new FakeModel(() => completion({ messages: ['嗯。'], memoryUpdates: [] }));
   const f = fixture(t, model);
@@ -152,7 +327,7 @@ test('读空气：连发长笑不算长回复，折叠重复字符后触发收�
   await f.runtime.drain();
   f.runtime.accept('p1', 'h3', '哈哈哈哈哈哈');
   await f.runtime.drain();
-  const last = model.calls.at(-1)!.messages[0]!.content;
+  const last = promptText(model.calls.at(-1)!.messages);
   assert.match(String(last), /收着点说/, '折叠重复字符后 terse 模式生效');
 });
 
@@ -181,11 +356,15 @@ test('读空气：连续无回应的主动消息冷却拉长到几天', (t) => {
   };
   // 一次没回应：照常允许
   injectProactive(now - 26 * 3600000, 't1');
-  f.store.sql.prepare('UPDATE peers SET last_proactive_at=? WHERE id=?').run(now - 26 * 3600000, peerId);
+  f.store.sql
+    .prepare('UPDATE peers SET last_proactive_at=? WHERE id=?')
+    .run(now - 26 * 3600000, peerId);
   assert.equal(f.runtime.proactiveAllowed(f.store.peer(peerId)!, now), true);
   // 连续两次无回应：进入多天冷却
   injectProactive(now - 2 * 3600000, 't2');
-  f.store.sql.prepare('UPDATE peers SET last_proactive_at=? WHERE id=?').run(now - 2 * 3600000, peerId);
+  f.store.sql
+    .prepare('UPDATE peers SET last_proactive_at=? WHERE id=?')
+    .run(now - 2 * 3600000, peerId);
   assert.equal(f.runtime.proactiveAllowed(f.store.peer(peerId)!, now), false);
   assert.equal(
     f.runtime.proactiveAllowed(
@@ -202,7 +381,13 @@ test('读空气：连续无回应的主动消息冷却拉长到几天', (t) => {
     true,
   );
   // 用户回复后立刻解除刹车（streak 只数晚于最后一条用户消息的 ping）
-  f.store.ingest('wechat:p', 'back', '我回来啦', [], now + PROACTIVE_IGNORE_COOLDOWN_DAYS * 86400000);
+  f.store.ingest(
+    'wechat:p',
+    'back',
+    '我回来啦',
+    [],
+    now + PROACTIVE_IGNORE_COOLDOWN_DAYS * 86400000,
+  );
   assert.equal(
     f.runtime.proactiveAllowed(
       f.store.peer(peerId)!,
@@ -271,11 +456,9 @@ test('主动联系提示词包含惦记的事与节律，回复长度镜像写�
   await f.runtime.drain();
   assert.ok(model.calls.length >= 1);
   // diary 也可能排在前面，找 proactive 那次调用（带“主动联系”标记）
-  const proactiveCall = model.calls.find((c) =>
-    String(c.messages[0]?.content).includes('主动联系'),
-  );
+  const proactiveCall = model.calls.find((c) => promptText(c.messages).includes('主动联系'));
   assert.ok(proactiveCall, 'proactive 任务调用了模型');
-  const system = String(proactiveCall!.messages[0]!.content);
+  const system = promptText(proactiveCall!.messages);
   assert.match(system, /未完的约定/);
   assert.match(system, /问面试结果/);
   assert.match(system, /心情还有些低落/);

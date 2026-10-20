@@ -44,14 +44,44 @@ test('管理 API 需要登录，cookie 有保护属性，密钥和会话凭据�
   assert.equal(
     (
       await f.app.inject({
-        method: 'PUT',
-        url: '/api/persona',
+        method: 'POST',
+        url: '/api/personas',
         headers: { ...f.headers, origin: 'https://evil.example' },
-        payload: { content: 'test' },
+        payload: { name: 'x', content: 'test' },
       })
     ).statusCode,
     403,
   );
+});
+test('惦记列表同时返回开环与无日期挂念，挂念可以单独了结', async (t) => {
+  const f = server(t);
+  const now = Date.now();
+  const source = f.store.ingest('p1', 'msg-1', '这周在赶项目，压力很大').message;
+  const loop = f.store.addOpenLoop(
+    'p1',
+    { content: '明天面试', dueAt: now + 86400000, sources: [source.id] },
+    now,
+  );
+  const thread = f.store.addSoftThread(
+    'p1',
+    { content: '他在赶项目', kind: 'concern', sources: [source.id] },
+    now - 3 * 86400000,
+  );
+  const list = (await f.app.inject({ url: '/api/peers/p1/loops', headers: f.headers })).json();
+  assert.equal(list.length, 2);
+  assert.equal(list.find((entry: { id: string }) => entry.id === loop.id).type, 'loop');
+  const found = list.find((entry: { id: string }) => entry.id === thread.id);
+  assert.equal(found.type, 'thread');
+  assert.equal(found.kind, 'concern');
+
+  const resolved = await f.app.inject({
+    method: 'POST',
+    url: `/api/peers/p1/threads/${thread.id}/resolve`,
+    headers: f.headers,
+  });
+  assert.equal(resolved.statusCode, 200);
+  assert.equal(f.store.softThreads('p1', true).length, 0);
+  assert.equal(f.store.openLoops('p1', true).length, 1, '只了结挂念，不影响开环');
 });
 test('本地试聊使用真实应用队列，但与微信联系人记录隔离', async (t) => {
   const f = server(t);
@@ -362,7 +392,7 @@ test('人格接口：CRUD、默认切换、绑定与删除回落', async (t) => 
     headers: f.headers,
   });
   assert.equal(denyDefault.statusCode, 400);
-  // 切换默认后，新默认供旧接口 /api/persona 读取，旧默认可删
+  // 切换默认后，列表接口报告新的默认，旧默认可删
   const list = (await f.app.inject({ url: '/api/personas', headers: f.headers })).json();
   const other = list.list.find((p: { id: string }) => p.id !== initial.defaultId)!;
   const switched = await f.app.inject({
@@ -372,8 +402,8 @@ test('人格接口：CRUD、默认切换、绑定与删除回落', async (t) => 
   });
   assert.equal(switched.statusCode, 200);
   assert.equal(
-    (await f.app.inject({ url: '/api/persona', headers: f.headers })).json().content,
-    other.content,
+    (await f.app.inject({ url: '/api/personas', headers: f.headers })).json().defaultId,
+    other.id,
   );
   const removedOld = await f.app.inject({
     method: 'DELETE',

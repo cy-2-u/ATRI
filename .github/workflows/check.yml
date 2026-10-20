@@ -16,6 +16,6 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      # Typecheck + build + the full test suite. The 8 Linux-only sandbox tests
-      # (skipped on Windows dev machines) run here.
+      # Typecheck + format check + build + the full test suite. The 7 Linux-only
+      # sandbox tests (skipped on Windows dev machines) run here.
       - run: npm run check

@@ -100,7 +100,7 @@ export interface MessageItem {
 }
 
 /** Media kinds we can pull off an inbound message. */
-export type MediaKind = "image" | "voice" | "video" | "file";
+export type MediaKind = 'image' | 'voice' | 'video' | 'file';
 
 /**
  * One downloadable attachment on an inbound message.

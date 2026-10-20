@@ -1,4 +1,4 @@
-import { buildILinkHeaders } from "./headers.js";
+import { buildILinkHeaders } from './headers.js';
 import {
   aesEcbPaddedSize,
   buildCdnDownloadUrl,
@@ -10,8 +10,8 @@ import {
   parseAesKey,
   randomAesKey,
   randomFileKey,
-} from "./crypto.js";
-import { isAllowedMediaUrl, sniffMediaMime } from "./media.js";
+} from './crypto.js';
+import { isAllowedMediaUrl, sniffMediaMime } from './media.js';
 import type {
   DownloadedMedia,
   GetConfigResponse,
@@ -27,11 +27,11 @@ import type {
   UploadedMedia,
   WeixinItemType,
   WeixinMessage,
-} from "./types.js";
-import { ITEM_TYPE, UPLOAD_MEDIA_TYPE } from "./types.js";
+} from './types.js';
+import { ITEM_TYPE, UPLOAD_MEDIA_TYPE } from './types.js';
 
-const DEFAULT_BASE = "https://ilinkai.weixin.qq.com";
-const DEFAULT_CDN = "https://novac2c.cdn.weixin.qq.com/c2c";
+const DEFAULT_BASE = 'https://ilinkai.weixin.qq.com';
+const DEFAULT_CDN = 'https://novac2c.cdn.weixin.qq.com/c2c';
 /** Server-side typing_ticket validity is ~24h; refresh well before that. */
 const DEFAULT_TYPING_TICKET_TTL_MS = 20 * 60 * 60 * 1000;
 const DEFAULT_TYPING_TICKET_MAX_ENTRIES = 5000;
@@ -48,9 +48,13 @@ export class ILinkError extends Error {
     public readonly ret?: number,
     public readonly errcode?: number,
     public readonly body?: unknown,
+    /** HTTP status when the failure came from the transport rather than from
+     *  an iLink ret/errcode. Kept apart on purpose: a CDN 5xx is a transient
+     *  upstream problem, while a nonzero `ret` is a protocol-level rejection. */
+    public readonly httpStatus?: number,
   ) {
     super(message);
-    this.name = "ILinkError";
+    this.name = 'ILinkError';
   }
 }
 
@@ -71,12 +75,12 @@ export class ILinkClient {
   private mediaHostAllowlist: string[];
 
   constructor(opts: ILinkClientOptions = {}) {
-    this.baseUrl = (opts.baseUrl ?? DEFAULT_BASE).replace(/\/$/, "");
+    this.baseUrl = (opts.baseUrl ?? DEFAULT_BASE).replace(/\/$/, '');
     this.botToken = opts.botToken;
-    this.channelVersion = opts.channelVersion ?? "1.0.2";
+    this.channelVersion = opts.channelVersion ?? '1.0.2';
     this.timeoutMs = opts.timeoutMs ?? 30_000;
     this.longPollTimeoutMs = opts.longPollTimeoutMs ?? 40_000;
-    this.cdnBaseUrl = (opts.cdnBaseUrl ?? DEFAULT_CDN).replace(/\/$/, "");
+    this.cdnBaseUrl = (opts.cdnBaseUrl ?? DEFAULT_CDN).replace(/\/$/, '');
     this.typingTicketTtlMs = Math.max(
       60_000,
       opts.typingTicketTtlMs ?? DEFAULT_TYPING_TICKET_TTL_MS,
@@ -85,13 +89,8 @@ export class ILinkClient {
       64,
       opts.typingTicketMaxEntries ?? DEFAULT_TYPING_TICKET_MAX_ENTRIES,
     );
-    this.mediaMaxBytes = Math.max(
-      1024,
-      opts.mediaMaxBytes ?? DEFAULT_MEDIA_MAX_BYTES,
-    );
-    this.mediaHostAllowlist = (opts.mediaHostAllowlist ?? [])
-      .map((h) => h.trim())
-      .filter(Boolean);
+    this.mediaMaxBytes = Math.max(1024, opts.mediaMaxBytes ?? DEFAULT_MEDIA_MAX_BYTES);
+    this.mediaHostAllowlist = (opts.mediaHostAllowlist ?? []).map((h) => h.trim()).filter(Boolean);
   }
 
   setBotToken(token: string): void {
@@ -103,11 +102,11 @@ export class ILinkClient {
   }
 
   setBaseUrl(url: string): void {
-    this.baseUrl = url.replace(/\/$/, "");
+    this.baseUrl = url.replace(/\/$/, '');
   }
 
   setCdnBaseUrl(url: string): void {
-    this.cdnBaseUrl = url.replace(/\/$/, "");
+    this.cdnBaseUrl = url.replace(/\/$/, '');
   }
 
   getCdnBaseUrl(): string {
@@ -137,7 +136,7 @@ export class ILinkClient {
   async getUpdates(getUpdatesBuf: string): Promise<GetUpdatesResponse> {
     this.requireToken();
     return this.postJson<GetUpdatesResponse>(
-      "/ilink/bot/getupdates",
+      '/ilink/bot/getupdates',
       {
         get_updates_buf: getUpdatesBuf,
         base_info: { channel_version: this.channelVersion },
@@ -155,12 +154,11 @@ export class ILinkClient {
   }): Promise<SendMessageResponse> {
     this.requireToken();
     const clientId =
-      params.clientId ??
-      `wechat-ai-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+      params.clientId ?? `wechat-ai-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 
-    return this.postJson<SendMessageResponse>("/ilink/bot/sendmessage", {
+    return this.postJson<SendMessageResponse>('/ilink/bot/sendmessage', {
       msg: {
-        from_user_id: "",
+        from_user_id: '',
         to_user_id: params.toUserId,
         client_id: clientId,
         message_type: 2,
@@ -175,12 +173,9 @@ export class ILinkClient {
    * Fetch the per-user `typing_ticket` that sendtyping requires.
    * Ticket validity is ~24h, so this is roughly one call per peer per day.
    */
-  async getConfig(params: {
-    toUserId: string;
-    contextToken: string;
-  }): Promise<GetConfigResponse> {
+  async getConfig(params: { toUserId: string; contextToken: string }): Promise<GetConfigResponse> {
     this.requireToken();
-    return this.postJson<GetConfigResponse>("/ilink/bot/getconfig", {
+    return this.postJson<GetConfigResponse>('/ilink/bot/getconfig', {
       ilink_user_id: params.toUserId,
       // Older captures name the same field to_user_id. Both are sent because
       // the server ignores unknown keys — sendImage already relies on that with
@@ -232,8 +227,7 @@ export class ILinkClient {
           toUserId: params.toUserId,
           contextToken: params.contextToken,
         });
-        const ticket =
-          typeof res.typing_ticket === "string" ? res.typing_ticket.trim() : "";
+        const ticket = typeof res.typing_ticket === 'string' ? res.typing_ticket.trim() : '';
         if (!ticket) return null;
         this.rememberTypingTicket(key, ticket);
         return ticket;
@@ -285,12 +279,7 @@ export class ILinkClient {
     const fromCache = !explicit && Boolean(ticket);
 
     try {
-      return await this.postTyping(
-        params.toUserId,
-        params.contextToken,
-        status,
-        ticket,
-      );
+      return await this.postTyping(params.toUserId, params.contextToken, status, ticket);
     } catch (err) {
       // A cached ticket can be revoked or expire early server-side. One forced
       // refresh and retry, then rethrow — callers treat typing as best effort.
@@ -302,12 +291,7 @@ export class ILinkClient {
         force: true,
       });
       if (!fresh || fresh === ticket) throw err;
-      return this.postTyping(
-        params.toUserId,
-        params.contextToken,
-        status,
-        fresh,
-      );
+      return this.postTyping(params.toUserId, params.contextToken, status, fresh);
     }
   }
 
@@ -342,7 +326,7 @@ export class ILinkClient {
       status,
     };
     if (ticket) body.typing_ticket = ticket;
-    return this.postJson("/ilink/bot/sendtyping", body);
+    return this.postJson('/ilink/bot/sendtyping', body);
   }
 
   private rememberTypingTicket(toUserId: string, ticket: string): void {
@@ -383,7 +367,7 @@ export class ILinkClient {
     noNeedThumb?: boolean;
   }): Promise<GetUploadUrlResponse> {
     this.requireToken();
-    return this.postJson<GetUploadUrlResponse>("/ilink/bot/getuploadurl", {
+    return this.postJson<GetUploadUrlResponse>('/ilink/bot/getuploadurl', {
       filekey: params.filekey,
       media_type: params.mediaType,
       to_user_id: params.toUserId,
@@ -412,42 +396,42 @@ export class ILinkClient {
     if (params.uploadFullUrl?.trim()) {
       url = params.uploadFullUrl.trim();
     } else if (params.uploadParam) {
-      url = buildCdnUploadUrl(
-        this.cdnBaseUrl,
-        params.uploadParam,
-        params.filekey,
-      );
+      url = buildCdnUploadUrl(this.cdnBaseUrl, params.uploadParam, params.filekey);
     }
     if (!url) {
-      throw new ILinkError(
-        "CDN upload URL missing (need upload_full_url or upload_param)",
-      );
+      throw new ILinkError('CDN upload URL missing (need upload_full_url or upload_param)');
     }
 
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), this.timeoutMs);
     try {
       const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/octet-stream" },
+        method: 'POST',
+        headers: { 'Content-Type': 'application/octet-stream' },
         body: new Uint8Array(ciphertext),
         signal: ctrl.signal,
       });
       if (!res.ok) {
         const msg =
-          res.headers.get("x-error-message") ||
-          (await res.text().catch(() => "")) ||
+          res.headers.get('x-error-message') ||
+          (await res.text().catch(() => '')) ||
           `HTTP ${res.status}`;
-        throw new ILinkError(`CDN upload failed: ${msg}`, undefined, res.status);
+        throw new ILinkError(
+          `CDN upload failed: ${msg}`,
+          undefined,
+          undefined,
+          undefined,
+          res.status,
+        );
       }
-      const dl = res.headers.get("x-encrypted-param");
+      const dl = res.headers.get('x-encrypted-param');
       if (!dl) {
-        throw new ILinkError("CDN upload response missing x-encrypted-param");
+        throw new ILinkError('CDN upload response missing x-encrypted-param');
       }
       return dl;
     } catch (err) {
       if (err instanceof ILinkError) throw err;
-      if (err instanceof Error && err.name === "AbortError") {
+      if (err instanceof Error && err.name === 'AbortError') {
         throw new ILinkError(
           `CDN upload timed out after ${this.timeoutMs}ms`,
           undefined,
@@ -482,7 +466,7 @@ export class ILinkClient {
       rawSize,
       rawFileMd5,
       fileSize,
-      aesKeyHex: aesKey.toString("hex"),
+      aesKeyHex: aesKey.toString('hex'),
     });
 
     const downloadEncryptedQueryParam = await this.uploadEncryptedToCdn({
@@ -514,7 +498,7 @@ export class ILinkClient {
   }): Promise<SendMessageResponse> {
     this.requireToken();
     if (!params.image?.length) {
-      throw new ILinkError("image buffer is empty");
+      throw new ILinkError('image buffer is empty');
     }
 
     const uploaded = await this.uploadMedia({
@@ -524,12 +508,11 @@ export class ILinkClient {
     });
 
     const clientId =
-      params.clientId ??
-      `wechat-ai-img-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+      params.clientId ?? `wechat-ai-img-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 
-    return this.postJson<SendMessageResponse>("/ilink/bot/sendmessage", {
+    return this.postJson<SendMessageResponse>('/ilink/bot/sendmessage', {
       msg: {
-        from_user_id: "",
+        from_user_id: '',
         to_user_id: params.toUserId,
         client_id: clientId,
         message_type: 2,
@@ -581,9 +564,7 @@ export class ILinkClient {
       throw new ILinkError(`${params.itemField} buffer is empty`);
     }
     if (params.data.length > this.mediaMaxBytes) {
-      throw new ILinkError(
-        `media too large: ${params.data.length} > ${this.mediaMaxBytes} bytes`,
-      );
+      throw new ILinkError(`media too large: ${params.data.length} > ${this.mediaMaxBytes} bytes`);
     }
 
     const uploaded = await this.uploadMedia({
@@ -594,13 +575,11 @@ export class ILinkClient {
 
     const clientId =
       params.clientId ??
-      `wechat-ai-${params.itemField}-${Date.now()}-${Math.random()
-        .toString(36)
-        .slice(2, 10)}`;
+      `wechat-ai-${params.itemField}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 
-    return this.postJson<SendMessageResponse>("/ilink/bot/sendmessage", {
+    return this.postJson<SendMessageResponse>('/ilink/bot/sendmessage', {
       msg: {
-        from_user_id: "",
+        from_user_id: '',
         to_user_id: params.toUserId,
         client_id: clientId,
         message_type: 2,
@@ -639,7 +618,7 @@ export class ILinkClient {
     clientId?: string;
   }): Promise<SendMessageResponse> {
     const itemExtra: Record<string, unknown> = {};
-    if (typeof params.durationMs === "number" && params.durationMs > 0) {
+    if (typeof params.durationMs === 'number' && params.durationMs > 0) {
       const ms = Math.round(params.durationMs);
       itemExtra.duration_ms = ms;
       itemExtra.voice_length = ms;
@@ -650,7 +629,7 @@ export class ILinkClient {
       data: params.voice,
       mediaType: UPLOAD_MEDIA_TYPE.voice,
       itemType: params.itemType ?? ITEM_TYPE.voice,
-      itemField: "voice_item",
+      itemField: 'voice_item',
       itemExtra,
       clientId: params.clientId,
     });
@@ -666,7 +645,7 @@ export class ILinkClient {
     clientId?: string;
   }): Promise<SendMessageResponse> {
     const itemExtra: Record<string, unknown> = {};
-    if (typeof params.durationMs === "number" && params.durationMs > 0) {
+    if (typeof params.durationMs === 'number' && params.durationMs > 0) {
       itemExtra.duration_ms = Math.round(params.durationMs);
     }
     return this.sendMedia({
@@ -675,7 +654,7 @@ export class ILinkClient {
       data: params.video,
       mediaType: UPLOAD_MEDIA_TYPE.video,
       itemType: params.itemType ?? ITEM_TYPE.video,
-      itemField: "video_item",
+      itemField: 'video_item',
       itemExtra,
       clientId: params.clientId,
     });
@@ -691,14 +670,14 @@ export class ILinkClient {
     clientId?: string;
   }): Promise<SendMessageResponse> {
     const name = params.fileName?.trim();
-    if (!name) throw new ILinkError("fileName is required for sendFile");
+    if (!name) throw new ILinkError('fileName is required for sendFile');
     return this.sendMedia({
       toUserId: params.toUserId,
       contextToken: params.contextToken,
       data: params.file,
       mediaType: UPLOAD_MEDIA_TYPE.file,
       itemType: params.itemType ?? ITEM_TYPE.file,
-      itemField: "file_item",
+      itemField: 'file_item',
       itemExtra: { file_name: name, file_size: params.file.length },
       clientId: params.clientId,
     });
@@ -716,9 +695,7 @@ export class ILinkClient {
   ): Promise<DownloadedMedia> {
     const maxBytes = Math.max(1024, opts.maxBytes ?? this.mediaMaxBytes);
     if (ref.cipherSize && ref.cipherSize > maxBytes) {
-      throw new ILinkError(
-        `media too large: ${ref.cipherSize} > ${maxBytes} bytes`,
-      );
+      throw new ILinkError(`media too large: ${ref.cipherSize} > ${maxBytes} bytes`);
     }
 
     // `full_url` comes off an inbound message, so it is only honoured when it
@@ -731,9 +708,7 @@ export class ILinkClient {
         extraHosts: this.mediaHostAllowlist,
       });
     if (ref.fullUrl && !fullUrlOk && !ref.encryptQueryParam) {
-      throw new ILinkError(
-        `media full_url host not allowed: ${ILinkClient.hostOf(ref.fullUrl)}`,
-      );
+      throw new ILinkError(`media full_url host not allowed: ${ILinkClient.hostOf(ref.fullUrl)}`);
     }
     const url = fullUrlOk
       ? ref.fullUrl!
@@ -741,9 +716,7 @@ export class ILinkClient {
         ? buildCdnDownloadUrl(this.cdnBaseUrl, ref.encryptQueryParam)
         : undefined;
     if (!url) {
-      throw new ILinkError(
-        "media ref has neither full_url nor encrypt_query_param",
-      );
+      throw new ILinkError('media ref has neither full_url nor encrypt_query_param');
     }
 
     const raw = await this.fetchBounded(url, maxBytes);
@@ -756,9 +729,7 @@ export class ILinkClient {
         // Some payloads carry a vestigial aes_key over plaintext bytes. Accept
         // the undecrypted body only when it actually sniffs as media.
         if (!sniffMediaMime(raw)) {
-          throw new ILinkError(
-            `media decrypt failed: ${(err as Error).message}`,
-          );
+          throw new ILinkError(`media decrypt failed: ${(err as Error).message}`);
         }
         data = raw;
       }
@@ -776,28 +747,26 @@ export class ILinkClient {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), this.timeoutMs);
     try {
-      const res = await fetch(url, { method: "GET", signal: ctrl.signal });
+      const res = await fetch(url, { method: 'GET', signal: ctrl.signal });
       if (!res.ok) {
         throw new ILinkError(
           `CDN download failed: HTTP ${res.status}`,
           undefined,
+          undefined,
+          undefined,
           res.status,
         );
       }
-      const declared = Number(res.headers.get("content-length") ?? "");
+      const declared = Number(res.headers.get('content-length') ?? '');
       if (Number.isFinite(declared) && declared > maxBytes) {
-        throw new ILinkError(
-          `media too large: ${declared} > ${maxBytes} bytes`,
-        );
+        throw new ILinkError(`media too large: ${declared} > ${maxBytes} bytes`);
       }
 
       const body = res.body;
       if (!body) {
         const buf = Buffer.from(await res.arrayBuffer());
         if (buf.length > maxBytes) {
-          throw new ILinkError(
-            `media too large: ${buf.length} > ${maxBytes} bytes`,
-          );
+          throw new ILinkError(`media too large: ${buf.length} > ${maxBytes} bytes`);
         }
         return buf;
       }
@@ -819,7 +788,7 @@ export class ILinkClient {
       return Buffer.concat(chunks);
     } catch (err) {
       if (err instanceof ILinkError) throw err;
-      if (err instanceof Error && err.name === "AbortError") {
+      if (err instanceof Error && err.name === 'AbortError') {
         throw new ILinkError(
           `CDN download timed out after ${this.timeoutMs}ms`,
           undefined,
@@ -836,28 +805,24 @@ export class ILinkClient {
   /** Host only, for an error message that must not echo a full attacker URL. */
   private static hostOf(raw: string): string {
     try {
-      return new URL(raw).hostname || "(none)";
+      return new URL(raw).hostname || '(none)';
     } catch {
-      return "(unparseable)";
+      return '(unparseable)';
     }
   }
 
   private requireToken(): void {
     if (!this.botToken) {
-      throw new ILinkError("bot_token is required; complete QR login first");
+      throw new ILinkError('bot_token is required; complete QR login first');
     }
   }
 
-  private async getJson<T>(
-    url: string,
-    auth: boolean,
-    timeoutMs = this.timeoutMs,
-  ): Promise<T> {
+  private async getJson<T>(url: string, auth: boolean, timeoutMs = this.timeoutMs): Promise<T> {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     try {
       const res = await fetch(url, {
-        method: "GET",
+        method: 'GET',
         headers: buildILinkHeaders(auth ? this.botToken : undefined),
         signal: ctrl.signal,
       });
@@ -867,22 +832,14 @@ export class ILinkClient {
         errmsg?: string;
       };
       if (!res.ok) {
-        throw new ILinkError(
-          `HTTP ${res.status}`,
-          body.ret,
-          body.errcode,
-          body,
-        );
+        throw new ILinkError(`HTTP ${res.status}`, body.ret, body.errcode, body, res.status);
       }
       return body;
     } catch (err) {
-      if (err instanceof Error && err.name === "AbortError") {
-        throw new ILinkError(
-          `request timed out after ${timeoutMs}ms`,
-          undefined,
-          undefined,
-          { aborted: true },
-        );
+      if (err instanceof Error && err.name === 'AbortError') {
+        throw new ILinkError(`request timed out after ${timeoutMs}ms`, undefined, undefined, {
+          aborted: true,
+        });
       }
       throw err;
     } finally {
@@ -890,16 +847,12 @@ export class ILinkClient {
     }
   }
 
-  private async postJson<T>(
-    path: string,
-    body: unknown,
-    timeoutMs = this.timeoutMs,
-  ): Promise<T> {
+  private async postJson<T>(path: string, body: unknown, timeoutMs = this.timeoutMs): Promise<T> {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     try {
       const res = await fetch(`${this.baseUrl}${path}`, {
-        method: "POST",
+        method: 'POST',
         headers: buildILinkHeaders(this.botToken),
         body: JSON.stringify(body),
         signal: ctrl.signal,
@@ -910,23 +863,20 @@ export class ILinkClient {
         errmsg?: string;
       };
       if (!res.ok) {
-        throw new ILinkError(
-          `HTTP ${res.status}`,
-          data.ret,
-          data.errcode,
-          data,
-        );
+        throw new ILinkError(`HTTP ${res.status}`, data.ret, data.errcode, data, res.status);
       }
       // Session expired often surfaces as ret/errcode -14
       if (data.ret !== undefined && data.ret !== 0) {
-        throw new ILinkError(
-          data.errmsg ?? `iLink ret=${data.ret}`,
-          data.ret,
-          data.errcode,
-          data,
-        );
+        throw new ILinkError(data.errmsg ?? `iLink ret=${data.ret}`, data.ret, data.errcode, data);
       }
       return data;
+    } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        throw new ILinkError(`request timed out after ${timeoutMs}ms`, undefined, undefined, {
+          aborted: true,
+        });
+      }
+      throw err;
     } finally {
       clearTimeout(timer);
     }
@@ -945,10 +895,7 @@ export interface ExtractTextOptions {
 }
 
 /** Extract plain text from a Weixin message (text + voice ASR if present). */
-export function extractText(
-  msg: WeixinMessage,
-  opts: ExtractTextOptions = {},
-): string | null {
+export function extractText(msg: WeixinMessage, opts: ExtractTextOptions = {}): string | null {
   const includeVoice = opts.includeVoiceTranscript !== false;
   const items = msg.item_list ?? [];
   const parts: string[] = [];
@@ -964,21 +911,15 @@ export function extractText(
         voice_item?: { text?: string; voice_text?: string };
         text_item?: { text?: string };
       };
-      const t =
-        voice.voice_item?.text ||
-        voice.voice_item?.voice_text ||
-        voice.text_item?.text;
+      const t = voice.voice_item?.text || voice.voice_item?.voice_text || voice.text_item?.text;
       if (t) parts.push(t);
     }
   }
-  return parts.length ? parts.join("\n") : null;
+  return parts.length ? parts.join('\n') : null;
 }
 
 /** True when message has only non-text media without usable transcript. */
-export function isMediaOnlyWithoutText(
-  msg: WeixinMessage,
-  opts: ExtractTextOptions = {},
-): boolean {
+export function isMediaOnlyWithoutText(msg: WeixinMessage, opts: ExtractTextOptions = {}): boolean {
   return !extractText(msg, opts) && (msg.item_list?.length ?? 0) > 0;
 }
 

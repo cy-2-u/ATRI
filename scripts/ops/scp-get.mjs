@@ -13,9 +13,12 @@ try {
   const out = execFileSync(
     'scp',
     [
-      '-o', 'StrictHostKeyChecking=no',
-      '-o', 'UserKnownHostsFile=NUL',
-      '-o', 'LogLevel=ERROR',
+      '-o',
+      'StrictHostKeyChecking=no',
+      '-o',
+      'UserKnownHostsFile=NUL',
+      '-o',
+      'LogLevel=ERROR',
       '-r',
       `${user}@${host}:${remoteDir}`,
       localDir,

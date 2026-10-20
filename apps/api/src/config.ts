@@ -5,7 +5,8 @@ import type { Store } from '@atri/db';
 import type { ModelConfig, ApiFormat } from '@atri/llm';
 import type { RuntimeConfig, PromptName } from '@atri/core';
 
-export interface SavedConfig {  baseUrl: string;
+export interface SavedConfig {
+  baseUrl: string;
   apiKey: string;
   model: string;
   format: ApiFormat;
@@ -27,9 +28,9 @@ export interface SavedConfig {  baseUrl: string;
   embeddingBaseUrl: string;
   embeddingApiKey: string;
   embeddingModel: string;
-sandboxEnabled: boolean;
-sandboxNetwork: boolean;
-sandboxSizeMb: number;
+  sandboxEnabled: boolean;
+  sandboxNetwork: boolean;
+  sandboxSizeMb: number;
   sandboxMemoryMb: number;
   maxConcurrentPeers: number;
   debounceMs: number;
@@ -200,7 +201,13 @@ export class Settings {
     const next = { ...this.config() };
     if (!input || typeof input !== 'object' || Array.isArray(input))
       throw new Error('设置格式无效');
-    for (const field of ['baseUrl', 'model', 'timeZone', 'embeddingBaseUrl', 'embeddingModel'] as const)
+    for (const field of [
+      'baseUrl',
+      'model',
+      'timeZone',
+      'embeddingBaseUrl',
+      'embeddingModel',
+    ] as const)
       if (typeof input[field] === 'string') next[field] = input[field].trim();
     // The settings form labels the API address field "留空用官方默认", so an
     // empty string has to mean "keep the built-in default" rather than reaching
@@ -222,7 +229,13 @@ export class Settings {
         throw new Error('模型接口格式无效');
       next.format = input.format as ApiFormat;
     }
-    for (const key of ['vision', 'proactiveEnabled', 'embeddingEnabled', 'sandboxEnabled', 'sandboxNetwork'] as const)
+    for (const key of [
+      'vision',
+      'proactiveEnabled',
+      'embeddingEnabled',
+      'sandboxEnabled',
+      'sandboxNetwork',
+    ] as const)
       if (input[key] !== undefined) {
         if (typeof input[key] !== 'boolean') throw new Error('开关格式无效');
         next[key] = input[key];
@@ -234,7 +247,12 @@ export class Settings {
           throw new Error('时间设置无效');
         next[key] = n;
       }
-    const url = new URL(next.baseUrl);
+    let url: URL;
+    try {
+      url = new URL(next.baseUrl);
+    } catch {
+      throw new Error('模型地址不是有效的 URL');
+    }
     if (
       !['http:', 'https:'].includes(url.protocol) ||
       url.username ||
@@ -353,12 +371,21 @@ export class Settings {
   }
   runtime(): RuntimeConfig {
     const c = this.config();
+    // Explicit projection, not `...c`: RuntimeConfig is a deliberately small
+    // scheduling surface, and spreading the saved config also copied every
+    // secret (chat key, Tavily key, embedding key) into a second long-lived
+    // object for no reason.
     return {
-      ...c,
-      contextTokens: c.inputBudgetTokens,
-      turnTimeoutMs: c.turnTimeoutSeconds * 1000,
+      timeZone: c.timeZone,
+      diaryHour: c.diaryHour,
+      proactiveEnabled: c.proactiveEnabled,
+      quietStart: c.quietStart,
+      quietEnd: c.quietEnd,
+      proactiveAfterHours: c.proactiveAfterHours,
       debounceMs: c.debounceMs,
       maxConcurrentPeers: c.maxConcurrentPeers,
+      turnTimeoutMs: c.turnTimeoutSeconds * 1000,
+      contextTokens: c.inputBudgetTokens,
     };
   }
   /** Prompt files are deploy-time constants, so read each one at most once.
@@ -378,36 +405,16 @@ export class Settings {
   prompt(name: PromptName): string {
     return this.store.getSetting<string>(`prompt:${name}`, this.promptFile(name));
   }
-  /** `prompt('persona')` still backs the legacy endpoint, so it must reflect
-   *  the default persona's current text rather than the stale seed. */
-  personaPrompt(): string {
-    const { list, defaultId } = this.personaList();
-    return (
-      list.find((p) => p.id === defaultId)?.content ??
-      this.store.getSetting<string>('prompt:persona', this.prompt('persona'))
-    );
-  }
-  /** Legacy single-persona write: retargeted at the default persona so a
-   *  bookmark or older client no longer saves into a setting nobody reads. */
-  savePersona(text: string) {
-    if (!text.trim() || text.length > 12000) throw new Error('人设需要 1–12000 个字符');
-    const { list, defaultId } = this.personaList();
-    const entry = list.find((p) => p.id === defaultId) ?? list[0];
-    if (!entry) {
-      this.store.setSetting('prompt:persona', text);
-      return;
-    }
-    this.personaUpdate(entry.id, { content: text });
-  }
   personaList() {
     let list = this.store.getSetting<
-      {
-        id: string;
-        name: string;
-        content: string;
-        greeting?: string;
-        createdAt: number;
-      }[] | undefined
+      | {
+          id: string;
+          name: string;
+          content: string;
+          greeting?: string;
+          createdAt: number;
+        }[]
+      | undefined
     >('personas', undefined);
     if (!list) {
       // First run on a database created before multi-persona support: import
@@ -431,7 +438,10 @@ export class Settings {
       this.store.setSetting('persona:default', 'default');
       list = imported;
     }
-    return { list: [...list], defaultId: this.store.getSetting<string>('persona:default', 'default') };
+    return {
+      list: [...list],
+      defaultId: this.store.getSetting<string>('persona:default', 'default'),
+    };
   }
   personaContentFor(peerId: string): string {
     const { list, defaultId } = this.personaList();

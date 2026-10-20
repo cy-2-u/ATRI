@@ -8,15 +8,15 @@ import type {
   VideoItem,
   VoiceItem,
   WeixinMessage,
-} from "./types.js";
-import { ITEM_TYPE } from "./types.js";
-import { isPrivateHostLiteral } from "@atri/net";
+} from './types.js';
+import { ITEM_TYPE } from './types.js';
+import { isPrivateHostLiteral } from '@atri/net';
 
 /**
  * Identify decrypted media from its magic bytes.
  *
  * This is identification, not validation — the upload-side gate for
- * user-submitted images lives in apps/api sticker-security.ts and is
+ * user-submitted images lives in apps/api/src/stickers.ts (Stickers.add) and is
  * deliberately much stricter. Here we only need to know what we just pulled off
  * the WeChat CDN so we can decide whether a vision model can read it.
  */
@@ -31,66 +31,57 @@ export function sniffMediaMime(buf: Buffer): string | null {
     return true;
   };
   const ascii = (offset: number, len: number): string =>
-    buf.length >= offset + len
-      ? buf.subarray(offset, offset + len).toString("latin1")
-      : "";
+    buf.length >= offset + len ? buf.subarray(offset, offset + len).toString('latin1') : '';
 
   // ── Images ──
   if (startsWith([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) {
-    return "image/png";
+    return 'image/png';
   }
-  if (startsWith([0xff, 0xd8, 0xff])) return "image/jpeg";
-  if (ascii(0, 6) === "GIF87a" || ascii(0, 6) === "GIF89a") return "image/gif";
-  if (ascii(0, 4) === "RIFF") {
+  if (startsWith([0xff, 0xd8, 0xff])) return 'image/jpeg';
+  if (ascii(0, 6) === 'GIF87a' || ascii(0, 6) === 'GIF89a') return 'image/gif';
+  if (ascii(0, 4) === 'RIFF') {
     const form = ascii(8, 4);
-    if (form === "WEBP") return "image/webp";
-    if (form === "WAVE") return "audio/wav";
+    if (form === 'WEBP') return 'image/webp';
+    if (form === 'WAVE') return 'audio/wav';
   }
-  if (ascii(0, 2) === "BM") return "image/bmp";
+  if (ascii(0, 2) === 'BM') return 'image/bmp';
 
   // ── Audio ──
   // WeChat voice is SILK, sometimes with a single leading byte before the tag.
-  if (ascii(0, 6) === "#!SILK") return "audio/silk";
-  if (ascii(1, 6) === "#!SILK") return "audio/silk";
-  if (ascii(0, 5) === "#!AMR") return "audio/amr";
-  if (ascii(0, 4) === "OggS") return "audio/ogg";
-  if (ascii(0, 3) === "ID3") return "audio/mpeg";
+  if (ascii(0, 6) === '#!SILK') return 'audio/silk';
+  if (ascii(1, 6) === '#!SILK') return 'audio/silk';
+  if (ascii(0, 5) === '#!AMR') return 'audio/amr';
+  if (ascii(0, 4) === 'OggS') return 'audio/ogg';
+  if (ascii(0, 3) === 'ID3') return 'audio/mpeg';
   // MPEG audio frame sync (11 set bits)
   if (buf.length >= 2 && buf[0] === 0xff && (buf[1]! & 0xe0) === 0xe0) {
-    return "audio/mpeg";
+    return 'audio/mpeg';
   }
 
   // ── ISO-BMFF container: brand decides audio vs video ──
-  if (ascii(4, 4) === "ftyp") {
+  if (ascii(4, 4) === 'ftyp') {
     const brand = ascii(8, 4);
-    if (brand === "M4A " || brand === "M4B ") return "audio/mp4";
-    return "video/mp4";
+    if (brand === 'M4A ' || brand === 'M4B ') return 'audio/mp4';
+    return 'video/mp4';
   }
 
   // ── Other video / documents ──
-  if (startsWith([0x1a, 0x45, 0xdf, 0xa3])) return "video/webm";
-  if (ascii(0, 5) === "%PDF-") return "application/pdf";
-  if (startsWith([0x50, 0x4b, 0x03, 0x04])) return "application/zip";
+  if (startsWith([0x1a, 0x45, 0xdf, 0xa3])) return 'video/webm';
+  if (ascii(0, 5) === '%PDF-') return 'application/pdf';
+  if (startsWith([0x50, 0x4b, 0x03, 0x04])) return 'application/zip';
 
   return null;
 }
 
 /** Mimes an OpenAI-compatible vision model can accept as an image_url data URI. */
-const VISION_MIMES = new Set([
-  "image/png",
-  "image/jpeg",
-  "image/gif",
-  "image/webp",
-]);
+const VISION_MIMES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
 
 export function isVisionMime(mime: string | null | undefined): boolean {
   return Boolean(mime && VISION_MIMES.has(mime));
 }
 
 /** Pull the CDN coordinates off a media-bearing item, whichever shape it uses. */
-function readMedia(
-  item: ImageItem | VoiceItem | VideoItem | FileItem | undefined,
-): {
+function readMedia(item: ImageItem | VoiceItem | VideoItem | FileItem | undefined): {
   media?: CDNMedia;
   aesKey?: string;
   fullUrl?: string;
@@ -108,17 +99,13 @@ function readMedia(
   };
 }
 
-function refFromItem(
-  item: MessageItem,
-  index: number,
-  kind: MediaKind,
-): InboundMediaRef | null {
+function refFromItem(item: MessageItem, index: number, kind: MediaKind): InboundMediaRef | null {
   const sub =
-    kind === "image"
+    kind === 'image'
       ? item.image_item
-      : kind === "voice"
+      : kind === 'voice'
         ? item.voice_item
-        : kind === "video"
+        : kind === 'video'
           ? item.video_item
           : item.file_item;
   const { media, aesKey, fullUrl, cipherSize } = readMedia(sub);
@@ -127,9 +114,8 @@ function refFromItem(
   if (!encryptQueryParam && !fullUrl) return null;
 
   const transcript =
-    kind === "voice"
-      ? (item.voice_item?.text || item.voice_item?.voice_text || "").trim() ||
-        undefined
+    kind === 'voice'
+      ? (item.voice_item?.text || item.voice_item?.voice_text || '').trim() || undefined
       : undefined;
 
   return {
@@ -139,21 +125,19 @@ function refFromItem(
     aesKey,
     encryptType: media?.encrypt_type,
     fullUrl,
-    cipherSize:
-      typeof cipherSize === "number" && cipherSize > 0 ? cipherSize : undefined,
-    fileName:
-      kind === "file" ? item.file_item?.file_name?.trim() || undefined : undefined,
+    cipherSize: typeof cipherSize === 'number' && cipherSize > 0 ? cipherSize : undefined,
+    fileName: kind === 'file' ? item.file_item?.file_name?.trim() || undefined : undefined,
     transcript,
   };
 }
 
-const ALL_KINDS: readonly MediaKind[] = ["image", "voice", "video", "file"];
+const ALL_KINDS: readonly MediaKind[] = ['image', 'voice', 'video', 'file'];
 
 const KIND_BY_ITEM_TYPE = new Map<number, MediaKind>([
-  [ITEM_TYPE.image, "image"],
-  [ITEM_TYPE.voice, "voice"],
-  [ITEM_TYPE.video, "video"],
-  [ITEM_TYPE.file, "file"],
+  [ITEM_TYPE.image, 'image'],
+  [ITEM_TYPE.voice, 'voice'],
+  [ITEM_TYPE.video, 'video'],
+  [ITEM_TYPE.file, 'file'],
 ]);
 
 /**
@@ -170,9 +154,7 @@ export function extractMediaRefs(msg: WeixinMessage): InboundMediaRef[] {
   items.forEach((item, index) => {
     if (!item || item.type === ITEM_TYPE.text) return;
     const claimed = KIND_BY_ITEM_TYPE.get(item.type);
-    const order = claimed
-      ? [claimed, ...ALL_KINDS.filter((k) => k !== claimed)]
-      : ALL_KINDS;
+    const order = claimed ? [claimed, ...ALL_KINDS.filter((k) => k !== claimed)] : ALL_KINDS;
     for (const kind of order) {
       const ref = refFromItem(item, index, kind);
       if (ref) {
@@ -195,7 +177,7 @@ export function extractMediaRefs(msg: WeixinMessage): InboundMediaRef[] {
  * be blind. The chatflow http node and the HF tools gateway already gate
  * outbound URLs this way; this keeps the media path consistent with them.
  */
-const WECHAT_CDN_SUFFIXES = [".weixin.qq.com", ".qq.com"];
+const WECHAT_CDN_SUFFIXES = ['.weixin.qq.com', '.qq.com'];
 
 /**
  * Whether an inbound `full_url` is safe to fetch.
@@ -214,13 +196,13 @@ export function isAllowedMediaUrl(
   } catch {
     return false;
   }
-  if (url.protocol !== "https:" && url.protocol !== "http:") return false;
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') return false;
   if (url.username || url.password) return false;
 
   const host = url.hostname.toLowerCase();
   if (!host || isPrivateHostLiteral(host)) return false;
 
-  let cdnHost = "";
+  let cdnHost = '';
   if (opts.cdnBaseUrl) {
     try {
       cdnHost = new URL(opts.cdnBaseUrl).hostname.toLowerCase();
@@ -236,13 +218,13 @@ export function isAllowedMediaUrl(
 /** Human-facing label for a media kind (used in fallback replies / history). */
 export function mediaKindLabel(kind: MediaKind): string {
   switch (kind) {
-    case "image":
-      return "图片";
-    case "voice":
-      return "语音";
-    case "video":
-      return "视频";
-    case "file":
-      return "文件";
+    case 'image':
+      return '图片';
+    case 'voice':
+      return '语音';
+    case 'video':
+      return '视频';
+    case 'file':
+      return '文件';
   }
 }

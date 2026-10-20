@@ -128,7 +128,7 @@ ssh -L 3000:127.0.0.1:3000 user@server
 docker compose exec atri node dist/backup.js
 ```
 
-命令返回 /data/backups/ 下的具体目录，包含数据库一致快照、被引用的附件、自定义素材、生成的管理密码及校验清单。把实际备份名称替换进命令，并复制到服务数据卷之外：
+命令返回 /data/backups/ 下的具体目录，包含数据库一致快照、被引用的附件、自定义素材及校验清单。管理密码文件不会写入备份，升级或迁移前需单独保管 /data/admin-secret.txt（或 .env 中的固定密码）。把实际备份名称替换进命令，并复制到服务数据卷之外：
 
 ```sh
 docker compose cp atri:/data/backups/备份名称 ./atri-backup
@@ -181,10 +181,10 @@ npm run dev
 
 ```sh
 npm run check
-node scripts/smoke.mjs
+npm test -- --smoke
 node --check apps/api/public/app.js
 ```
 
-check 包含类型检查、测试和构建。烟雾测试使用本地模型替身与临时数据，不需要真实密钥。实际微信、模型、Docker 和界面试用的状态见 [验证记录](validation.md)。
+check 包含类型检查、格式检查、测试和构建；`npm test` 还会核对管理页调用与后端路由是否对应，加 `--smoke` 使用本地模型替身与临时数据启动编译后的服务，不需要真实密钥。实际微信、模型、Docker 和界面试用的状态见 [验证记录](validation.md)。
 
-仓库提供 [GitHub Actions 模板](examples/check.yml)，包含 Linux 检查和 Docker 镜像构建。启用时，把它放到 .github/workflows/check.yml 后提交；需要拥有 workflow 权限的 GitHub 凭据，或在 GitHub 网页中创建该工作流。本次代码发布未启用 Actions。
+仓库已包含 [GitHub Actions 工作流](../.github/workflows/check.yml)，在 push 到 main、提交拉取请求或手动触发时运行 `npm run check`（类型检查、格式检查、完整测试与构建）。

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { fixture, FakeModel, completion } from '../helpers.js';
+import { fixture, FakeModel, completion, promptText } from '../helpers.js';
 
 test('来源隔离、重复来源幂等，明确纠正替代旧记忆', (t) => {
   const f = fixture(t);
@@ -110,7 +110,7 @@ test('日记内容进入后续对话的召回，无独立自我模型读取路�
   );
   f.runtime.accept('p1', 'b', '还记得我应聘工作的事情吗');
   await f.runtime.drain();
-  assert.match(f.model.calls[0].messages[0].content, /先陪他把紧张说出来/);
+  assert.match(promptText(f.model.calls[0].messages), /先陪他把紧张说出来/);
 });
 test('上下文笔记仅在需要时整理，并保留原文', async (t) => {
   const model = new FakeModel(() => completion({ notes: '当前在讨论考试准备。' }));

@@ -1,5 +1,5 @@
-import { ILinkClient, ILinkError } from "./client.js";
-import type { QrcodeResponse, QrcodeStatusResponse } from "./types.js";
+import { ILinkClient, ILinkError } from './client.js';
+import type { QrcodeResponse, QrcodeStatusResponse } from './types.js';
 
 export interface LoginResult {
   botToken: string;
@@ -13,21 +13,17 @@ export interface LoginOptions {
   botType?: number;
   pollIntervalMs?: number;
   timeoutMs?: number;
-  onQrcode?: (info: {
-    qrcode: string;
-    qrcodeImgContent?: string;
-    qrcodeUrl?: string;
-  }) => void;
+  onQrcode?: (info: { qrcode: string; qrcodeImgContent?: string; qrcodeUrl?: string }) => void;
   onStatus?: (status: string, raw: QrcodeStatusResponse) => void;
   signal?: AbortSignal;
 }
 
 /** Normalize scan link for user / web UI. */
 export function resolveQrOpenUrl(qr: QrcodeResponse): string | undefined {
-  if (qr.qrcode_img_content?.startsWith("http")) {
+  if (qr.qrcode_img_content?.startsWith('http')) {
     return qr.qrcode_img_content;
   }
-  if (qr.qrcode_url?.startsWith("http")) {
+  if (qr.qrcode_url?.startsWith('http')) {
     return qr.qrcode_url;
   }
   if (qr.qrcode) {
@@ -40,9 +36,7 @@ export function resolveQrOpenUrl(qr: QrcodeResponse): string | undefined {
  * Interactive QR login against iLink.
  * Returns bot_token when status is confirmed/scanned success.
  */
-export async function loginWithQrcode(
-  opts: LoginOptions = {},
-): Promise<LoginResult> {
+export async function loginWithQrcode(opts: LoginOptions = {}): Promise<LoginResult> {
   const client = opts.client ?? new ILinkClient();
   const pollIntervalMs = opts.pollIntervalMs ?? 1500;
   const timeoutMs = opts.timeoutMs ?? 5 * 60_000;
@@ -50,12 +44,7 @@ export async function loginWithQrcode(
 
   const qr = await client.getBotQrcode(opts.botType ?? 3);
   if (!qr.qrcode) {
-    throw new ILinkError(
-      qr.errmsg ?? "get_bot_qrcode missing qrcode field",
-      qr.ret,
-      undefined,
-      qr,
-    );
+    throw new ILinkError(qr.errmsg ?? 'get_bot_qrcode missing qrcode field', qr.ret, undefined, qr);
   }
 
   opts.onQrcode?.({
@@ -66,10 +55,10 @@ export async function loginWithQrcode(
 
   while (true) {
     if (opts.signal?.aborted) {
-      throw new ILinkError("login aborted");
+      throw new ILinkError('login aborted');
     }
     if (Date.now() - started > timeoutMs) {
-      throw new ILinkError("login timed out waiting for QR scan");
+      throw new ILinkError('login timed out waiting for QR scan');
     }
 
     let status: QrcodeStatusResponse;
@@ -78,33 +67,28 @@ export async function loginWithQrcode(
     } catch (err) {
       // Long-poll timeout / transient network — keep waiting
       if (err instanceof ILinkError && (err.body as { aborted?: boolean })?.aborted) {
-        opts.onStatus?.("waiting", { status: "waiting" });
+        opts.onStatus?.('waiting', { status: 'waiting' });
         continue;
       }
       if (err instanceof Error && /timed out|aborted|fetch failed|ECONNRESET/i.test(err.message)) {
-        opts.onStatus?.("retry", { status: "retry" });
+        opts.onStatus?.('retry', { status: 'retry' });
         await sleep(pollIntervalMs, opts.signal);
         continue;
       }
       throw err;
     }
 
-    const st = (status.status ?? "").toLowerCase();
-    opts.onStatus?.(st || "unknown", status);
+    const st = (status.status ?? '').toLowerCase();
+    opts.onStatus?.(st || 'unknown', status);
 
     if (
-      st === "confirmed" ||
-      st === "confirmed_login" ||
-      st === "success" ||
+      st === 'confirmed' ||
+      st === 'confirmed_login' ||
+      st === 'success' ||
       Boolean(status.bot_token)
     ) {
       if (!status.bot_token) {
-        throw new ILinkError(
-          "QR confirmed but bot_token missing",
-          status.ret,
-          undefined,
-          status,
-        );
+        throw new ILinkError('QR confirmed but bot_token missing', status.ret, undefined, status);
       }
       if (status.baseurl) {
         client.setBaseUrl(status.baseurl);
@@ -118,7 +102,7 @@ export async function loginWithQrcode(
       };
     }
 
-    if (st === "expired" || st === "cancel" || st === "cancelled") {
+    if (st === 'expired' || st === 'cancel' || st === 'cancelled') {
       throw new ILinkError(`QR login ${st}`, status.ret, undefined, status);
     }
 
@@ -130,15 +114,15 @@ export async function loginWithQrcode(
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
-      reject(new ILinkError("login aborted"));
+      reject(new ILinkError('login aborted'));
       return;
     }
     const t = setTimeout(resolve, ms);
     signal?.addEventListener(
-      "abort",
+      'abort',
       () => {
         clearTimeout(t);
-        reject(new ILinkError("login aborted"));
+        reject(new ILinkError('login aborted'));
       },
       { once: true },
     );

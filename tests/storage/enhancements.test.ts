@@ -4,7 +4,7 @@ import { Store, MEMORY_HALFLIFE_DAYS } from '@atri/db';
 import { recentStickerUse, renderTimeGap } from '@atri/core';
 import { parseReply, extractInlineStickers } from '@atri/core';
 import { cosineSimilarity } from '@atri/llm';
-import { fixture, FakeModel, completion } from '../helpers.js';
+import { fixture, FakeModel, completion, promptText } from '../helpers.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
@@ -19,14 +19,22 @@ test('记忆按使用次数、重要性和新近度混合排序，不再单纯�
     .prepare("UPDATE memories SET created_at=? WHERE content='生日在三月'")
     .run(Date.now() - MEMORY_HALFLIFE_DAYS * 86400000 * 6);
   // 新的一次性 interpretation
-  f.store.addMemory('p1', { content: '临时的心情推断', kind: 'interpretation', sources: [source.id] }, version);
+  f.store.addMemory(
+    'p1',
+    { content: '临时的心情推断', kind: 'interpretation', sources: [source.id] },
+    version,
+  );
   // 被反复引用的旧记忆
   f.store.addMemory('p1', { content: '不吃香菜', kind: 'stated', sources: [source.id] }, version);
   f.store.sql
     .prepare("UPDATE memories SET created_at=? WHERE content='不吃香菜'")
     .run(Date.now() - MEMORY_HALFLIFE_DAYS * 86400000 * 10);
-  f.store.markMemoriesUsed('p1', [f.store.memories('p1').find((m) => m.content === '不吃香菜')!.id]);
-  f.store.markMemoriesUsed('p1', [f.store.memories('p1').find((m) => m.content === '不吃香菜')!.id]);
+  f.store.markMemoriesUsed('p1', [
+    f.store.memories('p1').find((m) => m.content === '不吃香菜')!.id,
+  ]);
+  f.store.markMemoriesUsed('p1', [
+    f.store.memories('p1').find((m) => m.content === '不吃香菜')!.id,
+  ]);
   // Raw-SQL backdating bypasses the store's cache invalidation; drop it.
   (f.store as unknown as { memoryCache: Map<string, unknown> }).memoryCache.clear();
   const ranked = f.store.rankedMemories('p1', 2);
@@ -38,7 +46,11 @@ test('记忆按使用次数、重要性和新近度混合排序，不再单纯�
 test('更正记忆保留使用计数', (t) => {
   const f = fixture(t);
   const source = f.store.ingest('p1', 'src', '我周五面试').message;
-  f.store.addMemory('p1', { content: '周五面试', kind: 'stated', sources: [source.id] }, f.store.peer('p1')!.version);
+  f.store.addMemory(
+    'p1',
+    { content: '周五面试', kind: 'stated', sources: [source.id] },
+    f.store.peer('p1')!.version,
+  );
   const memory = f.store.memories('p1')[0]!;
   f.store.markMemoriesUsed('p1', [memory.id]);
   f.store.markMemoriesUsed('p1', [memory.id]);
@@ -73,11 +85,20 @@ test('向量精排把无词面重合的旧事带回召回，开启需嵌入且�
   ]);
   const noise = f.store.ingest('p1', 'noise', '医院附近的桂花开了').message;
   f.store.setEmbeddings([
-    { id: noise.id, peer: 'p1', kind: 'message', vector: new Float32Array([0, 0, 1]), model: 'test-embed' },
+    {
+      id: noise.id,
+      peer: 'p1',
+      kind: 'message',
+      vector: new Float32Array([0, 0, 1]),
+      model: 'test-embed',
+    },
   ]);
   const queryVector = new Float32Array([0.95, 0.9, 0.1]);
   const hits = f.store.search('p1', '医院体验', 5, undefined, queryVector);
-  assert.ok(hits.some((h) => h.id === old.id), '语义相近的内容被召回');
+  assert.ok(
+    hits.some((h) => h.id === old.id),
+    '语义相近的内容被召回',
+  );
   // 无查询向量时保持纯词面行为：无重合则无结果
   const lexicalOnly = f.store.search('p1', '完全无关的词', 5);
   assert.equal(lexicalOnly.length, 0);
@@ -86,12 +107,20 @@ test('向量精排把无词面重合的旧事带回召回，开启需嵌入且�
 test('内容更新后旧向量失效，待嵌入清单只列缺失项', (t) => {
   const f = fixture(t);
   const m = f.store.ingest('p1', 'a', '最初的描述').message;
-  f.store.setEmbeddings([{ id: m.id, peer: 'p1', kind: 'message', vector: new Float32Array([1, 1]), model: 'test-embed' }]);
+  f.store.setEmbeddings([
+    {
+      id: m.id,
+      peer: 'p1',
+      kind: 'message',
+      vector: new Float32Array([1, 1]),
+      model: 'test-embed',
+    },
+  ]);
   assert.equal(f.store.pendingEmbeddings('p1').length, 0);
   f.store.updateMedia('p1', m.id, [{ kind: 'image', description: '新的观察' }]);
   assert.equal(f.store.pendingEmbeddings('p1').length, 1, '重新索引后需要重建向量');
   f.store.forget('p1', m.id);
-  assert.equal(f.store.embeddingStatus().count, 0, '删除来源会清理向量');
+  assert.equal(f.store.embeddings('p1').length, 0, '删除来源会清理向量');
 });
 
 test('文本里漏出的 [表情：x] 会被转换为目录内表情，匹配不到则删除', () => {
@@ -136,10 +165,14 @@ test('英文伪协议 [sticker:slug] / (sticker:slug) 同样被转换或删除�
     '你好呀(sticker:cat053)',
   ]) {
     const r = parseReply(JSON.stringify({ messages: [variant], memoryUpdates: [] }), stickers);
-    assert.deepEqual(r.parts, [
-      { type: 'sticker', slug: 'cat053', description: '猫猫挥手' },
-      { type: 'text', text: '你好呀' },
-    ], variant);
+    assert.deepEqual(
+      r.parts,
+      [
+        { type: 'sticker', slug: 'cat053', description: '猫猫挥手' },
+        { type: 'text', text: '你好呀' },
+      ],
+      variant,
+    );
   }
   const unknown = parseReply(
     '{"messages":["你好呀[sticker:no-such]"],"memoryUpdates":[]}',
@@ -149,9 +182,7 @@ test('英文伪协议 [sticker:slug] / (sticker:slug) 同样被转换或删除�
 });
 
 test('模型正确走 JSON 协议时行为不变', () => {
-  const stickers = [
-    { slug: 'happy', description: '开心', tags: ['开心'], file: 'happy.png' },
-  ];
+  const stickers = [{ slug: 'happy', description: '开心', tags: ['开心'], file: 'happy.png' }];
   const reply = parseReply(
     '{"messages":["好耶",{"type":"sticker","slug":"happy"}],"memoryUpdates":[]}',
     stickers,
@@ -178,10 +209,14 @@ test('近期表情使用从历史提取，供反重复提示', (t) => {
   const f = fixture(t);
   const source = f.store.ingest('p1', 'a', '你好').message;
   f.store.sql
-    .prepare("INSERT INTO messages(id,peer_id,role,content,status,created_at) VALUES(?,?, 'assistant', ?, 'sent', ?)")
+    .prepare(
+      "INSERT INTO messages(id,peer_id,role,content,status,created_at) VALUES(?,?, 'assistant', ?, 'sent', ?)",
+    )
     .run('r1', 'p1', '[表情：开心] 你好呀', source.created_at + 1000);
   f.store.sql
-    .prepare("INSERT INTO messages(id,peer_id,role,content,status,created_at) VALUES(?,?, 'assistant', ?, 'sent', ?)")
+    .prepare(
+      "INSERT INTO messages(id,peer_id,role,content,status,created_at) VALUES(?,?, 'assistant', ?, 'sent', ?)",
+    )
     .run('r2', 'p1', '[表情：加油] 一起努力', source.created_at + 2000);
   const history = f.store.history('p1');
   // 修复前这里返回的是消息里出现的原始文本（描述），与 rotateStickers 比对的
@@ -190,7 +225,10 @@ test('近期表情使用从历史提取，供反重复提示', (t) => {
     { slug: 'happy', description: '开心', tags: ['开心'], file: 'happy.png' },
     { slug: 'go', description: '加油', tags: ['加油'], file: 'go.png' },
   ]);
-  assert.deepEqual(uses.map((u) => u.slug), ['happy', 'go']);
+  assert.deepEqual(
+    uses.map((u) => u.slug),
+    ['happy', 'go'],
+  );
 });
 
 test('高频聊天后，重要旧记忆仍进提示词（最新10条陷阱回归）', async (t) => {
@@ -199,19 +237,27 @@ test('高频聊天后，重要旧记忆仍进提示词（最新10条陷阱回归
   );
   const f = fixture(t, model);
   const source = f.store.ingest('p1', 'old', '我生日在三月，别忘记').message;
-  f.store.addMemory('p1', { content: '生日在三月', kind: 'stated', sources: [source.id] }, f.store.peer('p1')!.version);
+  f.store.addMemory(
+    'p1',
+    { content: '生日在三月', kind: 'stated', sources: [source.id] },
+    f.store.peer('p1')!.version,
+  );
   f.store.sql
     .prepare("UPDATE memories SET created_at=? WHERE content='生日在三月'")
     .run(Date.now() - 20 * 86400000);
   // 制造 12 条更新的记忆，把旧的挤出“最新 10 条”
   for (let i = 0; i < 12; i++) {
     const s = f.store.ingest('p1', 'n' + i, '日常话题' + i).message;
-    f.store.addMemory('p1', { content: '新记忆' + i, kind: 'interpretation', sources: [s.id] }, f.store.peer('p1')!.version);
+    f.store.addMemory(
+      'p1',
+      { content: '新记忆' + i, kind: 'interpretation', sources: [s.id] },
+      f.store.peer('p1')!.version,
+    );
   }
   f.runtime.accept('p1', 'q', '你知道我的生日吗');
   await f.runtime.drain();
   assert.ok(model.calls.length >= 1);
-  const system = model.calls[0]!.messages[0]!.content;
+  const system = promptText(model.calls[0]!.messages);
   assert.match(system, /生日在三月/, '重要旧记忆按重要性排序后仍在提示词中');
 });
 
@@ -236,8 +282,18 @@ test('删除联系人会清空该联系人的会话、日记、记忆与惦记�
   const peer = f.store.ensurePeer('del:1', 'wechat', 'wechat:del@im.wechat', '', true);
   const source = f.store.ingest('del:1', 'evt', '我养了一只猫叫团子').message;
   const version = f.store.peer('del:1')!.version;
-  f.store.addMemory('del:1', { content: '养了一只猫叫团子', kind: 'stated', sources: [source.id] }, version);
-  f.store.enqueue('del:1', 'diary', 'diary:1', { after: 0, through: 1, day: '2026-10-20' }, Date.now());
+  f.store.addMemory(
+    'del:1',
+    { content: '养了一只猫叫团子', kind: 'stated', sources: [source.id] },
+    version,
+  );
+  f.store.enqueue(
+    'del:1',
+    'diary',
+    'diary:1',
+    { after: 0, through: 1, day: '2026-10-20' },
+    Date.now(),
+  );
   const task = f.store.claim('del:1')!;
   f.store.saveDiary(task, '2026-10-20', [{ content: '今天聊了猫', sources: [source.id] }], []);
   f.store.enqueue('del:1', 'proactive', 'loop:1', { loopId: 'x' }, Date.now());
@@ -268,7 +324,11 @@ test('删除联系人后重新收到消息，是一个全新的联系人', (t) =
   f.store.ensurePeer('del:2', 'wechat', 'wechat:del2@im.wechat', '', true);
   const source = f.store.ingest('del:2', 'evt2', '我对花生过敏').message;
   const version = f.store.peer('del:2')!.version;
-  f.store.addMemory('del:2', { content: '对花生过敏', kind: 'stated', sources: [source.id] }, version);
+  f.store.addMemory(
+    'del:2',
+    { content: '对花生过敏', kind: 'stated', sources: [source.id] },
+    version,
+  );
   assert.equal(f.store.memories('del:2').length, 1);
 
   f.store.deletePeer('del:2');
@@ -282,4 +342,3 @@ test('删除联系人后重新收到消息，是一个全新的联系人', (t) =
   // 全文索引同样不能残留旧内容。
   assert.equal(f.store.search('del:2', '花生').length, 0, '旧内容不应还能被检索到');
 });
-

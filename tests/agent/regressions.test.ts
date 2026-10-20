@@ -66,7 +66,12 @@ test('P0-2 "不开心" 判为负面，不被当成开心', (t) => {
   const f = fixture(t);
   const now = Date.now();
   for (const text of ['今天不开心', '我今天不开心', '不开心']) {
-    f.store.pulseMoodFromExchange('p1', { user: text, assistant: '怎么了', userAt: now }, now, 'Asia/Shanghai');
+    f.store.pulseMoodFromExchange(
+      'p1',
+      { user: text, assistant: '怎么了', userAt: now },
+      now,
+      'Asia/Shanghai',
+    );
     const mood = f.store.mood('p1');
     assert.ok(mood.valence < 0, `"${text}" 应为负面，实际 ${mood.valence}`);
     assert.equal(mood.reason, '对方提到了不开心的事');
@@ -76,12 +81,22 @@ test('P0-2 "不开心" 判为负面，不被当成开心', (t) => {
 test('P0-2 感谢与正向表达仍判为正面', (t) => {
   const f = fixture(t);
   const now = Date.now();
-  f.store.pulseMoodFromExchange('p1', { user: '谢谢你', assistant: '不客气', userAt: now }, now, 'Asia/Shanghai');
+  f.store.pulseMoodFromExchange(
+    'p1',
+    { user: '谢谢你', assistant: '不客气', userAt: now },
+    now,
+    'Asia/Shanghai',
+  );
   assert.ok(f.store.mood('p1').valence > 0, '感谢应提升心情');
   assert.equal(f.store.mood('p1').reason, '对方表达了感谢');
 
   const g = fixture(t);
-  g.store.pulseMoodFromExchange('p1', { user: '哈哈哈好开心', assistant: '嗯嗯', userAt: now }, now, 'Asia/Shanghai');
+  g.store.pulseMoodFromExchange(
+    'p1',
+    { user: '哈哈哈好开心', assistant: '嗯嗯', userAt: now },
+    now,
+    'Asia/Shanghai',
+  );
   assert.ok(g.store.mood('p1').valence > 0, '开心应提升心情');
 });
 
@@ -105,7 +120,11 @@ test('P0-3 recentStickerUse 把描述解析成 slug，轮换过滤真正生效',
     },
   ];
   const uses = recentStickerUse(history as any, catalog);
-  assert.deepEqual(uses.map((u) => u.slug), ['cat053'], '描述必须映射为 slug');
+  assert.deepEqual(
+    uses.map((u) => u.slug),
+    ['cat053'],
+    '描述必须映射为 slug',
+  );
 
   // 目录（40）大于窗口（32），且除了 cat053 之外全都没用过。
   // 修复前：used 集合被整个从窗口里剔除，模型永远看不到自己刚发过的表情，
@@ -190,13 +209,21 @@ test('P1-5 年度循环保持月日，闰日落到 2 月 28 日', () => {
   const zone = 'Asia/Shanghai';
   const leap = Date.parse('2028-02-29T10:00:00Z');
   const next = addYear(leap, zone);
-  const parts = new Intl.DateTimeFormat('en-CA', { timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit' })
-    .format(new Date(next));
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: zone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date(next));
   assert.equal(parts, '2029-02-28');
   // 普通日期月日不变，且跨过 365 天窗口后仍正确
   const normal = addYear(Date.parse('2026-10-18T10:00:00Z'), zone);
-  const p2 = new Intl.DateTimeFormat('en-CA', { timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit' })
-    .format(new Date(normal));
+  const p2 = new Intl.DateTimeFormat('en-CA', {
+    timeZone: zone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date(normal));
   assert.equal(p2, '2027-10-18');
 });
 
@@ -209,7 +236,12 @@ test('P1-5 resolveOpenLoop 年度循环不漂移', (t) => {
   const loop = f.store.openLoops('p1')[0];
   f.store.resolveOpenLoop('p1', loop.id, Date.now(), 'Asia/Shanghai');
   const after = f.store.openLoops('p1')[0];
-  const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' });
+  const fmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  });
   assert.equal(fmt.format(new Date(after.due_at)), '2029-02-28');
 });
 
@@ -230,7 +262,11 @@ test('P1-7 连续负面脉冲不会钉死状态（主动联系门控保持可用
 test('P2-10 正面脉冲清除上一轮的负面归因', (t) => {
   const f = fixture(t);
   const now = Date.now();
-  f.store.pulseMood('p1', { valence: -0.5, energy: -0.3, reason: '对方提到了不开心的事' }, now - 3600000);
+  f.store.pulseMood(
+    'p1',
+    { valence: -0.5, energy: -0.3, reason: '对方提到了不开心的事' },
+    now - 3600000,
+  );
   f.store.pulseMood('p1', { valence: 0.4, energy: 0.2 }, now);
   assert.equal(f.store.mood('p1').reason, '', 'reason 属于上一轮，必须清空');
 });
@@ -244,18 +280,32 @@ test('P2-11 空开场白不跳过主动联系门控', async (t) => {
   f.store.enqueue('wechat:a', 'proactive', 'greeting-blank', { greeting: '' }, Date.now());
   await f.runtime.drain();
   assert.equal(f.delivered.length, 0, '未开启主动联系时，空开场白不应发出消息');
-  const task = f.store.sql.prepare("SELECT state FROM tasks WHERE dedupe_key='greeting-blank'").get() as any;
+  const task = f.store.sql
+    .prepare("SELECT state FROM tasks WHERE dedupe_key='greeting-blank'")
+    .get() as any;
   assert.equal(task.state, 'superseded', '被门控否决的任务按取代处理，不冒充成功');
 });
 
 test('P2-11 非空开场白仍然跳过门控（保留原行为）', async (t) => {
-  const f = fixture(t, new FakeModel(() => completion({ messages: ['你好呀。'], memoryUpdates: [] })), {
-    proactiveEnabled: false,
-  });
+  const f = fixture(
+    t,
+    new FakeModel(() => completion({ messages: ['你好呀。'], memoryUpdates: [] })),
+    {
+      proactiveEnabled: false,
+    },
+  );
   f.store.ensurePeer('wechat:a', 'wechat', 'a', 'ctx', true);
-  f.store.enqueue('wechat:a', 'proactive', 'greeting-real', { greeting: '嗨，我是亚托莉' }, Date.now());
+  f.store.enqueue(
+    'wechat:a',
+    'proactive',
+    'greeting-real',
+    { greeting: '嗨，我是亚托莉' },
+    Date.now(),
+  );
   await f.runtime.drain();
-  const row = f.store.sql.prepare('SELECT state,error FROM tasks WHERE dedupe_key=?').get('greeting-real') as any;
+  const row = f.store.sql
+    .prepare('SELECT state,error FROM tasks WHERE dedupe_key=?')
+    .get('greeting-real') as any;
   assert.equal(f.delivered.length, 1, `非空开场白应照常发出（实际错误：${row?.error}）`);
 });
 
@@ -267,15 +317,15 @@ test('P2-13 工具查询与最终生成分别计费', async (t) => {
   (f.model as any).handle = () => {
     turn++;
     if (turn === 1)
-      return completion({}, [
-        { id: 'c1', name: 'search_memory', arguments: { query: '生日' } },
-      ]);
+      return completion({}, [{ id: 'c1', name: 'search_memory', arguments: { query: '生日' } }]);
     return completion({ messages: ['记得的。'], memoryUpdates: [] });
   };
   f.store.ingest('p1', 'e1', '你还记得我生日吗');
   f.store.enqueueChat('p1', 1, 0);
   await f.runtime.drain();
-  const rows = f.store.sql.prepare('SELECT purpose,count(*) n FROM usage GROUP BY purpose').all() as any[];
+  const rows = f.store.sql
+    .prepare('SELECT purpose,count(*) n FROM usage GROUP BY purpose')
+    .all() as any[];
   const purposes = rows.map((r) => r.purpose).sort();
   assert.ok(purposes.includes('chat_tool'), '应存在 chat_tool 计费');
   assert.ok(purposes.includes('chat'), '应存在 chat 生成计费');

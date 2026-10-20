@@ -121,3 +121,12 @@ export function userSources(messages: ModelMessage[]): string[] {
     .filter((m) => m.role === 'user')
     .flatMap((m) => [...m.content.matchAll(/\[来源 ([^\s|]+) \|/g)].map((v) => v[1]));
 }
+/** Everything the model was given, in order.
+ *
+ *  Prompt material (notes, memories, recall) moved out of the system string
+ *  into a per-turn user message after the history so the system prompt stays a
+ *  cacheable prefix. Tests that care whether a fact reached the model should
+ *  look at the whole request, not at messages[0]. */
+export function promptText(messages: ModelMessage[]): string {
+  return messages.map((m) => m.content).join('\n\n');
+}

@@ -9,7 +9,7 @@ import {
   parseReply,
   type Sticker,
 } from '@atri/core';
-import { fixture, FakeModel, completion } from '../helpers.js';
+import { fixture, FakeModel, completion, promptText } from '../helpers.js';
 
 const stickers: Sticker[] = [
   { slug: 'happy', description: '开心', tags: ['开心'], file: 'happy.png' },
@@ -42,7 +42,10 @@ test('resolveDue 拒绝语义上不可能的时间戳（JSON 合法但胡编）'
     undefined,
     '未来超过 5 年',
   );
-  assert.ok(resolveDue(now - 3600000, undefined, now, 'Asia/Shanghai'), '1 天内的过去时间允许（时钟偏差）');
+  assert.ok(
+    resolveDue(now - 3600000, undefined, now, 'Asia/Shanghai'),
+    '1 天内的过去时间允许（时钟偏差）',
+  );
   assert.equal(
     resolveDue(undefined, '1970-01-01 08:00', now, 'Asia/Shanghai'),
     undefined,
@@ -131,7 +134,7 @@ test('提示词记忆与召回去重，同一条不出现两次', async (t) => {
   );
   f.runtime.accept('p1', 'q', '我喜欢喝什么茶来着');
   await f.runtime.drain();
-  const system = String(model.calls[0]!.messages[0]!.content);
+  const system = promptText(model.calls[0]!.messages);
   const count = (system.match(/喜欢喝乌龙茶/g) ?? []).length;
   assert.ok(count <= 1, `记忆与召回去重，实际出现 ${count} 次`);
 });
@@ -150,7 +153,11 @@ test('表情目录按天轮换，窗口外的表情可达且近期用过的靠�
   const day1 = rotateStickers(all, [], now, window);
   const day2 = rotateStickers(all, [], now + 86400000, window);
   assert.equal(day1.length, window);
-  assert.notDeepEqual(day1.map((s) => s.slug), day2.map((s) => s.slug), '隔天窗口不同');
+  assert.notDeepEqual(
+    day1.map((s) => s.slug),
+    day2.map((s) => s.slug),
+    '隔天窗口不同',
+  );
   assert.ok(day1.every((s) => all.includes(s)));
   const used = rotateStickers(all, [{ slug: 'cat000' }], now, window);
   assert.ok(
@@ -212,9 +219,7 @@ test('到期开环独立配额：当天已主动联系过仍可问结果', async
   });
   const f = fixture(t, model, { proactiveEnabled: true });
   f.store.ensurePeer('wechat:p', 'wechat', 'p', 'context', true);
-  const source = f.store
-    .ingest('wechat:p', 'src', '我明天面试', [], clock - 30 * 3600000)
-    .message;
+  const source = f.store.ingest('wechat:p', 'src', '我明天面试', [], clock - 30 * 3600000).message;
   f.store.addOpenLoop(
     'wechat:p',
     { content: '问面试结果', dueAt: clock + 6 * 3600000, dueText: '明天', sources: [source.id] },
@@ -291,7 +296,10 @@ test('来源标注泄漏：剥除前缀，多来源块拆成独立气泡', () =>
   assert.deepEqual(json.parts, [{ type: 'text', text: '开场的回应' }]);
   // 与表情混排：剥掉来源前缀，表情照常转换
   const mixed = parseReply('[来源 a:0 | 10/18 00:24]好耶[表情：开心]！', stickers);
-  assert.ok(mixed.parts.some((p) => p.type === 'sticker'), '表情被转换');
+  assert.ok(
+    mixed.parts.some((p) => p.type === 'sticker'),
+    '表情被转换',
+  );
   assert.deepEqual(
     mixed.parts.filter((p) => p.type === 'text').map((p) => p.text),
     ['好耶！'],

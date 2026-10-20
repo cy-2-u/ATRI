@@ -1,7 +1,8 @@
 # tests/
 
-`node scripts/test.mjs` 递归收集 `tests/**/*.test.ts` 与 `packages/**/*.test.ts`，所以子目录
-不影响执行。
+`npm test`（即 `node scripts/test.mjs`）递归收集 `tests/**/*.test.ts` 与
+`packages/**/*.test.ts`，所以子目录不影响执行；同一入口还会核对管理页调用与后端路由。
+加 `--smoke` 运行需要先 `npm run build` 的编译后服务烟雾测试，加 `--all` 两者都跑。
 
 ```
 tests/

@@ -127,9 +127,36 @@ test('Anthropic 工具结果映射为 user tool_result，思考块不作为最�
     ],
     [tool],
   );
-  assert.equal(bodies[1].system, 'personality');
+  assert.equal(bodies[1].system[0].text, 'personality');
+  // Anthropic caches only what carries an explicit marker; the stable system
+  // block is the one prefix that repeats between turns.
+  assert.deepEqual(bodies[1].system[0].cache_control, { type: 'ephemeral' });
   assert.equal(bodies[1].messages.at(-1).content[0].tool_use_id, 'c1');
   assert.equal(bodies[1].messages[1].content[0].signature, 'sig');
+});
+test('Anthropic 缓存断点固定在前缀末尾，不随动态内容移动', async () => {
+  const bodies: any[] = [];
+  const client = new HttpModel({ ...config, format: 'anthropic' }, (async (_url, init) => {
+    bodies.push(JSON.parse(String(init?.body)));
+    return Response.json({ content: [{ type: 'text', text: 'ok' }], usage: {} });
+  }) as typeof fetch);
+  await client.complete([
+    { role: 'system', content: 'persona' },
+    { role: 'user', content: 'old-1' },
+    { role: 'user', content: 'old-2', cacheBreakpoint: true },
+    // Everything below varies per turn; the marker must not end up here just
+    // because it arrives last in the array.
+    { role: 'user', content: 'per-turn material' },
+    { role: 'user', content: 'trigger' },
+  ]);
+  // Consecutive user messages are merged into one block, so the marker has to
+  // sit on the element that `old-2` contributed.
+  const blocks = bodies[0].messages[0].content;
+  const texts = blocks.map((b: any) => b.text);
+  assert.deepEqual(texts, ['old-1', 'old-2', 'per-turn material', 'trigger']);
+  assert.deepEqual(blocks[1].cache_control, { type: 'ephemeral' });
+  assert.equal(blocks[2].cache_control, undefined);
+  assert.equal(blocks[3].cache_control, undefined);
 });
 test('Gemini 保留 functionCall 的 thoughtSignature 与图片块', async () => {
   const bodies: any[] = [];

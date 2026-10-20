@@ -29,7 +29,13 @@ const DOTTED_MAPPED = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/;
 
 function isPrivateV6(host: string): boolean {
   const h = host.toLowerCase();
-  if (h === '::1' || h === '::' || h.startsWith('fe80:') || h.startsWith('fc') || h.startsWith('fd'))
+  if (
+    h === '::1' ||
+    h === '::' ||
+    h.startsWith('fe80:') ||
+    h.startsWith('fc') ||
+    h.startsWith('fd')
+  )
     return true;
   // IPv4-mapped addresses must not slip through, in BOTH spellings. Only the
   // dotted form was handled, so the same address written in hex fell through to

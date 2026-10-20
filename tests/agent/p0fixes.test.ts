@@ -36,8 +36,13 @@ test('P0-2 主动消息只标记它真正问到的开环', async (t) => {
   );
   const f = fixture(t, model, { proactiveEnabled: true, quietStart: 0, quietEnd: 0 });
   f.store.ensurePeer('wechat:p', 'wechat', 'p', 'context', true);
-  const source = f.store.ingest('wechat:p', 'src', '明天面试，后天体检', [], now - 26 * 3600000)
-    .message;
+  const source = f.store.ingest(
+    'wechat:p',
+    'src',
+    '明天面试，后天体检',
+    [],
+    now - 26 * 3600000,
+  ).message;
   f.store.addOpenLoop('wechat:p', { content: '面试情况', dueAt: now - 1000, sources: [source.id] });
   f.store.addOpenLoop('wechat:p', { content: '体检安排', dueAt: now - 900, sources: [source.id] });
   f.runtime.schedule(now);
@@ -139,11 +144,23 @@ test('P0-6 embeddingEnabled 关闭后不再提供向量', async (t) => {
 test('P0-7 置顶记忆不被 500 条滑动窗口截断', (t) => {
   const f = fixture(t);
   const insert = f.store.sql.prepare(
-    "INSERT INTO memories(id,peer_id,content,kind,sources,source_hash,hits,last_hit_at,created_at,pinned,invalid_at,importance) VALUES(?,?,?,?,?,?,0,0,?,?,0,0.5)",
+    'INSERT INTO memories(id,peer_id,content,kind,sources,source_hash,hits,last_hit_at,created_at,pinned,invalid_at,importance) VALUES(?,?,?,?,?,?,0,0,?,?,0,0.5)',
   );
   for (let i = 0; i < 520; i++)
-    insert.run(`m${i}`, 'p1', `内容${i}`, 'stated', '[]', `h${i}`, Date.now() - (520 - i) * 1000, i === 0 ? 1 : 0);
-  assert.ok(f.store.memories('p1').some((m) => m.id === 'm0'), '最老的置顶记忆仍在');
+    insert.run(
+      `m${i}`,
+      'p1',
+      `内容${i}`,
+      'stated',
+      '[]',
+      `h${i}`,
+      Date.now() - (520 - i) * 1000,
+      i === 0 ? 1 : 0,
+    );
+  assert.ok(
+    f.store.memories('p1').some((m) => m.id === 'm0'),
+    '最老的置顶记忆仍在',
+  );
   assert.equal(f.store.rankedMemories('p1', 10)[0]!.id, 'm0', '置顶记忆排第一');
 });
 
@@ -161,7 +178,10 @@ test('P1 更正记忆不再伪装成用户发言', (t) => {
   assert.equal(after, before, '静默计时没有被重置');
   const roles = f.store.history('p1').map((m) => m.role);
   assert.ok(!roles.includes('system'), '更正记录不进入对话历史');
-  assert.ok(f.store.memories('p1').every((m) => m.content !== '用户喜欢猫'), '旧记忆被替代');
+  assert.ok(
+    f.store.memories('p1').every((m) => m.content !== '用户喜欢猫'),
+    '旧记忆被替代',
+  );
 });
 
 test('P1 stated 记忆不能只引用助手自己的话', (t) => {
@@ -257,7 +277,11 @@ test('P1 parseReply 使用配置时区解析 due', () => {
   const direct = resolveDue(undefined, '明天 08:00', now, 'America/New_York');
   assert.equal(direct, Date.parse('2026-09-13T12:00:00Z'), '纽约的明天 08:00 = UTC 12:00');
   const shanghai = resolveDue(undefined, '明天 08:00', now, 'Asia/Shanghai');
-  assert.equal(shanghai, Date.parse('2026-09-14T00:00:00Z'), '上海的明天 08:00 = UTC 00:00（9/14 凌晨）');
+  assert.equal(
+    shanghai,
+    Date.parse('2026-09-14T00:00:00Z'),
+    '上海的明天 08:00 = UTC 00:00（9/14 凌晨）',
+  );
   // 纽约 9/13 当天 08:00 已过（now 是 UTC 00:00 = 纽约 20:00 前一天? 验证明天语义）
   assert.equal(parsed.openLoops[0]!.dueAt > 0, true);
 });

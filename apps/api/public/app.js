@@ -40,6 +40,7 @@ let authenticated = false,
   lastQr = '',
   noticeTimer,
   settingsVersion = 0,
+  settingsDirtyFlag = false,
   polling = false,
   issuesSnapshot = '',
   chatSnapshot = '',
@@ -118,25 +119,29 @@ function empty(node, message) {
 }
 
 function confirmButton(label, message, handler, classes = 'ghost small danger') {
-  const node = button(label, async () => {
-    if (node.dataset.armed !== '1') {
-      node.dataset.armed = '1';
-      node.textContent = message;
-      node.classList.add('armed');
-      setTimeout(() => {
-        if (node.isConnected) {
-          node.dataset.armed = '';
-          node.textContent = label;
-          node.classList.remove('armed');
-        }
-      }, 3000);
-      return;
-    }
-    node.dataset.armed = '';
-    node.textContent = label;
-    node.classList.remove('armed');
-    await handler();
-  }, classes);
+  const node = button(
+    label,
+    async () => {
+      if (node.dataset.armed !== '1') {
+        node.dataset.armed = '1';
+        node.textContent = message;
+        node.classList.add('armed');
+        setTimeout(() => {
+          if (node.isConnected) {
+            node.dataset.armed = '';
+            node.textContent = label;
+            node.classList.remove('armed');
+          }
+        }, 3000);
+        return;
+      }
+      node.dataset.armed = '';
+      node.textContent = label;
+      node.classList.remove('armed');
+      await handler();
+    },
+    classes,
+  );
   return node;
 }
 
@@ -170,7 +175,22 @@ function decorateConfirm(node, message) {
 }
 
 const openDropdowns = new Set();
-function createDropdown({ options = [], value = '', onChange, ariaLabel = '', placeholder = '请选择' }) {
+// One delegated outside-click listener for every dropdown. Each createDropdown
+// used to add its own document listener, and the peers/persona panels recreate
+// dropdowns on every poll, so those listeners accumulated for the whole page
+// lifetime.
+document.addEventListener('click', (event) => {
+  for (const dropdown of openDropdowns) {
+    if (!dropdown.root.contains(event.target)) dropdown.close();
+  }
+});
+function createDropdown({
+  options = [],
+  value = '',
+  onChange,
+  ariaLabel = '',
+  placeholder = '请选择',
+}) {
   const root = el('div', undefined, 'dropdown');
   const toggle = el('button', undefined, 'dropdown-toggle');
   toggle.type = 'button';
@@ -197,7 +217,11 @@ function createDropdown({ options = [], value = '', onChange, ariaLabel = '', pl
   function renderMenu() {
     menu.replaceChildren();
     for (const opt of list) {
-      const item = el('button', undefined, 'dropdown-option' + (opt.value === current ? ' selected' : ''));
+      const item = el(
+        'button',
+        undefined,
+        'dropdown-option' + (opt.value === current ? ' selected' : ''),
+      );
       item.type = 'button';
       item.setAttribute('role', 'option');
       item.setAttribute('aria-selected', String(opt.value === current));
@@ -265,9 +289,6 @@ function createDropdown({ options = [], value = '', onChange, ariaLabel = '', pl
       close();
       toggle.focus();
     } else if (event.key === 'Tab') close();
-  });
-  document.addEventListener('click', (event) => {
-    if (openDropdowns.has(api) && !root.contains(event.target)) close();
   });
   renderLabel();
   const api = {
@@ -339,7 +360,9 @@ function dayLabel(ts) {
   const sameYear = date.getFullYear() === today.getFullYear();
   return date.toLocaleDateString(
     'zh-CN',
-    sameYear ? { month: 'long', day: 'numeric', weekday: 'short' } : { year: 'numeric', month: 'long', day: 'numeric' },
+    sameYear
+      ? { month: 'long', day: 'numeric', weekday: 'short' }
+      : { year: 'numeric', month: 'long', day: 'numeric' },
   );
 }
 
@@ -432,10 +455,7 @@ function renderIssues(state) {
         'btn ghost',
       ),
     );
-    row.append(
-      el('p', task.address + ' · ' + task.kind + '：' + task.error, 'wrap'),
-      actions,
-    );
+    row.append(el('p', task.address + ' · ' + task.kind + '：' + task.error, 'wrap'), actions);
     issues.append(row);
   }
   for (const delivery of state.issues.deliveries) {
@@ -463,11 +483,13 @@ function renderIssues(state) {
       );
     // Two-step resend: first tap explains and arms, second tap actually
     // requeues — the old button was a dead end that only showed a hint.
-    actions.append(confirmButton('重新发送', '确认重发？', async () => {
-      await api('/api/deliveries/' + enc(delivery.id), 'POST', { action: 'retry' });
-      issuesSnapshot = '';
-      await loadStatus();
-    }));
+    actions.append(
+      confirmButton('重新发送', '确认重发？', async () => {
+        await api('/api/deliveries/' + enc(delivery.id), 'POST', { action: 'retry' });
+        issuesSnapshot = '';
+        await loadStatus();
+      }),
+    );
     row.append(actions);
     issues.append(row);
   }
@@ -520,20 +542,10 @@ async function loadStatus() {
     const row = el('div', undefined, 'row'),
       title = el('div', undefined, 'row-title');
     title.append(el('span', peer.address));
-    if (stuckPeers.has(peer.peerId)) title.append(el('span', '发送待确认，暂停回复', 'badge alert'));
+    if (stuckPeers.has(peer.peerId))
+      title.append(el('span', '发送待确认，暂停回复', 'badge alert'));
     const badges = el('div', undefined, 'badge-row');
-    if (peer.mood) {
-      const parts = [];
-      if (peer.mood.valence >= 0.3) parts.push('心情不错');
-      else if (peer.mood.valence <= -0.3) parts.push('心情低落');
-      else if (peer.mood.valence <= -0.12) parts.push('情绪平平');
-      if (peer.mood.energy <= -0.3) parts.push('有点累');
-      else if (peer.mood.energy >= 0.3) parts.push('精力足');
-      if (parts.length) badges.append(el('span', parts.join(' · '), 'badge'));
-      // Only show the cause while the state it describes still holds; a carried
-      // -over reason used to print "心情不错 · 对方提到了不开心的事".
-      if (peer.mood.reason && parts.length) badges.append(el('span', peer.mood.reason, 'badge'));
-    }
+    badges.append(...moodBadges(peer.mood));
     if (peer.dueLoops) badges.append(el('span', '惦记 ' + peer.dueLoops + ' 件事', 'badge'));
     if (peer.lastProactiveAt)
       badges.append(el('span', '上次问候 ' + relTime(peer.lastProactiveAt), 'badge'));
@@ -553,7 +565,13 @@ async function loadStatus() {
         el('span', formatNumber(u.calls) + ' 次', 'usage-count'),
         el(
           'p',
-          '输入 ' + formatNumber(u.input_tokens) + ' · 输出 ' + formatNumber(u.output_tokens) + ' token\n平均 ' + (u.average_ms / 1000).toFixed(2) + ' 秒',
+          '输入 ' +
+            formatNumber(u.input_tokens) +
+            ' · 输出 ' +
+            formatNumber(u.output_tokens) +
+            ' token\n平均 ' +
+            (u.average_ms / 1000).toFixed(2) +
+            ' 秒',
         ),
       );
       return card;
@@ -569,7 +587,16 @@ async function loadStatus() {
       heading.append(el('strong', purposeName(u.purpose)), time);
       row.append(
         heading,
-        el('p', '入 ' + formatNumber(u.input_tokens) + ' · 出 ' + formatNumber(u.output_tokens) + ' · ' + (u.duration_ms / 1000).toFixed(1) + ' 秒'),
+        el(
+          'p',
+          '入 ' +
+            formatNumber(u.input_tokens) +
+            ' · 出 ' +
+            formatNumber(u.output_tokens) +
+            ' · ' +
+            (u.duration_ms / 1000).toFixed(1) +
+            ' 秒',
+        ),
         el('p', u.address || '已删除的对话', 'recent-address'),
       );
       return row;
@@ -579,21 +606,31 @@ async function loadStatus() {
   return state;
 }
 
+/** The one rendering of a mood state, shared by the peer list and chat header:
+ *  they used to duplicate the thresholds, and only one of them showed why. */
+function moodBadges(mood) {
+  if (!mood) return [];
+  const parts = [];
+  if (mood.valence >= 0.3) parts.push('心情不错');
+  else if (mood.valence <= -0.3) parts.push('心情低落');
+  else if (mood.valence <= -0.12) parts.push('情绪平平');
+  if (mood.energy <= -0.3) parts.push('有点累');
+  else if (mood.energy >= 0.3) parts.push('精力足');
+  if (!parts.length) return [];
+  const badges = [el('span', parts.join(' · '), 'badge')];
+  // Only show the cause while the state it describes still holds; a carried
+  // -over reason used to print "心情不错 · 对方提到了不开心的事".
+  if (mood.reason) badges.push(el('span', mood.reason, 'badge'));
+  return badges;
+}
+
 function renderChatBadges(stuckPeers, states) {
   const box = $('chat-badges');
   box.replaceChildren();
   const state = states.find((s) => s.peerId === currentPeer);
   if (!state) return;
   if (stuckPeers.has(currentPeer)) box.append(el('span', '发送待确认，暂停回复', 'badge alert'));
-  if (state.mood) {
-    const parts = [];
-    if (state.mood.valence >= 0.3) parts.push('心情不错');
-    else if (state.mood.valence <= -0.3) parts.push('心情低落');
-    else if (state.mood.valence <= -0.12) parts.push('情绪平平');
-    if (state.mood.energy <= -0.3) parts.push('有点累');
-    else if (state.mood.energy >= 0.3) parts.push('精力足');
-    if (parts.length) box.append(el('span', parts.join(' · '), 'badge'));
-  }
+  box.append(...moodBadges(state.mood));
   if (state.dueLoops) box.append(el('span', '惦记 ' + state.dueLoops + ' 件事', 'badge'));
   if (!state.approved) box.append(el('span', '未允许', 'badge'));
 }
@@ -703,7 +740,10 @@ function refreshJournalPeerSelect(wechatPeers) {
     })),
   ];
   const current = journalDropdown.value;
-  journalDropdown.setOptions(options, options.some((o) => o.value === current) ? current : 'preview:default');
+  journalDropdown.setOptions(
+    options,
+    options.some((o) => o.value === current) ? current : 'preview:default',
+  );
 }
 
 function renderChatPeerList(previewPeer) {
@@ -714,7 +754,11 @@ function renderChatPeerList(previewPeer) {
   for (const peer of peers.filter((p) => p.channel === 'wechat'))
     items.push({ id: peer.id, address: peer.address, dot: peer.approved ? 'ok' : '' });
   for (const item of items) {
-    const node = el('button', undefined, 'peer-item' + (item.id === currentPeer ? ' selected' : ''));
+    const node = el(
+      'button',
+      undefined,
+      'peer-item' + (item.id === currentPeer ? ' selected' : ''),
+    );
     node.type = 'button';
     node.append(el('span', undefined, 'peer-dot ' + item.dot), el('span', item.address));
     node.onclick = () => {
@@ -742,7 +786,11 @@ function buildPersonaSelect(peer) {
       perform(async () => {
         await api('/api/peers/' + enc(peer.id) + '/persona', 'PUT', { personaId: value });
         personaState.bindings[peer.id] = value;
-        show(peer.id === 'preview:default' ? '试聊人格已更新，下一次对话生效。' : '该联系人的人格已更新。');
+        show(
+          peer.id === 'preview:default'
+            ? '试聊人格已更新，下一次对话生效。'
+            : '该联系人的人格已更新。',
+        );
       }),
   });
   personaSelects.set(peer.id, dropdown);
@@ -831,10 +879,7 @@ async function loadChat() {
     const mine = message.role === 'user';
     const msg = el('div', undefined, 'msg ' + (mine ? 'mine' : 'her'));
     const meta = el('div', undefined, 'bubble-meta');
-    meta.append(
-      el('span', mine ? '对方' : '亚托莉'),
-      el('time', relTime(message.created_at)),
-    );
+    meta.append(el('span', mine ? '对方' : '亚托莉'), el('time', relTime(message.created_at)));
     const del = el('button', '删除', 'bubble-del');
     del.type = 'button';
     del.setAttribute('aria-label', '删除这条消息');
@@ -897,7 +942,8 @@ async function loadChat() {
   }
   const isPreview = peer === 'preview:default';
   $('chat-form').hidden = !isPreview;
-  $('chat-title').textContent = peers.find((p) => p.id === peer)?.address || (isPreview ? '本地试聊' : peer);
+  $('chat-title').textContent =
+    peers.find((p) => p.id === peer)?.address || (isPreview ? '本地试聊' : peer);
   $('chat-sub').textContent = isPreview ? '本地试聊 · 人格生效中' : '微信联系人';
   $('chat-hint').textContent = isPreview
     ? '这里的对话不会发送到微信，用来试试她的反应。'
@@ -959,7 +1005,9 @@ async function loadJournal() {
     row.append(el('div', section.content, 'entry'));
     const actions = el('div', undefined, 'actions');
     actions.append(
-      button('查看 ' + section.sources.length + ' 条依据', () => showSources(peer, section.sources)),
+      button('查看 ' + section.sources.length + ' 条依据', () =>
+        showSources(peer, section.sources),
+      ),
       confirmButton('删除这一段', '确认删除？', async () => {
         await api('/api/peers/' + enc(peer) + '/records/' + enc(section.id), 'DELETE');
         journalSnapshot = '';
@@ -1008,11 +1056,7 @@ async function loadJournal() {
         await loadJournal();
       }),
     );
-    editor.append(
-      el('label', '更正为正确信息', 'hint'),
-      textarea,
-      editorActions,
-    );
+    editor.append(el('label', '更正为正确信息', 'hint'), textarea, editorActions);
     actions.append(
       button('更正', () => {
         editor.hidden = !editor.hidden;
@@ -1034,35 +1078,43 @@ async function loadJournal() {
 
   const loopBox = $('loops');
   loopBox.replaceChildren();
-  for (const loop of loops) {
+  for (const entry of loops) {
+    const thread = entry.type === 'thread';
     const row = el('div', undefined, 'row');
-    const badge =
-      loop.status === 'open'
-        ? loop.due_at <= Date.now()
-          ? '已到期'
-          : '等待中'
-        : loop.status === 'resolved'
-          ? '已了结'
-          : '已过期';
+    let badge;
+    if (entry.status !== 'open') badge = entry.status === 'resolved' ? '已了结' : '已过期';
+    else if (thread) badge = entry.asked ? '问过一次' : '等合适时机';
+    else badge = entry.due_at <= Date.now() ? '已到期' : '等待中';
     const badges = el('div', undefined, 'badge-row');
     badges.append(el('span', badge, 'badge'));
-    if (loop.dueText) badges.append(el('span', loop.dueText, 'badge'));
-    row.append(badges, el('p', loop.content));
+    if (thread) badges.append(el('span', entry.kind === 'promise' ? '答应的事' : '挂念', 'badge'));
+    else if (entry.due_text || entry.dueText)
+      badges.append(el('span', entry.due_text || entry.dueText, 'badge'));
+    row.append(badges, el('p', entry.content));
     const actions = el('div', undefined, 'actions');
     actions.append(
-      loop.status === 'open'
+      entry.status === 'open'
         ? button('了结', async () => {
-            await api('/api/peers/' + enc(peer) + '/loops/' + enc(loop.id) + '/resolve', 'POST');
+            if (thread)
+              await api(
+                '/api/peers/' + enc(peer) + '/threads/' + enc(entry.id) + '/resolve',
+                'POST',
+              );
+            else
+              await api('/api/peers/' + enc(peer) + '/loops/' + enc(entry.id) + '/resolve', 'POST');
             journalSnapshot = '';
             await loadJournal();
           })
-        : el('span', relTime(loop.resolved_at || loop.created_at), 'hint'),
+        : el('span', relTime(entry.resolved_at || entry.created_at), 'hint'),
     );
     row.append(actions);
     loopBox.append(row);
   }
   if (!loops.length)
-    empty(loopBox, '对方提到的具体安排（比如「明天面试」）会出现在这里，到点她会主动问起。');
+    empty(
+      loopBox,
+      '对方提到的具体安排（比如「明天面试」）会出现在这里，到点她会主动问起；没有日期的挂念和答应过的事也会一起列出。',
+    );
 }
 
 document.querySelectorAll('.subtab').forEach((tab) => {
@@ -1166,7 +1218,22 @@ async function loadPersonas(selectId) {
     // and a single tap would delete.
     decorateConfirm(del, '删除？');
 
-    item.append(pick, del);
+    // The 默认 tag used to be information with no control behind it, which left
+    // the server's "先设置其他人格为默认" guard telling the user to do something
+    // the page could not do. Every deletable (that is, non-default) row can
+    // claim the default.
+    const makeDefault = el('button', undefined, 'persona-default');
+    makeDefault.type = 'button';
+    makeDefault.textContent = '设为默认';
+    makeDefault.title = '把「' + persona.name + '」设为默认人格';
+    makeDefault.onclick = () =>
+      perform(async () => {
+        await api('/api/personas/' + enc(persona.id) + '/default', 'PUT');
+        await loadPersonas(persona.id);
+        show('已把「' + persona.name + '」设为默认。');
+      }, makeDefault);
+
+    item.append(pick, makeDefault, del);
     target.append(item);
   }
   if (selectId) selectPersona(selectId);
@@ -1200,7 +1267,10 @@ $('persona-create-cancel').onclick = () => {
   $('persona-create').hidden = true;
   $('persona-create-name').value = '';
   presetDropdown?.setOptions(
-    [{ value: '', label: '空白（自己写）' }, ...personaPresets.map((p) => ({ value: p.id, label: `${p.name} · ${p.description}` }))],
+    [
+      { value: '', label: '空白（自己写）' },
+      ...personaPresets.map((p) => ({ value: p.id, label: `${p.name} · ${p.description}` })),
+    ],
     '',
   );
 };
@@ -1215,7 +1285,10 @@ $('persona-create').onsubmit = (event) => {
     $('persona-create').hidden = true;
     $('persona-create-name').value = '';
     presetDropdown?.setOptions(
-      [{ value: '', label: '空白（自己写）' }, ...personaPresets.map((p) => ({ value: p.id, label: `${p.name} · ${p.description}` }))],
+      [
+        { value: '', label: '空白（自己写）' },
+        ...personaPresets.map((p) => ({ value: p.id, label: `${p.name} · ${p.description}` })),
+      ],
       '',
     );
     personaSelected = entry.id;
@@ -1325,13 +1398,13 @@ function applySettings(config) {
   formatDropdown.value = config.format;
   $('temperature').value = config.temperature ?? '';
   for (const key of [
-  'vision',
-  'proactiveEnabled',
-  'embeddingEnabled',
-  'sandboxEnabled',
-  'sandboxNetwork',
-])
-  $(key).checked = config[key];
+    'vision',
+    'proactiveEnabled',
+    'embeddingEnabled',
+    'sandboxEnabled',
+    'sandboxNetwork',
+  ])
+    $(key).checked = config[key];
   // Ticked but inert is the confusing state: the switch only takes effect once a
   // model name AND the separate key are present, and the key deliberately does
   // not fall back to the chat key. Say so instead of leaving a checkbox that
@@ -1354,6 +1427,7 @@ function applySettings(config) {
   $('apiKey').value = '';
   $('tavilyKey').value = '';
   $('embeddingApiKey').value = '';
+  settingsDirtyFlag = false;
   updateBudget();
 }
 
@@ -1372,7 +1446,9 @@ function updateBudget() {
   $('context-meter').value = Number.isFinite(used) ? Math.max(0, used) : 0;
   $('context-meter').setAttribute(
     'aria-valuetext',
-    complete ? '已分配 ' + formatNumber(used) + '，窗口 ' + formatNumber(windowTokens) + ' token' : '请填写上下文参数',
+    complete
+      ? '已分配 ' + formatNumber(used) + '，窗口 ' + formatNumber(windowTokens) + ' token'
+      : '请填写上下文参数',
   );
   $('inputBudgetTokens').setCustomValidity(
     overBudget ? '输入预算、输出上限和 1024 token 余量之和不能超过窗口。' : '',
@@ -1449,12 +1525,28 @@ function renderModelSuggestions() {
 $('test-llm').onclick = () =>
   perform(async () => {
     const result = await api('/api/test-llm', 'POST');
-    show('模型连通正常：' + result.model + '（' + result.format + '）· 延迟 ' + result.latencyMs + ' ms');
+    show(
+      '模型连通正常：' +
+        result.model +
+        '（' +
+        result.format +
+        '）· 延迟 ' +
+        result.latencyMs +
+        ' ms',
+    );
   }, $('test-llm'));
 $('test-embedding').onclick = () =>
   perform(async () => {
     const result = await api('/api/test-embedding', 'POST');
-    show('向量连通正常：' + result.model + ' · 维度 ' + result.dims + ' · 延迟 ' + result.latencyMs + ' ms');
+    show(
+      '向量连通正常：' +
+        result.model +
+        ' · 维度 ' +
+        result.dims +
+        ' · 延迟 ' +
+        result.latencyMs +
+        ' ms',
+    );
   }, $('test-embedding'));
 
 function renderSandbox(state) {
@@ -1534,6 +1626,7 @@ function setSettingsStatus(text) {
 
 function settingsChanged() {
   settingsVersion++;
+  settingsDirtyFlag = true;
   setSettingsStatus('有尚未保存的修改。');
   updateBudget();
 }
@@ -1546,18 +1639,19 @@ $('settings-form').onsubmit = (event) => {
   perform(async () => {
     const version = settingsVersion;
     const body = {};
-    for (const key of [...textSettings, 'apiKey', 'tavilyKey', 'embeddingApiKey']) body[key] = $(key).value;
+    for (const key of [...textSettings, 'apiKey', 'tavilyKey', 'embeddingApiKey'])
+      body[key] = $(key).value;
     body.format = formatDropdown.value;
     for (const key of numberSettings) body[key] = $(key).valueAsNumber;
     body.temperature = $('temperature').value === '' ? null : $('temperature').valueAsNumber;
     for (const key of [
-  'vision',
-  'proactiveEnabled',
-  'embeddingEnabled',
-  'sandboxEnabled',
-  'sandboxNetwork',
-])
-  body[key] = $(key).checked;
+      'vision',
+      'proactiveEnabled',
+      'embeddingEnabled',
+      'sandboxEnabled',
+      'sandboxNetwork',
+    ])
+      body[key] = $(key).checked;
     const saved = await api('/api/config', 'PUT', body);
     if (version === settingsVersion) {
       applySettings(saved);
@@ -1612,9 +1706,7 @@ $('logout').onclick = () =>
 
 /** True when the settings form holds edits that were never submitted. */
 function settingsDirty() {
-  return (
-    currentTab === 'settings' && $('settings-saved').textContent.startsWith('有尚未保存的修改')
-  );
+  return currentTab === 'settings' && settingsDirtyFlag;
 }
 
 async function selectTab(tab) {

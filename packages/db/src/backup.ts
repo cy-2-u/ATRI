@@ -52,7 +52,11 @@ export async function createBackup(
         if (typeof item.path === 'string') files.add(item.path);
     const custom = snapshot.prepare("SELECT value FROM settings WHERE key='stickers:custom'").get();
     if (custom) for (const item of JSON.parse(String(custom.value))) files.add(item.file);
-    if (existsSync(join(dataDir, 'admin-secret.txt'))) files.add('admin-secret.txt');
+    // admin-secret.txt is deliberately not included: a backup is the file most
+    // likely to be copied to a NAS or shared for support, and shipping the
+    // management password inside it turns a data leak into an account takeover.
+    // Restore keeps accepting old manifests that contain it (safePath allows
+    // the name) but new backups never create one.
     for (const file of files) {
       if (file === 'atri.db') continue;
       const source = safePath(dataDir, file),
