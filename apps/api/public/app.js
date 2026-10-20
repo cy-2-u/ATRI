@@ -1086,20 +1086,49 @@ async function loadPersonas(selectId) {
   target.replaceChildren();
   if (!personaState.list.length) empty(target, '还没有人格。');
   for (const persona of personaState.list) {
+    const isDefault = persona.id === personaState.defaultId;
+    // The row cannot be the click target any more: it now holds a delete button,
+    // and a <button> inside a <button> is invalid markup that browsers render as
+    // two unfocusable siblings. So the row is a container and the name part is
+    // the selection control.
     const item = el(
-      'button',
+      'div',
       undefined,
       'persona-item' + (persona.id === personaSelected ? ' selected' : ''),
     );
-    item.type = 'button';
+    const pick = el('button', undefined, 'persona-pick');
+    pick.type = 'button';
+    pick.setAttribute('aria-pressed', persona.id === personaSelected ? 'true' : 'false');
     const name = el('span', undefined, 'name');
     name.textContent = persona.name;
-    if (persona.id === personaState.defaultId) name.append(el('span', ' 默认', 'tag'));
-    item.append(name);
-    item.onclick = () => {
+    pick.append(name);
+    if (isDefault) pick.append(el('span', ' 默认', 'tag'));
+    pick.onclick = () => {
       personaSelected = persona.id;
       loadPersonas(persona.id);
     };
+
+    const del = el('button', undefined, 'persona-del');
+    del.type = 'button';
+    del.textContent = '×';
+    del.title = isDefault ? '默认人格不能删除，请先把其他设为默认' : '删除「' + persona.name + '」';
+    del.setAttribute('aria-label', del.title);
+    // Mirroring the backend rules here keeps the button from being a trap: the
+    // server enforces both, and these just avoid a pointless round trip.
+    del.disabled = isDefault || personaState.list.length <= 1;
+    del.onclick = () =>
+      perform(async () => {
+        await api('/api/personas/' + enc(persona.id), 'DELETE');
+        if (personaSelected === persona.id) personaSelected = '';
+        await loadPersonas();
+        show('已删除「' + persona.name + '」。');
+      }, del);
+    // After the handler, not before: decorateConfirm wraps whatever onclick it
+    // finds, so assigning afterwards would overwrite the arm-to-confirm step
+    // and a single tap would delete.
+    if (!del.disabled) decorateConfirm(del, '删除？');
+
+    item.append(pick, del);
     target.append(item);
   }
   if (selectId) selectPersona(selectId);
@@ -1403,28 +1432,35 @@ function renderSandbox(state) {
     ['内存上限', mem],
   ];
   if (state.isolation?.network) chips.push(['网络', state.isolation.network]);
-  // The backend already decides whether isolation is real or degraded; dropping
-  // the two fields left "已开启" as the only thing on screen. In the fallback
-  // path there is no namespace at all — /data (SQLite, API keys) is readable by
-  // any command and the network switch does nothing — so the operator must be
-  // told, not reassured.
+  // The 隔离 chip and its paragraph-long note were removed: the level is fixed
+  // by the deployment (nsjail in the container, directory-level on Windows) and
+  // nothing on this page changes it, so the pair was read-once noise that took
+  // over the card on a phone.
+  //
+  // The degraded case is different in kind, not degree — with no namespace the
+  // /data volume (SQLite, API keys) is readable by any command and the network
+  // switch silently does nothing — so that one keeps a warning. In production
+  // the chip never appears; it only shows when isolation is actually missing.
   const degraded = state.isolation?.level === 'directory';
-  if (state.isolation?.level)
-    chips.push(['隔离', degraded ? '目录级（已降级）' : 'nsjail 命名空间']);
   $('sandbox-status').replaceChildren(
     ...chips.map(([label, value]) => {
       const chip = el('span', undefined, 'status-chip');
-      if (degraded && label === '隔离') chip.classList.add('status-chip-warn');
       chip.append(el('span', label, 'status-chip-label'), el('span', value, 'status-chip-value'));
       return chip;
     }),
+    ...(degraded
+      ? [
+          (() => {
+            const chip = el('span', undefined, 'status-chip status-chip-warn');
+            chip.append(
+              el('span', '隔离', 'status-chip-label'),
+              el('span', '已降级：无命名空间隔离', 'status-chip-value'),
+            );
+            return chip;
+          })(),
+        ]
+      : []),
   );
-  const note = $('sandbox-note');
-  if (note) {
-    note.textContent = state.isolation?.note ?? '';
-    note.hidden = !state.isolation?.note;
-    note.classList.toggle('warn', degraded);
-  }
 }
 $('refresh-sandbox').onclick = () =>
   perform(async () => renderSandbox(await api('/api/sandbox')), $('refresh-sandbox'));

@@ -346,8 +346,7 @@ svg {
 .view[data-panel='persona'] > .persona-layout,
 .view[data-panel='stickers'] > .card,
 .view[data-panel='stickers'] > .sticker-grid,
-.view[data-panel='settings'] > .settings-columns,
-.view[data-panel='settings'] > .actions {
+.view[data-panel='settings'] > .settings-columns {
   width: auto;
 }
 
@@ -596,14 +595,6 @@ svg {
 .status-chip.status-chip-warn .status-chip-value {
   color: var(--danger-ink);
   font-weight: 600;
-}
-
-.sandbox-note {
-  margin: 6px 0 0;
-}
-
-.sandbox-note.warn {
-  color: var(--danger-ink);
 }
 
 .hint.alert-text {
@@ -1172,17 +1163,21 @@ svg {
 
 .view-toolbar {
   display: flex;
-  flex-wrap: wrap;
+  /* nowrap is load-bearing. With wrap, the line break is decided from each
+     item's flex-basis (auto = max-content), so a long contact id alone could
+     exceed the row and bump the button onto a second line no matter how far the
+     field was allowed to shrink. One row, and the field absorbs the squeeze. */
+  flex-wrap: nowrap;
   align-items: center;
   gap: 12px;
   margin-bottom: 16px;
 }
 
-/* An inline field is the flexible half of a toolbar: it takes the leftover room
-   and gives it back when the row gets tight, so the button beside it never gets
-   bumped to a second line by a long contact id. */
+/* An inline field is the flexible half of a toolbar: basis 0 keeps its
+   hypothetical size out of the line-breaking maths, so width always comes from
+   flex-grow rather than from the id inside the dropdown. */
 .view-toolbar > .field.inline {
-  flex: 1 1 auto;
+  flex: 1 1 0;
   min-width: 0;
 }
 
@@ -1282,24 +1277,16 @@ svg {
   align-items: start;
 }
 
-/* �½��˸� sits on the same row as the persona chips. Wrapping keeps it from
-   overflowing once there are many personas, and the button never shrinks so the
-   label stays readable. */
-.persona-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 12px;
-}
-
-.persona-head > .btn {
-  flex: none;
+/* �½��˸� is its own row above the list, so the list can be one persona per
+   row without the button competing for the same line. */
+.persona-new {
+  width: 100%;
+  margin-bottom: 10px;
 }
 
 .persona-list {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: 8px;
   min-width: 0;
 }
@@ -1308,17 +1295,18 @@ svg {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
-  padding: 10px 12px;
+  gap: 8px;
+  padding: 8px 8px 8px 12px;
   border: 1px solid var(--border-soft);
   border-radius: var(--radius-sm);
   background: var(--surface);
-  cursor: pointer;
   text-align: left;
   font: inherit;
   color: var(--text-dim);
 }
 
+/* The row is the selection target, so it stays a plain container: nesting the
+   delete button inside a <button> would be invalid and unfocusable. */
 .persona-item:hover {
   border-color: var(--accent);
 }
@@ -1329,8 +1317,62 @@ svg {
   color: var(--text);
 }
 
-.persona-item .name {
-  overflow-wrap: anywhere;
+.persona-pick {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.persona-pick .name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.persona-pick .tag {
+  flex: none;
+}
+
+.persona-del {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: none;
+  color: var(--text-faint);
+  font: inherit;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.persona-del:hover {
+  border-color: var(--danger);
+  color: var(--danger-ink);
+}
+
+.persona-del:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.persona-del[disabled] {
+  opacity: 0.35;
+  cursor: not-allowed;
 }
 
 .persona-item .tag {
@@ -1444,10 +1486,6 @@ svg {
   .settings-col:last-of-type .card {
     position: sticky;
     top: 0;
-  }
-
-  .settings-submit {
-    grid-column: 1 / -1;
   }
 }
 
@@ -1910,10 +1948,6 @@ dialog .row {
 
   .pill {
     padding: 7px 13px;
-  }
-
-  .settings-submit .btn {
-    width: 100%;
   }
 
   .drawer-backdrop {

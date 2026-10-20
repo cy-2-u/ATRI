@@ -159,10 +159,8 @@
         <section class="view" data-panel="persona" role="tabpanel" aria-labelledby="tab-persona">
           <div class="persona-layout">
             <div class="persona-side">
-              <div class="persona-head">
-                <button class="btn primary" id="persona-new" type="button">新建人格</button>
-                <div id="persona-list" class="persona-list"></div>
-              </div>
+              <button class="btn primary persona-new" id="persona-new" type="button">新建人格</button>
+              <div id="persona-list" class="persona-list"></div>
               <form id="persona-create" class="card inline-form" hidden>
                 <label class="field">
                   <span>名字</span>
@@ -329,7 +327,6 @@
                 <input id="sandboxMemoryMb" type="number" min="0" max="262144" step="128" required />
               </label>
               <div id="sandbox-status" class="chip-row" role="status"></div>
-              <p id="sandbox-note" class="hint sandbox-note" hidden></p>
               <div class="actions sandbox-actions">
                 <button class="btn ghost" id="refresh-sandbox" type="button">刷新状态</button>
                 <button class="btn ghost danger" id="clear-sandbox" type="button">清空沙箱目录</button>
@@ -414,6 +411,7 @@
             <section class="card">
               <h2>维护</h2>
               <div class="actions">
+                <button class="btn primary" type="submit">保存全部设置</button>
                 <button class="btn ghost" id="backup" type="button">立即备份数据库</button>
                 <span id="settings-saved" class="hint"></span>
               </div>
@@ -429,9 +427,6 @@
             </section>
             </div>
 
-            <div class="actions settings-submit">
-              <button class="btn primary" type="submit">保存全部设置</button>
-            </div>
           </form>
         </section>
       </main>
