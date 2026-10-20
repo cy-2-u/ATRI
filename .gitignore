@@ -11,17 +11,13 @@ backups/
 *.db-wal
 *.log
 *.tsbuildinfo
-# 本机启动器与旧构建缓存
+# 本机启动器
 /*.bat
-/ATRI/
-/worker/
 .idea/
 .vscode/
 .DS_Store
 Thumbs.db
 restore.compose.yaml
-# 提交脚本的临时产物
-.commitmsg
 # 其他工具的本地记忆文件
 .monkeycode/
 # 本地调试用

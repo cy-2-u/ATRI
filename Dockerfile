@@ -24,6 +24,7 @@ COPY packages/core/package.json packages/core/package.json
 COPY packages/db/package.json packages/db/package.json
 COPY packages/llm/package.json packages/llm/package.json
 COPY packages/ilink/package.json packages/ilink/package.json
+COPY packages/net/package.json packages/net/package.json
 RUN npm ci --no-audit --no-fund
 COPY . .
 RUN npm run typecheck && npm run build && npm prune --omit=dev --no-audit --no-fund
