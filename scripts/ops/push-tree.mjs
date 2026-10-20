@@ -42,6 +42,7 @@ const SKIP_FILE = [
   /\.tsbuildinfo$/,
   /^restore\.compose\.yaml$/,
   /^\.commitmsg$/,
+  /^push-result\.txt$/,  // written by this script; leaked into a commit once
   /^\.DS_Store$/,
   /^Thumbs\.db$/,
 ];
