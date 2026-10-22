@@ -1,14 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Store, addYear } from '@atri/db';
-import { recentStickerUse, rotateStickers, renderMood } from '@atri/core';
-import { parseReply } from '@atri/core';
+import { addYear } from '@atri/db';
+import { recentStickerUse, rotateStickers, parseReply } from '@atri/core';
 import { fixture, FakeModel, completion } from '../helpers.js';
 
 // ---------- P0-1 表情窗口：提示词里的每一张都必须能被解析接受 ----------
 
 test('P0-1 提示词展示的表情全部能被解析层接受，不会静默消失', () => {
-  const PROMPT_STICKERS = 32;
   const all = Array.from({ length: 100 }, (_, i) => ({
     slug: 's' + String(i).padStart(3, '0'),
     description: '表情' + i,

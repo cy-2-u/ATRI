@@ -228,6 +228,9 @@ test('窗口不足、超时顺序和非法数值不会部分覆盖已保存的�
     { contextWindowTokens: null },
     { temperature: 2.5 },
     { format: 'anthropic', temperature: 1.2 },
+    // An invalid embedding URL used to pass validation when the model name was
+    // empty, get persisted, and then break every later config read.
+    { embeddingBaseUrl: 'not a url', embeddingModel: '' },
   ];
   for (const payload of invalid) {
     const result = await f.app.inject({

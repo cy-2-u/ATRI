@@ -5,7 +5,7 @@ import { estimateRequestTokens } from '@atri/llm';
 import { FakeModel, completion, fixture, promptText, userSources } from '../helpers.js';
 
 test('已保存普通消息读取记忆，一次生成；重投不重复生成', async (t) => {
-  const model = new FakeModel((messages) =>
+  const model = new FakeModel(() =>
     completion({ messages: ['我记得你更喜欢茶。'], memoryUpdates: [] }),
   );
   const f = fixture(t, model);

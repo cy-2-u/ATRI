@@ -7,6 +7,8 @@
     "@atri/core": "*",
     "@atri/db": "*",
     "@atri/llm": "*",
-    "@atri/ilink": "*"
+    "@atri/ilink": "*",
+    "fastify": "^5.6.0",
+    "qrcode": "^1.5.4"
   }
 }

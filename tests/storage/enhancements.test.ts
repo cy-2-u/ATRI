@@ -1,8 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Store, MEMORY_HALFLIFE_DAYS } from '@atri/db';
-import { recentStickerUse, renderTimeGap } from '@atri/core';
-import { parseReply, extractInlineStickers } from '@atri/core';
+import { recentStickerUse, renderTimeGap, parseReply } from '@atri/core';
 import { cosineSimilarity } from '@atri/llm';
 import { fixture, FakeModel, completion, promptText } from '../helpers.js';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -150,9 +149,8 @@ test('文本里漏出的 [表情：x] 会被转换为目录内表情，匹配不
     stickers,
   );
   assert.deepEqual(unmatched.parts, [{ type: 'text', text: '随便说说' }]);
-  const plain = extractInlineStickers('没有表情的一段话', stickers);
-  assert.equal(plain.text, '没有表情的一段话');
-  assert.equal(plain.parts.length, 0);
+  const plain = parseReply('没有表情的一段话', stickers, true);
+  assert.deepEqual(plain.parts, [{ type: 'text', text: '没有表情的一段话' }]);
 });
 
 test('英文伪协议 [sticker:slug] / (sticker:slug) 同样被转换或删除，不再漏进聊天', () => {
@@ -233,9 +231,7 @@ test('近期表情使用从历史提取，供反重复提示', (t) => {
 });
 
 test('高频聊天后，重要旧记忆仍进提示词（最新10条陷阱回归）', async (t) => {
-  const model = new FakeModel((messages) =>
-    completion({ messages: ['记得。'], memoryUpdates: [] }),
-  );
+  const model = new FakeModel(() => completion({ messages: ['记得。'], memoryUpdates: [] }));
   const f = fixture(t, model);
   const source = f.store.ingest('p1', 'old', '我生日在三月，别忘记').message;
   f.store.addMemory(

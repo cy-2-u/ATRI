@@ -379,17 +379,18 @@ export class Settings {
       throw new Error('整轮处理超时不能短于单次请求超时');
     if (next.embeddingEnabled && !next.embeddingModel)
       throw new Error('启用向量检索需要先填写向量模型名称');
-    if (next.embeddingModel) {
-      const embedUrl = new URL(next.embeddingBaseUrl);
-      if (
-        !['http:', 'https:'].includes(embedUrl.protocol) ||
-        embedUrl.username ||
-        embedUrl.password ||
-        embedUrl.search ||
-        embedUrl.hash
-      )
-        throw new Error('向量模型地址需要是没有凭据和查询参数的 HTTP/HTTPS URL');
-    }
+    // Validate the URL even when no embedding model is named yet. The form
+    // allows both fields to change in one request, and skipping this branch let
+    // an invalid URL be written; publicConfig() then failed on every later read.
+    const embedUrl = new URL(next.embeddingBaseUrl);
+    if (
+      !['http:', 'https:'].includes(embedUrl.protocol) ||
+      embedUrl.username ||
+      embedUrl.password ||
+      embedUrl.search ||
+      embedUrl.hash
+    )
+      throw new Error('向量模型地址需要是没有凭据和查询参数的 HTTP/HTTPS URL');
     if (input.sandboxSizeMb !== undefined) {
       const n = Number(input.sandboxSizeMb);
       // 0 means unlimited, so the floor has to allow it explicitly.
@@ -416,7 +417,9 @@ export class Settings {
         throw new Error('连发合并窗口需要 0–10000 毫秒');
       next.debounceMs = n;
     }
-    new Intl.DateTimeFormat('zh-CN', { timeZone: next.timeZone }).format();
+    // The merge above touches many fields; re-run the same invariant check used
+    // at startup so no partially valid object can reach storage.
+    this.validateConfig(next);
     this.configCache = null;
     this.store.setSetting('config', next);
     return this.publicConfig();

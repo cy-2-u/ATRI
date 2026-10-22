@@ -95,52 +95,6 @@ export function parseMemories(value: unknown): MemoryUpdate[] {
   });
 }
 /**
- * Models copy the "[表情：x]" rendering they see in history instead of emitting
- * the JSON sticker object. Match such text against the catalog by slug first,
- * then by description/tag words, and convert hits into real sticker parts.
- */
-export function extractInlineStickers(
-  text: string,
-  stickers: Sticker[],
-): { parts: ReplyPart[]; text: string } {
-  const parts: ReplyPart[] = [];
-  const cleaned = text
-    // The inner character class is bounded: an unbounded lazy quantifier plus
-    // the two \s* groups made a run of unclosed "[表情：" backtrack quadratically
-    // (19k chars took 619 ms, on the event loop, freezing every peer). A sticker
-    // name is never near 40 characters, so the cap costs nothing.
-    .replace(
-      /(\s*)[(\[{【]\s*(?:表情|sticker)\s*[：:]\s*([^\]】)}]{1,40}?)\s*[\]】)}](\s*)/gi,
-      (_all, before: string, name: string, after: string) => {
-        const query = name.trim().toLowerCase();
-        if (!query) return before;
-        const bySlug = stickers.find((s) => s.slug.toLowerCase() === query);
-        const byDescription = stickers.find(
-          (s) =>
-            s.description.toLowerCase().includes(query) ||
-            (s.tags ?? []).some((t) => t.toLowerCase() === query),
-        );
-        const byTag = stickers.find((s) =>
-          (s.tags ?? []).some(
-            (t) => query.includes(t.toLowerCase()) || t.toLowerCase().includes(query),
-          ),
-        );
-        const sticker = bySlug ?? byDescription ?? byTag;
-        if (sticker) {
-          parts.push({ type: 'sticker', slug: sticker.slug, description: sticker.description });
-          // Keep one separator when text continues on both sides.
-          return before && after ? ' ' : '';
-        }
-        // Unmatched: drop the pseudo-protocol rather than leak it to the chat.
-        return before;
-      },
-    )
-    .replace(/^[ \t]+|[ \t]+$/gm, '')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-  return { parts, text: cleaned };
-}
-/**
  * Models sometimes copy the "[来源 id | time]" annotation from rendered history
  * into their output. Strip leading annotation lines, and when one text blob
  * carries several of them, split it back into separate bubbles the way the
@@ -172,9 +126,14 @@ export function stripSourceAnnotations(text: string): { parts: ReplyPart[]; text
     text: '',
   };
 }
-/** Split one text segment into text/sticker parts in source order. The old
- *  extractor returned all stickers separately, so normalizeTextParts put every
- *  sticker before every line of text and "哈哈[表情]收到" arrived backwards. */
+/**
+ * Models copy the "[表情：x]" rendering they see in history instead of emitting
+ * the JSON sticker object. Match such text against the catalog by slug first,
+ * then by description/tag words, and convert hits into real sticker parts while
+ * preserving source order: the old extractor returned all stickers separately,
+ * so normalizeTextParts put every sticker before every line of text and
+ * "哈哈[表情]收到" arrived backwards.
+ */
 function splitInlineParts(text: string, stickers: Sticker[]): ReplyPart[] {
   const out: ReplyPart[] = [];
   const pushText = (value: string) => {
@@ -184,6 +143,10 @@ function splitInlineParts(text: string, stickers: Sticker[]): ReplyPart[] {
     if (last?.type === 'text') last.text = `${last.text} ${body}`.trim();
     else out.push({ type: 'text', text: body.slice(0, 6000) });
   };
+  // The inner character class is bounded: an unbounded lazy quantifier plus the
+  // two \s* groups made a run of unclosed "[表情：" backtrack quadratically
+  // (19k chars took 619 ms, on the event loop, freezing every peer). A sticker
+  // name is never near 40 characters, so the cap costs nothing.
   const re = /(\s*)[(\[{【]\s*(?:表情|sticker)\s*[：:]\s*([^\]】)}]{1,40}?)\s*[\]】)}](\s*)/gi;
   let cursor = 0;
   for (;;) {
