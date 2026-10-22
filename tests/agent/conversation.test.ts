@@ -25,6 +25,32 @@ test('已保存普通消息读取记忆，一次生成；重投不重复生成',
   assert.equal(model.calls.length, 1);
   assert.equal(f.store.history('p1').filter((m) => m.role === 'user').length, 2);
 });
+test('模型把两段写进同一个字符串时仍拆成两条气泡并落到 outbox', async (t) => {
+  const model = new FakeModel(() =>
+    completion({ messages: ['第一段\n\n第二段'], memoryUpdates: [] }),
+  );
+  const f = fixture(t, model);
+  f.runtime.accept('p1', 'bubble-split', '你好');
+  await f.runtime.drain();
+  assert.deepEqual(
+    f.delivered.map((item) => item.part),
+    [
+      { type: 'text', text: '第一段' },
+      { type: 'text', text: '第二段' },
+    ],
+  );
+  const outbox = f.store.sql
+    .prepare('SELECT ordinal, status, part FROM outbox ORDER BY ordinal')
+    .all() as unknown as { ordinal: number; status: string; part: string }[];
+  assert.deepEqual(
+    outbox.map((row) => row.ordinal),
+    [0, 1],
+  );
+  assert.equal(
+    outbox.every((row) => row.status === 'sent'),
+    true,
+  );
+});
 test('保存输入与聊天任务属于一个事务', (t) => {
   const f = fixture(t);
   f.store.enqueueChat = () => {
