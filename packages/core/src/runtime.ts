@@ -320,6 +320,10 @@ export class Runtime {
     throw new Error('等待队列处理超时');
   }
   private async work(peerId: string, entry: { controller: AbortController; kind?: string }) {
+    // A model-supplied moodPulse is the authoritative read on this exchange.
+    // Running the coarse rule pulse afterwards as well double-counted the same
+    // message (especially patience), so remember which tasks already pulsed.
+    const modelMoodTasks = new Set<string>();
     for (let n = 0; n < MAX_WORK_ITERATIONS && !this.stopped; n++) {
       const peer = this.store.peer(peerId);
       if (!peer) return;
@@ -400,7 +404,7 @@ export class Runtime {
           }
         }
         if (failedDelivery) this.store.finish(task.id, 'failed', failedDelivery);
-        this.maybeMood(peerId);
+        this.maybeMood(peerId, modelMoodTasks.delete(task.id));
         this.maybeNotes(peerId);
         continue;
       }
@@ -471,7 +475,10 @@ export class Runtime {
               // otherwise the hits-based ranking sees a fraction of reality.
               if (reply.pickedMemoryIds?.length)
                 this.store.markMemoriesUsed(peerId, reply.pickedMemoryIds);
-              if (reply.moodPulse) this.store.pulseMood(peerId, { ...reply.moodPulse }, Date.now());
+              if (reply.moodPulse) {
+                this.store.pulseMood(peerId, { ...reply.moodPulse }, Date.now());
+                modelMoodTasks.add(task.id);
+              }
               for (const description of reply.descriptions) {
                 const msg = this.store.getMessage(peerId, description.messageId);
                 if (msg) {
@@ -659,7 +666,11 @@ export class Runtime {
   }
   /** After a delivered exchange, pulse the light mood state from the last
    *  user/assistant pair; runs at most once per finished task batch. */
-  private maybeMood(peerId: string) {
+  private maybeMood(peerId: string, skipRulePulse = false) {
+    // The model already supplied an explicit pulse for this task. Running the
+    // rule pulse on top would either double the same signal or overwrite the
+    // model's reason with a coarse keyword guess.
+    if (skipRulePulse) return;
     const peer = this.store.peer(peerId);
     if (!peer) return;
     const recent = this.store.history(peerId, MOOD_LOOKBACK_MESSAGES);

@@ -323,12 +323,19 @@ export function renderMood(
   else if (mood.energy >= 0.3) parts.push('精力挺足');
   // Impatience is not anger and must not be played as such: it is the cost of
   // keeping up a conversation, so it shows as clipped replies and fewer
-  // questions rather than a colder tone.
-  if (patience <= -0.3)
-    parts.push(
-      '有点不想应酬了：回得短、少追问，不是生气，只是没力气维持客套；对方真有难处时仍然要好好接住',
-    );
-  else if (patience >= 0.3) parts.push('这会儿挺想聊，愿意多问一句');
+  // questions rather than a colder tone. When valence is still positive the
+  // model needs the distinction in so many words, or it translates "low
+  // patience" into "没电了/今晚到此为止" and sounds hurt.
+  if (patience <= -0.3) {
+    if (mood.valence >= 0.12)
+      parts.push(
+        '有点累、想安静，但不是不开心；可以回得短，不要冷淡，也别让对方以为你在生气；不要说自己没电了或今晚到此为止，除非精力也确实很低',
+      );
+    else
+      parts.push(
+        '有点不想应酬了：回得短、少追问，不是生气，只是没力气维持客套；对方真有难处时仍然要好好接住；不要说自己没电了或今晚到此为止，除非精力也确实很低',
+      );
+  } else if (patience >= 0.3) parts.push('这会儿挺想聊，愿意多问一句');
   return parts.length
     ? `你当前的状态：${parts.join('；')}${since}。这影响语气，但不要主动报数值。`
     : '';

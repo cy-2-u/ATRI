@@ -2216,19 +2216,25 @@ export class Store {
     const valence = delta.valence ?? 0;
     const energy = delta.energy ?? 0;
     const nextValence = fold(current.valence, valence);
+    const nextPatience = fold(current.patience, delta.patience ?? 0);
+    // A reason must describe the state that is actually dominant. Low patience
+    // while valence is still non-negative is "tired, wants quiet", not the
+    // cheerful reason from an earlier exchange. An explicit pulse reason always
+    // wins, and a genuine valence flip still drops stale text.
+    const tiredReason = nextPatience <= -0.2 && nextValence >= -0.12;
+    const recoveredFromTired = current.reason === '有点累，想安静' && nextPatience > -0.1;
+    const reason =
+      delta.reason ||
+      (tiredReason
+        ? '有点累，想安静'
+        : Math.sign(nextValence) !== Math.sign(current.valence) || recoveredFromTired
+          ? ''
+          : current.reason);
     this.setSetting(`mood:${peer}`, {
       valence: nextValence,
       energy: fold(current.energy, energy),
-      patience: fold(current.patience, delta.patience ?? 0),
-      // A reason describes the pulse that just landed, so a pulse that brings
-      // one always replaces the text, and a valence flip drops the old text
-      // (otherwise "心情不错 · 对方提到了不开心的事" appears). A pulse that only
-      // nudges energy keeps it: the night rule fires on every late exchange
-      // with no reason of its own, and it used to erase whatever the model had
-      // just reported about the same conversation.
-      reason:
-        delta.reason ||
-        (Math.sign(nextValence) !== Math.sign(current.valence) ? '' : current.reason),
+      patience: nextPatience,
+      reason,
       at: now,
     });
   }
@@ -2259,6 +2265,19 @@ export class Store {
     const grateful = /(谢谢|感谢|辛苦|有你真好)/.test(text);
     const cheerful =
       !/(不开心|不高兴|没意思)/.test(text) && /(开心|哈哈哈|笑死|哈哈|嘻嘻|好耶)/.test(text);
+    // Affection and coldness are both short, so length alone cannot decide
+    // patience. "好的宝", "爱你" and "抱抱" are bids for closeness; "嗯", "哦"
+    // and "随便" are the ones that cost the effort of keeping a conversation
+    // going. A short cheerful reply ("嘻嘻") is likewise not a brush-off.
+    const affectionate =
+      !/(不|没)(爱|喜欢|想)你/.test(text) &&
+      /(宝|爱你|喜欢你|抱抱|亲亲|么么|晚安|好梦|辛苦|谢谢|想你了|想你|乖|可爱|亲爱的)/.test(text);
+    const compact = text.replace(/[\s\p{P}\p{S}]/gu, '');
+    const coldShort =
+      /^(?:嗯+|哦+|噢+|喔+|额+|呃+|好|行|可以|随便|知道了|知道|好吧|行吧|没事|算了|都行|随你)[啊呀哦嗯吧]*$/u.test(
+        compact,
+      );
+    const windingDown = /(晚安|睡了|好困|困了)/.test(text);
     let valence = 0,
       energy = 0,
       reason: string | undefined;
@@ -2272,7 +2291,7 @@ export class Store {
     } else if (cheerful) {
       valence = 0.2;
       reason = '聊得挺开心';
-    } else if (/(晚安|睡了|好困)/.test(text) || (hour >= 1 && hour < 7)) {
+    } else if (windingDown || (hour >= 1 && hour < 7)) {
       energy = -0.15;
     } else if (text.length > 80 && exchange.assistant.length > 80) {
       energy = 0.1;
@@ -2281,11 +2300,19 @@ export class Store {
     // the exchange pleasant takes something out of her; a real conversation
     // gives it back. Distress is exempt — that is exactly when she should stay
     // patient — which is why this runs outside the cascade above.
-    const substance = text.replace(/[\s\p{P}\p{S}]/gu, '').length;
+    const substance = compact.length;
     let patience = 0;
-    if (/(晚安|睡了|好困)/.test(text) || (hour >= 1 && hour < 7)) patience -= 0.15;
-    if (!distressed && substance > 0 && substance <= 3) patience -= 0.25;
-    else if (substance > 80) patience += 0.2;
+    if (!distressed) {
+      if (affectionate || cheerful) patience += 0.05;
+      else if (windingDown) {
+        // Saying goodnight is closing the exchange, not demanding more of her.
+      } else if (substance > 0 && substance <= 3) patience -= coldShort ? 0.25 : 0.1;
+      else if (substance > 80) patience += 0.2;
+    }
+    // A late-night conversation still exacts a social cost, but a goodnight or
+    // a warm short line is not "still demanding attention". Keep this separate
+    // from the cascade so `晚安` lowers energy without also lowering patience.
+    if (hour >= 1 && hour < 7 && !windingDown && !affectionate && !cheerful) patience -= 0.15;
     if (valence === 0 && energy === 0 && patience === 0) return;
     this.pulseMood(peer, { valence, energy, patience, reason }, now);
   }
