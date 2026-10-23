@@ -177,47 +177,20 @@ function splitInlineParts(text: string, stickers: Sticker[]): ReplyPart[] {
   pushText(text.slice(cursor));
   return out;
 }
-/** Split text on blank lines. A single newline stays inside one bubble; two
- *  or more newlines, optionally separated by horizontal whitespace, start a
- *  new bubble. Model output sometimes uses this instead of the messages array. */
-function splitParagraphs(text: string): string[] {
-  return text
-    .split(/\r?\n(?:[^\S\r\n]*\r?\n)+/)
-    .map((part) => part.trim())
-    .filter(Boolean);
-}
-/** One text segment -> ordered parts, with blank lines as bubble boundaries. */
-function splitTextParts(text: string, stickers: Sticker[]): ReplyPart[] {
-  return splitParagraphs(text).flatMap((paragraph) => splitInlineParts(paragraph, stickers));
-}
-/** Keep the bubble cap but never drop trailing prose: merge it into the last
- *  text bubble, or replace a trailing sticker with it. Extra stickers beyond
- *  the cap carry no prose and are dropped. */
-function capReplyParts(parts: ReplyPart[]): ReplyPart[] {
-  if (parts.length <= MAX_REPLY_PARTS) return parts;
-  const kept = parts.slice(0, MAX_REPLY_PARTS);
-  const tailText = parts
-    .slice(MAX_REPLY_PARTS)
-    .flatMap((part) => (part.type === 'text' && part.text?.trim() ? [part.text.trim()] : []));
-  if (!tailText.length) return kept;
-  const merged = tailText.join('\n\n');
-  const last = kept.at(-1);
-  if (last?.type === 'text') last.text = `${last.text}\n\n${merged}`.trim();
-  else kept[kept.length - 1] = { type: 'text', text: merged };
-  return kept;
-}
 function normalizeTextParts(raw: unknown[], stickers: Sticker[]): ReplyPart[] {
-  // Do not slice `raw` before flattening: one string can expand into several
-  // paragraphs or inline stickers. capReplyParts keeps the outbox bounded while
-  // preserving trailing prose instead of silently dropping it.
-  return capReplyParts(
-    raw.flatMap<ReplyPart>((m: unknown) => {
+  // The slice bounds how many input messages are read, but one message can hold
+  // many inline stickers and each becomes its own part. Without the final cap a
+  // 6-message reply produced 66 bubbles, and the sender paces every bubble
+  // 400–2500 ms apart — a minute of spam from one model output.
+  return raw
+    .slice(0, MAX_REPLY_PARTS)
+    .flatMap<ReplyPart>((m: unknown) => {
       if (typeof m === 'string' && m.trim()) {
         const head = stripSourceAnnotations(m);
         const segments = head.parts.length
           ? head.parts.flatMap((p) => (p.type === 'text' && p.text ? [p.text] : []))
           : [head.text];
-        return segments.flatMap<ReplyPart>((segment) => splitTextParts(segment, stickers));
+        return segments.flatMap<ReplyPart>((segment) => splitInlineParts(segment, stickers));
       }
       if (m && typeof m === 'object' && 'type' in m && m.type === 'sticker' && 'slug' in m) {
         const slug = m.slug;
@@ -229,8 +202,8 @@ function normalizeTextParts(raw: unknown[], stickers: Sticker[]): ReplyPart[] {
           ];
       }
       return [];
-    }),
-  );
+    })
+    .slice(0, MAX_REPLY_PARTS);
 }
 /** Open-loop entries from the model: content plus a due time. When `available`
  *  is given, every source ID must be visible this turn; without it (final JSON
@@ -531,10 +504,10 @@ export function parseReply(
           ? [annotated.text]
           : [];
       const all: ReplyPart[] = [];
-      for (const block of blocks) all.push(...splitTextParts(block, stickers));
+      for (const block of blocks) all.push(...splitInlineParts(block, stickers));
       if (!all.length) throw new Error('回复没有有效内容');
       return {
-        parts: capReplyParts(all),
+        parts: all.slice(0, MAX_REPLY_PARTS),
         memories: [],
         descriptions: [],
         openLoops: [],
