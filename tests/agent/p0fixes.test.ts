@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { renderMood, parseReply, resolveDue } from '@atri/core';
+import { renderMood, parseReply, resolveDue, moodPulseFromExchange } from '@atri/core';
+import { hourFormatter } from '@atri/db';
 import { ModelError, HttpModel, type ModelConfig } from '@atri/llm';
 import { fixture, FakeModel, completion } from '../helpers.js';
 
@@ -339,21 +340,20 @@ test('P2 情绪规则脉冲使用配置时区', (t) => {
   // UTC 18:00 = 上海凌晨 2 点（深夜），纽约是下午 14 点
   const at = Date.parse('2026-09-13T18:00:00Z');
   t.mock.method(Date, 'now', () => at);
-  f.store.pulseMoodFromExchange(
-    'p1',
-    { user: '在忙', assistant: '怎么了', userAt: at },
-    at,
-    'America/New_York',
-  );
-  // 纽约下午没有深夜惩罚，长对话阈值也不满足，情绪不应变化
+  const pulseFor = (timeZone: string) =>
+    moodPulseFromExchange({
+      user: '在忙',
+      assistant: '怎么了',
+      hour: Number(hourFormatter(timeZone).format(new Date(at))),
+    });
+  const newYork = pulseFor('America/New_York');
+  if (newYork) f.store.pulseMood('p1', newYork, at);
+  // 纽约下午没有深夜惩罚，情绪不应变化
   const mood = f.store.mood('p1');
   assert.ok(Math.abs(mood.energy) < 0.01, '非深夜时段无 energy 惩罚');
   // 上海同一时刻是凌晨 2 点，应有 -0.15 的 energy 惩罚
-  f.store.pulseMoodFromExchange(
-    'p1',
-    { user: '在忙', assistant: '怎么了', userAt: at },
-    at,
-    'Asia/Shanghai',
-  );
+  const shanghai = pulseFor('Asia/Shanghai');
+  assert.ok(shanghai);
+  f.store.pulseMood('p1', shanghai, at);
   assert.ok(f.store.mood('p1').energy < -0.1, '上海深夜触发 energy 惩罚');
 });

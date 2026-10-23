@@ -1,6 +1,7 @@
 import type { Store, Peer, ReplyPart, Task, Media, MemoryUpdate } from '@atri/db';
 import { hourFormatter } from '@atri/db';
 import { Agent, renderMessage, type AgentOptions } from './agent.js';
+import { moodPulseFromExchange } from './mood.js';
 import { estimateTextTokens, cosineSimilarity } from '@atri/llm';
 import {
   NOTES_MIN_MESSAGES,
@@ -691,13 +692,19 @@ export class Runtime {
       assistant &&
       user.created_at <= assistant.created_at &&
       assistant.created_at - user.created_at <= REPLY_PAIR_WINDOW_MS
-    )
-      this.store.pulseMoodFromExchange(
-        peerId,
-        { user: user.content, assistant: assistant.content, userAt: user.created_at },
-        Date.now(),
-        this.options.config().timeZone,
-      );
+    ) {
+      const recentUserTexts = recent
+        .filter((m) => m.role === 'user' && m.created_at <= assistant.created_at)
+        .slice(-6)
+        .map((m) => m.content);
+      const pulse = moodPulseFromExchange({
+        user: user.content,
+        assistant: assistant.content,
+        hour: hourAt(user.created_at, this.options.config().timeZone),
+        recentUserTexts,
+      });
+      if (pulse) this.store.pulseMood(peerId, pulse, Date.now());
+    }
   }
   private maybeNotes(peerId: string) {
     const peer = this.store.peer(peerId)!;

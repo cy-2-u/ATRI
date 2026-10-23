@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { renderMood, renderRhythm, type Sticker } from '@atri/core';
+import { renderMood, renderRhythm, moodPulseFromExchange, type Sticker } from '@atri/core';
 import { parseOpenLoops, parseReply, parseSoftThreads } from '@atri/core';
 import {
   OPEN_LOOP_EXPIRE_DAYS,
@@ -396,18 +396,22 @@ test('轻量心情：事件打脉冲、时间衰减、渲染成体感文字而�
   // 回到中性后不渲染
   assert.equal(renderMood({ valence: 0, energy: 0, at: now }, now), '');
   // 规则推断：抱怨降情绪，感谢升情绪
-  f.store.pulseMoodFromExchange(
-    'p1',
-    { user: '今天被领导骂了一顿，好烦', assistant: '怎么了，跟我说说', userAt: now },
-    now,
-  );
+  const sadPulse = moodPulseFromExchange({
+    user: '今天被领导骂了一顿，好烦',
+    assistant: '怎么了，跟我说说',
+    hour: 15,
+  });
+  assert.ok(sadPulse);
+  f.store.pulseMood('p1', sadPulse, now);
   assert.ok(f.store.mood('p1').valence <= -0.2);
   const before = f.store.mood('p1').valence;
-  f.store.pulseMoodFromExchange(
-    'p1',
-    { user: '谢谢你陪我聊，开心多了哈哈哈', assistant: '那当然', userAt: now + 60000 },
-    now + 60000,
-  );
+  const warmPulse = moodPulseFromExchange({
+    user: '谢谢你陪我聊，开心多了哈哈哈',
+    assistant: '那当然',
+    hour: 15,
+  });
+  assert.ok(warmPulse);
+  f.store.pulseMood('p1', warmPulse, now + 60000);
   assert.ok(f.store.mood('p1').valence > before, '感谢与开心让情绪回升');
 });
 

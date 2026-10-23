@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { addYear } from '@atri/db';
-import { recentStickerUse, rotateStickers, parseReply } from '@atri/core';
+import { recentStickerUse, rotateStickers, parseReply, moodPulseFromExchange } from '@atri/core';
 import { fixture, FakeModel, completion } from '../helpers.js';
 
 // ---------- P0-1 表情窗口：提示词里的每一张都必须能被解析接受 ----------
@@ -64,12 +64,9 @@ test('P0-2 "不开心" 判为负面，不被当成开心', (t) => {
   const f = fixture(t);
   const now = Date.now();
   for (const text of ['今天不开心', '我今天不开心', '不开心']) {
-    f.store.pulseMoodFromExchange(
-      'p1',
-      { user: text, assistant: '怎么了', userAt: now },
-      now,
-      'Asia/Shanghai',
-    );
+    const pulse = moodPulseFromExchange({ user: text, assistant: '怎么了', hour: 15 });
+    assert.ok(pulse);
+    f.store.pulseMood('p1', pulse, now);
     const mood = f.store.mood('p1');
     assert.ok(mood.valence < 0, `"${text}" 应为负面，实际 ${mood.valence}`);
     assert.equal(mood.reason, '对方提到了不开心的事');
@@ -79,22 +76,16 @@ test('P0-2 "不开心" 判为负面，不被当成开心', (t) => {
 test('P0-2 感谢与正向表达仍判为正面', (t) => {
   const f = fixture(t);
   const now = Date.now();
-  f.store.pulseMoodFromExchange(
-    'p1',
-    { user: '谢谢你', assistant: '不客气', userAt: now },
-    now,
-    'Asia/Shanghai',
-  );
+  const thanks = moodPulseFromExchange({ user: '谢谢你', assistant: '不客气', hour: 15 });
+  assert.ok(thanks);
+  f.store.pulseMood('p1', thanks, now);
   assert.ok(f.store.mood('p1').valence > 0, '感谢应提升心情');
   assert.equal(f.store.mood('p1').reason, '对方表达了感谢');
 
   const g = fixture(t);
-  g.store.pulseMoodFromExchange(
-    'p1',
-    { user: '哈哈哈好开心', assistant: '嗯嗯', userAt: now },
-    now,
-    'Asia/Shanghai',
-  );
+  const happy = moodPulseFromExchange({ user: '哈哈哈好开心', assistant: '嗯嗯', hour: 15 });
+  assert.ok(happy);
+  g.store.pulseMood('p1', happy, now);
   assert.ok(g.store.mood('p1').valence > 0, '开心应提升心情');
 });
 
