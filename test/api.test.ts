@@ -88,8 +88,13 @@ test('配置校验：预算和、温度上限、URL 形状、跨来源写保护'
   const f = apiFixture(t);
   const put = (body: unknown) => f.call('/api/config', 'PUT', body);
   assert.equal(
-    (await put({ contextWindowTokens: 8192, inputBudgetTokens: 8000, maxOutputTokens: 2000 }))
-      .statusCode,
+    (
+      await put({
+        contextWindowTokens: 8192,
+        inputBudgetTokens: 8000,
+        maxOutputTokens: 2000,
+      })
+    ).statusCode,
     400,
     '预算和超窗口',
   );

@@ -139,7 +139,7 @@ export function renderRhythm(buckets: number[], hour: number): string {
   return `对方通常活跃时段：${bands.join('、')}。${
     activeNow
       ? '现在正处于活跃时段。'
-      : `现在（${hour} 点）不是对方常聊的时间，主动联系时可以提一句“这个点还没休息？”之类。`
+      : `现在（${hour} 点）不是对方常聊的时间，主动联系时可以提一句"这个点还没休息？"之类。`
   }`;
 }
 

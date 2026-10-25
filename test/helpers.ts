@@ -8,7 +8,7 @@ import type { Model, Completion, ModelMessage, ToolDefinition, ToolCall } from '
 
 /** 共享夹具：临时目录、FakeModel、Runtime 装配、提示词全文断言工具。
  *  用 fixture(t) 建 Runtime/Store 测试；涉及时间显式传 timeZone。
- *  运行目录约定为 docker/（test/run.mjs 以其为 cwd 启动测试）。 */
+ *  运行目录约定为仓库根（test/run.mjs 以其为 cwd 启动测试）。 */
 
 export const projectRoot = process.cwd();
 
@@ -135,7 +135,7 @@ export function fixture(
 }
 
 /** 模型看到的全部文本（系统提示 + 资料 + 历史）：资料块搬到历史后的
- * 独立 user 消息里，断言事实到达模型要看全量而不是 messages[0]。 */
+ *  独立 user 消息里，断言事实到达模型要看全量而不是 messages[0]。 */
 export function promptText(messages: ModelMessage[]): string {
   return messages.map((m) => m.content).join('\n\n');
 }

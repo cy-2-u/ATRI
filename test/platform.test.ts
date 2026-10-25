@@ -154,7 +154,11 @@ test('Gemini：同角色合并、functionResponse 包装、systemInstruction', a
             },
           },
         ],
-        usageMetadata: { promptTokenCount: 7, candidatesTokenCount: 3 },
+        usageMetadata: {
+          promptTokenCount: 7,
+          candidatesTokenCount: 3,
+          cachedContentTokenCount: 5,
+        },
       }),
       { status: 200 },
     );
@@ -162,7 +166,7 @@ test('Gemini：同角色合并、functionResponse 包装、systemInstruction', a
   const tools: ToolDefinition[] = [
     { name: 'search_memory', description: '搜索', parameters: { type: 'object' } },
   ];
-  await model.complete(
+  const completion = await model.complete(
     [
       { role: 'system', content: '设定' },
       { role: 'user', content: '第一' },
@@ -178,6 +182,7 @@ test('Gemini：同角色合并、functionResponse 包装、systemInstruction', a
   assert.ok(JSON.stringify(userTurns[0]).includes('functionResponse'), '工具结果并入 user turn');
   assert.ok(JSON.stringify(body.contents).includes('"result":"纯文本结果"'), '纯文本包成对象');
   assert.ok(Array.isArray(body.tools[0].functionDeclarations));
+  assert.equal(completion.cachedTokens, 5, 'Gemini 缓存命中单独上报');
 });
 
 test('重试策略：临时故障退避重试、永久 4xx 立即失败、放不进截止时间不重试', async () => {

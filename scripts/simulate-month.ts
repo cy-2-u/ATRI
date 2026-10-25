@@ -2,7 +2,7 @@
  *  覆盖核对点：记忆产生与淡忘、上下文压缩（话题笔记）、情绪（自评脉冲/
  *  残留泛化/深夜能耗/基线）、惦记（挂念浮现与了结）、主动消息（日常问候
  *  与到期开环、读空气刹车）、表情调用格式、多气泡分开投递。
- *  运行：npx tsx scripts/simulate-month.ts（在 docker/ 目录下）。 */
+ *  运行：npx tsx scripts/simulate-month.ts（在仓库根目录下）。 */
 
 import { startSim, sourceIds } from './sim-lib.js';
 import { detailIntegrity, significance, traceOf } from '../src/db/index.js';
@@ -30,7 +30,7 @@ const sim = startSim({
     const all = ctx.all;
     const system = ctx.system;
     const ids = sourceIds(all);
-    // ---- 离线整理任务（按 system 提示词特征分派） ----
+    // ---- 离线整理任务（按 system 提示词特征分派，不猜正文关键词） ----
     if (system.includes('第一人称回看')) {
       const sad = all.includes('猫');
       return {
@@ -214,7 +214,7 @@ const sim = startSim({
 
 const { store, runtime, PEER, T, check } = sim;
 const peerRow = () => store.peer(PEER)!;
-/** 最近一次“回应用户消息”的聊天调用（排除日记/笔记/主动任务的调用）。 */
+/** 最近一次"回应用户消息"的聊天调用（排除日记/笔记/主动任务的调用）。 */
 const lastChatPrompt = () => {
   for (let i = sim.calls.length - 1; i >= 0; i--) {
     const text = sim.calls[i]!.messages.map((m) => m.content).join('\n\n');
@@ -259,7 +259,7 @@ await sim.userSay(
   'd0-plan',
   '这周都在赶毕业设计，明天下午有个面试，过了请你喝奶茶。对了，下次给我讲讲你以前的事呗',
 );
-check(store.openLoops(PEER, true).length === 1, '“明天面试”记成开环');
+check(store.openLoops(PEER, true).length === 1, '"明天面试"记成开环');
 check(
   store.softThreads(PEER, true).length === 2,
   '赶项目（concern）与她答应的事（promise）记成挂念',
@@ -361,10 +361,10 @@ await sim.userSay(15, '21:00', 'd15-after', '聊了一天，睡啦');
   check(/当前话题笔记（资料）：\n(?!暂无)/.test(last), '笔记进入提示词而非全量历史');
 }
 
-// ---------- 第 16–17 天：填充 + 一条“随口一提”（回拨 14 天做纯衰减验证） ----------
+// ---------- 第 16–17 天：填充 + 一条"随口一提"（回拨 14 天做纯衰减验证） ----------
 phase = 'filler-low';
 await sim.userSay(16, '12:00', 'd16-low', '路过街口闻到糖炒栗子好香，随便说了句');
-// 自然演化下“新鲜即入前排→演练固化”会让它锁住（见最终报告的调优观察）；
+// 自然演化下"新鲜即入前排→演练固化"会让它锁住（见最终报告的调优观察）；
 // 这里把时钟回拨、清掉这两天攒下的巩固，验证六变量的纯衰减路径。
 store.sql
   .prepare(
@@ -413,7 +413,7 @@ phase = 'project-done';
 await sim.userSay(24, '18:00', 'd24-defense', '答辩过了！毕业设计总算结束了');
 check(
   store.softThreads(PEER, true).every((t) => !/答辩/.test(t.content)),
-  '“答辩”挂念在话题里自然了结',
+  '"答辩"挂念在话题里自然了结',
 );
 
 // ---------- 第 25–29 天：日常，让早期记忆风干 ----------
@@ -434,7 +434,7 @@ sim.snapshot('第 30 天：月末总览');
   const osmanthus = memories.find((m) => /桂花糕/.test(m.content));
   if (osmanthus) {
     // 观察项（不是失败）：早年记忆池还小时每天进提示词，巩固早早封顶；
-    // 后期即使重要性低也靠 C=1 稳住位置——这正是“被反复想起的更牢固”。
+    // 后期即使重要性低也靠 C=1 稳住位置——这正是"被反复想起的更牢固"。
     const state = traceOf(osmanthus);
     sim.say(
       `    [观察] 早期随口一提（桂花糕）：C=${state.consolidation.toFixed(2)} 已封顶，D=${detailIntegrity(state, sim.now()).toFixed(2)}——早期小记忆池的全量演练把它锁进了前排（符合模型的巩固语义，见最终报告的调优观察）`,
@@ -446,7 +446,7 @@ sim.snapshot('第 30 天：月末总览');
     const D = detailIntegrity(state, sim.now());
     const S = significance(state, sim.now());
     check(D < 0.35, `后期随口一提纯衰减淡出（D=${D.toFixed(2)}，S=${S.toFixed(2)}）`);
-    check(/有印象/.test(renderMemories([chestnut])), '淡忘记忆渲染为“有印象”而非原文');
+    check(/有印象/.test(renderMemories([chestnut])), '淡忘记忆渲染为"有印象"而非原文');
   }
   const baseline = store.emotionalBaseline(PEER, sim.now());
   check(Math.abs(baseline) <= 0.3, `情绪基线钳制在 ±0.3（当前 ${baseline.toFixed(2)}）`);

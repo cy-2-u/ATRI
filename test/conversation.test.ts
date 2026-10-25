@@ -129,18 +129,7 @@ test('resolveDue：时间戳、本地时间、口语日、月日滚动', () => {
 // ---------- 对话轮 ----------
 
 test('一轮对话：多气泡落库、记忆带来源、心情脉冲、表情按图片部件投递', async (t) => {
-  const f = fixture(
-    t,
-    new FakeModel(() =>
-      completion({
-        messages: ['记住啦！', { type: 'sticker', slug: 'happy' }],
-        memoryUpdates: [
-          { content: '对方喜欢喝茶', kind: 'stated', sources: ['将替换'], importance: 0.7 },
-        ],
-        moodPulse: { valence: 0.4, reason: '聊得开心' },
-      }),
-    ),
-  );
+  const f = fixture(t, new FakeModel());
   // 记忆来源必须本轮真实可见：动态注入上一条消息 id
   f.model.handle = (messages) => {
     const id = [...promptText(messages).matchAll(/\[来源 ([^\s|]+) \|/g)].map((m) => m[1]).at(-1)!;
@@ -269,16 +258,7 @@ test('话题笔记：未整理条数接近近期窗口时整理（很多短消�
 });
 
 test('日记：来源必引、可空、游标只进不退', async (t) => {
-  const f = fixture(
-    t,
-    new FakeModel((_messages, _tools, signal) => {
-      void signal;
-      return completion({
-        sections: [{ content: '今天他喜欢上了喝茶。', sources: ['将替换'] }],
-        memoryUpdates: [],
-      });
-    }),
-  );
+  const f = fixture(t, new FakeModel());
   f.model.handle = (msgs) => {
     const ids = [...promptText(msgs).matchAll(/\[来源 ([^\s|]+) \|/g)].map((m) => m[1]);
     return completion({

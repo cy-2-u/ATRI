@@ -86,7 +86,7 @@ export interface Memory {
   interference: number;
   created_at: number;
 }
-/** 用户提到的有明确时间的安排（“明天面试”）：到点问一次，汇报即了结，
+/** 用户提到的有明确时间的安排（"明天面试"）：到点问一次，汇报即了结，
  *  每年循环的事（生日）自动滚到明年。 */
 export interface OpenLoop {
   id: string;
@@ -108,7 +108,7 @@ export interface OpenLoopInput {
   sources: string[];
   recurring?: string;
 }
-/** 无日期版的“挂念”：对方的持续事件或她答应过的事。从不主动发消息、
+/** 无日期版的"挂念"：对方的持续事件或她答应过的事。从不主动发消息、
  *  不占开环配额，只在话题自然相关时浮现。 */
 export type SoftThreadKind = 'concern' | 'promise';
 export interface SoftThread {
@@ -183,7 +183,7 @@ export interface SearchHit {
   score: number;
   /** 乘上近度/类型加权前的原始相关度。 */
   relevance?: number;
-  /** 本次命中词里最小的文档频率：命中“有点”说明不了什么，命中“年糕”
+  /** 本次命中词里最小的文档频率：命中"有点"说明不了什么，命中"年糕"
    *  才能定位一件事。词面没命中时为 undefined。 */
   minDf?: number;
   /** 该联系人已索引的行数，供调用方判断 minDf。 */
@@ -1179,7 +1179,7 @@ export class Store {
       .slice(0, limit);
   }
   /** 演练：hits+1、巩固按间隔增长、细节时钟重置。返回仍带强残留的条目，
-   *  供运行时把“想起了什么”泛化成此刻的心情。 */
+   *  供运行时把"想起了什么"泛化成此刻的心情。 */
   markMemoriesUsed(
     peer: string,
     ids: string[],
@@ -1456,7 +1456,7 @@ export class Store {
       .all(peer)
       .map((r) => ({ ...r, sources: parse(r.sources, []) }) as unknown as DiarySection);
   }
-  /** 覆盖墙钟日期窗口的日记段落。久别重逢时按时间范围取（“在吗”匹配
+  /** 覆盖墙钟日期窗口的日记段落。久别重逢时按时间范围取（"在吗"匹配
    *  不了任何词面），day 是本地日期可直接按字符串比较。 */
   diaryBetween(peer: string, fromDay: string, toDay: string, limit = 4): DiarySection[] {
     return this.sql
@@ -1752,8 +1752,8 @@ export class Store {
       for (let i = 0; i < v.length; i++) n += v[i]! * v[i]!;
       return Math.sqrt(n);
     };
-    // 词面 IDF：中文全被切成二元组后“有点”与“年糕”同权，除以文档频率后
-    // 才是“这个词能定位一件事”；没出现过的词不设门槛（没有行能命中它）。
+    // 词面 IDF：中文全被切成二元组后"有点"与"年糕"同权，除以文档频率后
+    // 才是"这个词能定位一件事"；没出现过的词不设门槛（没有行能命中它）。
     const df = this.termFrequencies(peer, terms);
     const total = df.total;
     const weight = new Map<string, number>();

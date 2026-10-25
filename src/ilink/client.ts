@@ -402,9 +402,7 @@ export class ILinkClient {
           `CDN upload timed out after ${this.timeoutMs}ms`,
           undefined,
           undefined,
-          {
-            aborted: true,
-          },
+          { aborted: true },
         );
       throw err;
     } finally {
@@ -420,6 +418,8 @@ export class ILinkClient {
   }): Promise<SendMessageResponse> {
     this.requireToken();
     if (!params.image?.length) throw new ILinkError('image buffer is empty');
+    if (params.image.length > this.mediaMaxBytes)
+      throw new ILinkError(`media too large: ${params.image.length} > ${this.mediaMaxBytes} bytes`);
     const uploaded = await this.uploadBytes(params.toUserId, params.image, UPLOAD_MEDIA_TYPE.image);
     const clientId =
       params.clientId ?? `wechat-ai-img-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;

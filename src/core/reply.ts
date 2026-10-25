@@ -326,6 +326,7 @@ export function resolveDue(
       minute = Number(md[4] ?? 0);
     if (hour > 23 || minute > 59) return undefined;
     const thisYear = epochOfWallTime(year, Number(md[1]), Number(md[2]), hour, minute, timeZone);
+    // 今年已经过去的日子是下一次出现，不是过期计划。
     if (!Number.isNaN(thisYear) && thisYear > now) return thisYear;
     const nextYear = epochOfWallTime(
       year + 1,
@@ -445,6 +446,8 @@ export function parseReply(
         .filter((s: unknown): s is string => typeof s === 'string')
         .slice(0, OPEN_LOOP_PROMPT_MAX)
     : [];
+  // 只在字段真的出现时给出：缺席（undefined）与显式空数组含义不同——
+  // 主动提醒的契约靠这个区别区分"模型没表态"和"模型明确说没问"。
   const askedLoops = Array.isArray(raw.askedLoops)
     ? raw.askedLoops
         .filter((s: unknown): s is string => typeof s === 'string')

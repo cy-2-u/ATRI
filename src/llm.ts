@@ -450,7 +450,7 @@ export class HttpModel implements Model {
     try {
       data = JSON.parse(payload) as Json;
     } catch {
-      // 网关的 HTML 502 属于临时故障，不是"无效响应"。
+      // 网关的 HTML 502 属于临时上游故障，不是"无效响应"。
       if (!response.ok)
         throw new ModelError(
           `模型请求失败（HTTP ${response.status}）：${payload.slice(0, 200) || '上游错误'}`,
@@ -497,6 +497,7 @@ export class HttpModel implements Model {
           p.id = id;
           return { id, name: String(p.name), arguments: argumentsOf(p.input) };
         });
+      // Anthropic 把 prompt 用量拆成 uncached + cache-write + cache-read。
       inputTokens =
         Number(data.usage?.input_tokens ?? 0) +
         Number(data.usage?.cache_creation_input_tokens ?? 0) +
@@ -551,6 +552,7 @@ export class HttpModel implements Model {
         : [];
       calls = toolCalls.map((t: Json) => {
         const id = typeof t.id === 'string' && t.id ? t.id : `call_${randomUUID()}`;
+        // 回放的 raw 与合成 id 保持同步。
         t.id = id;
         return {
           id,

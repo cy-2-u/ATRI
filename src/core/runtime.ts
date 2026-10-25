@@ -60,6 +60,24 @@ export interface RuntimeOptions extends AgentOptions {
   embedder?: Embedder;
 }
 
+const dayFormatters = new Map<string, Intl.DateTimeFormat>();
+export function dayAt(at: number, timeZone: string): string {
+  let formatter = dayFormatters.get(timeZone);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat('en-CA', {
+      timeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    });
+    dayFormatters.set(timeZone, formatter);
+  }
+  const p = formatter.formatToParts(new Date(at));
+  return ['year', 'month', 'day'].map((t) => p.find((v) => v.type === t)!.value).join('-');
+}
+function hourAt(at: number, timeZone: string) {
+  return Number(hourFormatter(timeZone).format(new Date(at)));
+}
 /** 非聊天任务的失败退避：1/2/4…分钟，30 分钟封顶。 */
 export function taskBackoffMs(attempts: number): number {
   return Math.min(30, 2 ** Math.max(0, attempts - 1)) * 60000;
@@ -97,24 +115,6 @@ function beatPauseMs(part: ReplyPart): number | undefined {
   if (!part.beat) return undefined;
   const [lo, hi] = BEAT_RANGES_MS[part.beat];
   return lo + Math.random() * (hi - lo);
-}
-const dayFormatters = new Map<string, Intl.DateTimeFormat>();
-export function dayAt(at: number, timeZone: string): string {
-  let formatter = dayFormatters.get(timeZone);
-  if (!formatter) {
-    formatter = new Intl.DateTimeFormat('en-CA', {
-      timeZone,
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-    });
-    dayFormatters.set(timeZone, formatter);
-  }
-  const p = formatter.formatToParts(new Date(at));
-  return ['year', 'month', 'day'].map((t) => p.find((v) => v.type === t)!.value).join('-');
-}
-function hourAt(at: number, timeZone: string) {
-  return Number(hourFormatter(timeZone).format(new Date(at)));
 }
 
 export class Runtime {
@@ -332,7 +332,7 @@ export class Runtime {
             break;
           }
           const delivery = own[i]!;
-          // 发送前的停顿：模型可用 beat 表达“这条之前自然停一下”（沉重的
+          // 发送前的停顿：模型可用 beat 表达"这条之前自然停一下"（沉重的
           // 话先沉默几秒再开口）；没写 beat 就按内容长度自动——长气泡停久
           // 一点，绝不机关枪。首气泡默认即时。
           const beatPause = beatPauseMs(delivery.part);
@@ -730,7 +730,7 @@ export class Runtime {
     if (this.stopped) return;
     const c = this.options.config(),
       hour = hourAt(now, c.timeZone);
-    // 例行清理搭每分钟调度tick的便车；单个坏联系人不能让后面的全部饿死。
+    // 例行清理搭每分钟调度 tick 的便车；单个坏联系人不能让后面的全部饿死。
     try {
       this.store.pruneTasks(now);
     } catch (error) {

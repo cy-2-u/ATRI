@@ -333,7 +333,7 @@ export class Agent {
     const timeLine = basis
       ? renderTimeGap(now, basis, this.o.timeZone())
       : `现在是${momentFormatter(this.o.timeZone()).format(new Date(now))}`;
-    // 久别后有用的不是关键词匹配（“在吗”什么都匹配不上），是分开前
+    // 久别后有用的不是关键词匹配（"在吗"什么都匹配不上），是分开前
     // 你们聊到一半的事——按日期窗口取，不占召回槽位。
     const awayDays = basis ? calendarDays(basis, now, this.o.timeZone()) : 0;
     const gapDiary =
@@ -351,7 +351,7 @@ export class Agent {
     const rhythm = store.activityRhythm(peer.id, this.o.timeZone());
     const currentHour = Number(hourFormatter(this.o.timeZone()).format(new Date(now)));
     // 到期的是值得问的；未到期的也需要 id 在场，否则模型无法在对方提前
-    // 汇报（“面试搞定了”）时 resolveLoops。未到期尾部限量。
+    // 汇报（"面试搞定了"）时 resolveLoops。未到期尾部限量。
     const dueLoops = store.dueOpenLoops(peer.id, now).slice(0, OPEN_LOOP_PROMPT_MAX);
     const dueIds = new Set(dueLoops.map((l) => l.id));
     // 已问过、仍在窗口内、还没了结的约定保留在场：用户常在被问几小时
@@ -368,7 +368,7 @@ export class Agent {
       .slice(0, OPEN_LOOP_PROMPT_MAX);
     const upcomingLoops = store
       .openLoops(peer.id, true)
-      // 已问过的未到期约定只剩“记住”，列出来反而邀请提前追问。
+      // 已问过的未到期约定只剩"记住"，列出来反而邀请提前追问。
       .filter((l) => !dueIds.has(l.id) && !l.asked)
       .slice(0, OPEN_LOOP_PROMPT_MAX);
     const openLoops = [...dueLoops, ...askedDue, ...upcomingLoops];
@@ -563,7 +563,7 @@ export class Agent {
     const plan = await this.planReply(task, peer, history, now, signal);
     // 久别重逢翻回旧日记：带情绪底色的段落回看时也泛化成此刻的感觉——
     // 与想起带情绪的记忆同一条机制。只在重逢的第一轮发生（之后间隔落回
-    // “连续聊天”，不再带出这段日记），无需额外限流。
+    // "连续聊天"，不再带出这段日记），无需额外限流。
     const diaryPulse = residuePulse(diaryResidues(plan.gapDiary, now));
     if (diaryPulse)
       store.pulseMood(peer.id, { valence: diaryPulse.valence, reason: diaryPulse.reason }, now);
@@ -642,7 +642,7 @@ export class Agent {
           .filter((m) => m.role === 'assistant' && m.created_at < now - 6 * 3600000)
           .slice(-6);
         const openers = pastPings.slice(-3).map((m) => m.content.slice(0, 60));
-        // 指纹抓的是换个说法的同一话头：两天内重复同一话题就是“机器又来了”。
+        // 指纹抓的是换个说法的同一话头：两天内重复同一话题就是"机器又来了"。
         const recentHooks = store
           .proactiveHooks(peer.id, now - 48 * 3600000)
           .slice(0, 6)
@@ -656,7 +656,7 @@ export class Agent {
               ? `你最近日记里的真实感受（引用要自然，别朗读）：\n${lastDiary.join('\n---\n')}`
               : '',
             flashbacks.length
-              ? `忽然想起的旧事（可以作为“突然想起”的话头自然提起，不要像播报档案）：\n${flashbacks.map((f) => `- ${f.content}`).join('\n')}`
+              ? `忽然想起的旧事（可以作为"突然想起"的话头自然提起，不要像播报档案）：\n${flashbacks.map((f) => `- ${f.content}`).join('\n')}`
               : '',
             openers.length ? `最近几次主动开场说过：${openers.join(' / ')}。换一种开场方式。` : '',
             recentHooks.length
@@ -698,7 +698,7 @@ export class Agent {
     result.memories = this.filteredUpdates(result.memories, plan.available);
     result.pickedMemoryIds = plan.pickedMemoryIds;
     result.openLoops = parseOpenLoops(result.openLoops, plan.available, now, this.o.timeZone());
-    // 汇报可能早于到期（“面试搞定了”）：任何仍开着的约定都可被了结。
+    // 汇报可能早于到期（"面试搞定了"）：任何仍开着的约定都可被了结。
     const openIds = new Set(store.openLoops(peer.id, true).map((l) => l.id));
     result.resolveLoops = result.resolveLoops.filter((id) => openIds.has(id));
     result.askedLoops = (result.askedLoops ?? []).filter((id) => openIds.has(id));
@@ -723,7 +723,7 @@ export class Agent {
     signal: AbortSignal,
     deadlineAt?: number,
     /** 主动的到期约定提醒：回复必须显式声明 askedLoops（哪怕空数组），
-     *  缺席走一轮定向修复；仍缺席按“没提到”处理，交给第二天重试。
+     *  缺席走一轮定向修复；仍缺席按"没提到"处理，交给第二天重试。
      *  词面匹配不配决定一个承诺有没有被兑现。 */
     requireAskedLoops = false,
   ): Promise<ParsedReply> {
@@ -1047,6 +1047,7 @@ export class Agent {
       .map((s: any) => ({
         content: s.content.slice(0, 5000),
         sources: [...new Set(s.sources)] as string[],
+        // 日记的情绪底色：写这段时的感受，回看时给记忆染色。
         ...(typeof s.emotion === 'number' && Number.isFinite(s.emotion)
           ? { emotion: Math.max(-1, Math.min(1, s.emotion)) }
           : {}),

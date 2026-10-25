@@ -217,7 +217,7 @@ function apiPairs() {
 async function smoke() {
   console.log('\n# Smoke test');
   const serverEntry = join(project, 'dist', 'server.js');
-  if (!existsSync(serverEntry)) throw new Error('docker/dist/server.js 不存在，先 npm run build');
+  if (!existsSync(serverEntry)) throw new Error('dist/server.js 不存在，先 npm run build');
   const directory = mkdtempSync(join(tmpdir(), 'atri-smoke-'));
   const password = 'smoke-test-password-only';
   let calls = 0;
