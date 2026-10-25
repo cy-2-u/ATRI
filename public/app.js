@@ -1605,6 +1605,16 @@ $('test-llm').onclick = () =>
         ' ms',
     );
   }, $('test-llm'));
+$('test-system').onclick = () =>
+  perform(async () => {
+    const result = await api('/api/test-system', 'POST', undefined, 120000);
+    show(
+      result.ok
+        ? '角色生效：该渠道支持 system 提示，人物设定可以正常工作（回复 "' + result.reply + '"）'
+        : '角色不生效：该渠道丢弃了 system 提示，人物设定无法工作，建议更换渠道或模型（实际回复 "' + result.reply + '"）',
+      !result.ok,
+    );
+  }, $('test-system'));
 $('test-embedding').onclick = () =>
   perform(async () => {
     const result = await api('/api/test-embedding', 'POST', undefined, 120000);

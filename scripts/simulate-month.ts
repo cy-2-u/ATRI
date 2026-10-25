@@ -452,7 +452,7 @@ sim.snapshot('第 30 天：月末总览');
   check(Math.abs(baseline) <= 0.3, `情绪基线钳制在 ±0.3（当前 ${baseline.toFixed(2)}）`);
   check(new Set(stickerSlugsSeen).size >= 1, '剧本表情按对象格式发出');
   check(
-    sim.calls.some((c) => c.messages.some((m) => m.content.includes('可以发送的表情'))),
+    sim.calls.some((c) => c.messages.some((m) => m.content.includes('可用表情目录'))),
     '表情目录按天轮换进入提示词',
   );
   check(

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fixture, FakeModel, completion, promptText } from './helpers.js';
-import { parseReply, parseOpenLoops, resolveDue, type Sticker } from '../src/core/index.js';
+import { parseReply, resolveDue, type Sticker } from '../src/core/index.js';
 
 const stickers: Sticker[] = [
   { slug: 'happy', description: '开心', tags: ['开心'], file: 'happy.png' },
@@ -65,127 +65,6 @@ test('内联表情纠错：按 slug/含义/标签匹配回目录并保序，匹�
     stickers,
   );
   assert.equal(byTag.parts[0]!.slug, 'happy');
-});
-
-test('弱模型宽容解析：字符串 messages、未知 slug 模糊回退、剥代码围栏', () => {
-  const wrapped = parseReply(JSON.stringify({ messages: '就一句话', memoryUpdates: [] }), stickers);
-  assert.equal(wrapped.parts.length, 1, 'messages 写成字符串时当一条气泡收下');
-  assert.equal(wrapped.parts[0]!.text, '就一句话');
-  const chatShape = parseReply(
-    JSON.stringify({
-      messages: [
-        { role: 'assistant', content: '在呀！' },
-        { role: 'assistant', content: '想聊什么呢？' },
-      ],
-      memoryUpdates: [],
-    }),
-    stickers,
-  );
-  assert.deepEqual(
-    chatShape.parts.map((p) => p.text),
-    ['在呀！', '想聊什么呢？'],
-    '模仿聊天记录形状（role/content）的气泡按文字收下',
-  );
-  const fuzzy = parseReply(
-    JSON.stringify({ messages: [{ type: 'sticker', slug: '开心' }], memoryUpdates: [] }),
-    stickers,
-  );
-  assert.equal(fuzzy.parts[0]!.slug, 'happy', '目录外的 slug 按含义/标签捞回真实表情');
-  const embedded = parseReply(
-    JSON.stringify({ messages: [{ type: 'sticker', slug: 'milk-tea-happy' }], memoryUpdates: [] }),
-    stickers,
-  );
-  assert.equal(embedded.parts[0]!.slug, 'happy', '发明的名字里嵌着真实 slug 也能捞回');
-  assert.throws(
-    () =>
-      parseReply(
-        JSON.stringify({ messages: [{ type: 'sticker', slug: '完全对不上' }], memoryUpdates: [] }),
-        stickers,
-      ),
-    /回复没有有效内容/,
-    '实在对不上的整条丢弃，空回复按失败走修复轮',
-  );
-  const fenced = parseReply(
-    JSON.stringify({
-      messages: ['```\n/\\_/\\\n( o.o )\n```\n后面还有一句'],
-      memoryUpdates: [],
-    }),
-    stickers,
-  );
-  const joined = fenced.parts.map((p) => p.text ?? '').join('\n');
-  assert.ok(!joined.includes('```'), '文本气泡剥掉 Markdown 代码围栏');
-  assert.match(joined, /o\.o/, '围栏里的内容保留');
-  assert.equal(fenced.parts.length, 1, '非列表的多行内容（颜文字等）保持单条不拆');
-  // 有意的多行正文（短诗）不被拆分
-  const poem = parseReply(
-    JSON.stringify({
-      messages: ['晚风把云吹散了\n月亮露出半张脸\n像谁没说完的话'],
-      memoryUpdates: [],
-    }),
-    stickers,
-  );
-  assert.equal(poem.parts.length, 1, '无列表符号的多行正文原样保留');
-  assert.ok(poem.parts[0]!.text!.includes('\n'));
-});
-
-test('纯文本兜底：按空行拆成多条气泡，更像真人的连发', () => {
-  const parsed = parseReply('第一段\n\n第二段\n\n第三段', stickers);
-  assert.deepEqual(
-    parsed.parts.map((p) => p.text),
-    ['第一段', '第二段', '第三段'],
-  );
-});
-
-test('弱模型宽容解析二：换行列表拆条、字符串记忆、无来源开环', () => {
-  // JSON 路径：一条气泡内塞换行列表 → 按行拆成多条
-  const listed = parseReply(
-    JSON.stringify({
-      messages: ['适合什么心情读：\n- 🌙 迷茫的时候\n- 🌧️ 想安静的时候'],
-      memoryUpdates: [],
-    }),
-    stickers,
-  );
-  assert.deepEqual(
-    listed.parts.map((p) => p.text),
-    ['适合什么心情读：', '- 🌙 迷茫的时候', '- 🌧️ 想安静的时候'],
-    '气泡内的换行拆成独立气泡',
-  );
-  // memoryUpdates 写成字符串 → 收下为无来源 interpretation（agent 补挂来源）
-  const strMem = parseReply(
-    JSON.stringify({ messages: ['好呀'], memoryUpdates: ['用户想明天八点被提醒喝水'] }),
-    stickers,
-  );
-  assert.equal(strMem.memories.length, 1);
-  assert.equal(strMem.memories[0]!.kind, 'interpretation');
-  assert.deepEqual(strMem.memories[0]!.sources, []);
-  // openLoops 无来源：形状阶段保留，校验阶段用回退来源补挂
-  const shapePass = parseReply(
-    JSON.stringify({
-      messages: ['好呀'],
-      memoryUpdates: [],
-      openLoops: [{ content: '提醒喝水', dueAt: Date.now() + 3600000 }],
-    }),
-    stickers,
-  );
-  assert.equal(shapePass.openLoops.length, 1, '形状阶段保留无来源开环');
-  assert.deepEqual(shapePass.openLoops[0]!.sources, []);
-  const available = new Set(['msg-1']);
-  const verified = parseOpenLoops(
-    shapePass.openLoops,
-    available,
-    Date.now(),
-    'Asia/Shanghai',
-    'msg-1',
-  );
-  assert.deepEqual(verified[0]!.sources, ['msg-1'], '校验阶段用触发消息补挂来源');
-  const dropped = parseOpenLoops(
-    shapePass.openLoops,
-    available,
-    Date.now(),
-    'Asia/Shanghai',
-    'msg-2',
-  );
-  assert.equal(dropped.length, 0, '回退来源不可见时丢弃');
 });
 
 test('来源标注剥除：行首按块拆分，句中就地清除', () => {

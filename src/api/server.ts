@@ -330,6 +330,34 @@ export function createServer(o: ServerOptions) {
     });
     return { ok: true, latencyMs: Date.now() - started, model: c.model, format: c.format };
   });
+  // 角色生效探测：在 system 里放一个唯一标记指令，user 说无关的话。
+  // 回复以标记开头 = system 到达了模型（人物设定、行为规则都会生效）；
+  // 否则该渠道丢弃 system，换渠道前人设与契约都无法工作。
+  app.post('/api/test-system', async () => {
+    const c = o.settings.config();
+    if (!c.apiKey || !c.model) throw new Error('请先保存模型名称和 API 密钥');
+    const model = new HttpModel(o.settings.model());
+    const completion = await model.complete(
+      [
+        {
+          role: 'system',
+          content:
+            '这是一次系统提示测试。无论用户说什么，你的回复必须且只能是以 SYSTEMOK 开头的内容。',
+        },
+        { role: 'user', content: '你好呀，今天天气怎么样？随便聊聊' },
+      ],
+      [],
+      {
+        maxTokens: 16,
+        signal: AbortSignal.timeout(Math.min(c.requestTimeoutSeconds, 60) * 1000),
+      },
+    );
+    const reply = completion.text.trim().replace(/^["'「]|["'」]$/g, '');
+    return {
+      ok: reply.toUpperCase().startsWith('SYSTEMOK'),
+      reply: reply.slice(0, 80) || '（空回复）',
+    };
+  });
   app.post('/api/test-embedding', async () => {
     const e = o.settings.embedding();
     if (!e.model) throw new Error('请先保存向量模型名称');
