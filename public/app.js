@@ -612,6 +612,13 @@ async function loadStatus() {
       const time = el('time', relTime(u.created_at));
       time.dateTime = new Date(u.created_at).toISOString();
       heading.append(el('strong', purposeName(u.purpose)), time);
+      // 缓存命中：供应商报告的打折前缀量。命中占比高说明渠道的前缀缓存
+      // 在生效（架构按逐字节稳定前缀设计，正常聊天应看到大额命中）。
+      const cached = u.cached_tokens ?? 0;
+      const cacheNote =
+        cached > 0 && u.input_tokens > 0
+          ? ' · 缓存命中 ' + formatNumber(cached) + '（' + Math.round((cached / u.input_tokens) * 100) + '%）'
+          : '';
       row.append(
         heading,
         el(
@@ -620,6 +627,7 @@ async function loadStatus() {
             formatNumber(u.input_tokens) +
             ' · 出 ' +
             formatNumber(u.output_tokens) +
+            cacheNote +
             ' · ' +
             (u.duration_ms / 1000).toFixed(1) +
             ' 秒',

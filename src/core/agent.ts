@@ -261,6 +261,7 @@ export class Agent {
       result.inputTokens,
       result.outputTokens,
       elapsedMs,
+      result.cachedTokens,
     );
     return result;
   }
@@ -768,6 +769,7 @@ export class Agent {
           call.result.inputTokens,
           call.result.outputTokens,
           call.elapsedMs,
+          call.result.cachedTokens,
         );
         completion = call.result;
         if (completion.calls.length) {

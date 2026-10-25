@@ -444,3 +444,17 @@ test('回想重置细节时钟但不重置意义', () => {
     ),
   );
 });
+
+test('用量缓存列：迁移 v9 后 recordUsage 带 cached 落库并可读回', (t) => {
+  const f = fixture(t);
+  const version = Number(f.store.sql.prepare('PRAGMA user_version').get()?.user_version);
+  assert.ok(version >= 9, '库已迁移到 v9');
+  f.store.recordUsage('p1', 'task-1', 'chat', 2000, 50, 800, 1900);
+  f.store.recordUsage('p1', 'task-1', 'chat', 2000, 50, 300);
+  const recent = f.store.recentUsage() as unknown as { cached_tokens: number }[];
+  assert.equal(recent.length, 2);
+  assert.equal(recent[0]!.cached_tokens, 0, '未传时默认 0');
+  assert.equal(recent[1]!.cached_tokens, 1900, '缓存命中落库');
+  const agg = f.store.usage() as unknown as { purpose: string; cached_tokens: number }[];
+  assert.equal(agg.find((r) => r.purpose === 'chat')!.cached_tokens, 1900, '聚合含缓存列');
+});

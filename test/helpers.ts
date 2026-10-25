@@ -48,6 +48,7 @@ export function completion(body: unknown, calls: ToolCall[] = []): Completion {
     continuation: { role: 'assistant', content: text, calls },
     inputTokens: 20,
     outputTokens: 10,
+    cachedTokens: 0,
   };
 }
 export class FakeModel implements Model {

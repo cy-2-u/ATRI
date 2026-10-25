@@ -43,7 +43,11 @@ function okOpenAI(body: Record<string, unknown> = {}) {
     new Response(
       JSON.stringify({
         choices: [{ message: { role: 'assistant', content: '你好' } }],
-        usage: { prompt_tokens: 10, completion_tokens: 5 },
+        usage: {
+          prompt_tokens: 10,
+          completion_tokens: 5,
+          prompt_tokens_details: { cached_tokens: 8 },
+        },
         ...body,
       }),
       { status: 200 },
@@ -81,6 +85,7 @@ test('OpenAI 兼容：请求构造、思考剥离、工具调用解析、密钥�
   assert.equal(sent.model, 'test-model');
   assert.equal(sent.max_tokens, 3000);
   assert.equal(completion.text, '答案', '<think> 被剥掉');
+  assert.equal(completion.cachedTokens, 0, '该响应未带缓存字段时报 0');
   assert.equal(completion.calls.length, 1);
   assert.notEqual(completion.calls[0].id, 'undefined', '缺失 id 被合成');
   assert.equal(completion.calls[0].arguments.query, '茶');
@@ -129,6 +134,7 @@ test('Anthropic：system 块带缓存断点、tool_result 配对、三段用量�
   assert.equal(body.system[0].cache_control.type, 'ephemeral', 'system 是最高价值断点');
   assert.ok(body.messages.some((m: any) => JSON.stringify(m.content).includes('tool_result')));
   assert.equal(completion.inputTokens, 310, 'uncached+cache-write+cache-read 合计');
+  assert.equal(completion.cachedTokens, 200, 'Anthropic 缓存读取单独上报');
 });
 
 test('Gemini：同角色合并、functionResponse 包装、systemInstruction', async () => {

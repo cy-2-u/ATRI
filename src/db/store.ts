@@ -271,7 +271,7 @@ export class Store {
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
     this.sql = new DatabaseSync(path);
     const openedAt = Number(this.sql.prepare('PRAGMA user_version').get()?.user_version ?? 0);
-    if (openedAt > 8) {
+    if (openedAt > 9) {
       this.sql.close();
       throw new Error('数据库来自更新版本，不能用当前程序打开');
     }
@@ -413,6 +413,19 @@ export class Store {
         if (!this.hasColumn('diary_sections', 'emotion'))
           this.sql.exec('ALTER TABLE diary_sections ADD COLUMN emotion REAL NOT NULL DEFAULT 0;');
         this.sql.exec('PRAGMA user_version=8;');
+      });
+    }
+    if (openedAt < 9) {
+      // 用量表补充缓存命中列：供应商的前缀缓存命中 token 单独记录，
+      // 调试页据此展示渠道缓存是否实际生效（旧数据按 0 处理）。
+      this.transaction(() => {
+        if (!this.hasColumn('usage', 'cached_tokens'))
+          this.sql.exec('ALTER TABLE usage ADD COLUMN cached_tokens INTEGER NOT NULL DEFAULT 0;');
+        if (!this.hasColumn('usage_daily', 'cached_tokens'))
+          this.sql.exec(
+            'ALTER TABLE usage_daily ADD COLUMN cached_tokens INTEGER NOT NULL DEFAULT 0;',
+          );
+        this.sql.exec('PRAGMA user_version=9;');
       });
     }
   }
@@ -2218,14 +2231,15 @@ export class Store {
     input: number,
     output: number,
     duration: number,
+    cached = 0,
   ) {
     this.usageCache = undefined;
     this.transaction(() => {
       this.sql
         .prepare(
-          'INSERT INTO usage(peer_id,task_id,purpose,input_tokens,output_tokens,duration_ms,created_at) VALUES(?,?,?,?,?,?,?)',
+          'INSERT INTO usage(peer_id,task_id,purpose,input_tokens,output_tokens,duration_ms,cached_tokens,created_at) VALUES(?,?,?,?,?,?,?,?)',
         )
-        .run(peer, task, purpose, input, output, duration, Date.now());
+        .run(peer, task, purpose, input, output, duration, cached, Date.now());
       // 滚动归档按小时级节流，避免回复路径上的全表 GROUP BY。
       const rolledAt = Date.now();
       if (rolledAt - this.lastUsageRollup < USAGE_ROLLUP_INTERVAL_MS) return;
@@ -2233,17 +2247,18 @@ export class Store {
       const cutoff = rolledAt - USAGE_RETENTION_DAYS * 86400000;
       const stale = this.sql
         .prepare(
-          'SELECT purpose,created_at,count(*) AS n,sum(input_tokens) AS input_tokens,sum(output_tokens) AS output_tokens,round(avg(duration_ms)) AS average_ms FROM usage WHERE created_at<? GROUP BY purpose,created_at/86400000',
+          'SELECT purpose,created_at,count(*) AS n,sum(input_tokens) AS input_tokens,sum(output_tokens) AS output_tokens,sum(cached_tokens) AS cached_tokens,round(avg(duration_ms)) AS average_ms FROM usage WHERE created_at<? GROUP BY purpose,created_at/86400000',
         )
         .all(cutoff) as Row[];
       if (stale.length) {
         const upsert = this.sql.prepare(
-          'INSERT INTO usage_daily(purpose,day,calls,input_tokens,output_tokens,average_ms) VALUES(?,?,?,?,?,?) ' +
+          'INSERT INTO usage_daily(purpose,day,calls,input_tokens,output_tokens,cached_tokens,average_ms) VALUES(?,?,?,?,?,?,?) ' +
             'ON CONFLICT(purpose,day) DO UPDATE SET ' +
             'average_ms=ROUND((average_ms*calls + excluded.average_ms*excluded.calls)*1.0/(calls+excluded.calls)),' +
             'calls=calls+excluded.calls,' +
             'input_tokens=input_tokens+excluded.input_tokens,' +
-            'output_tokens=output_tokens+excluded.output_tokens',
+            'output_tokens=output_tokens+excluded.output_tokens,' +
+            'cached_tokens=cached_tokens+excluded.cached_tokens',
         );
         for (const row of stale) {
           upsert.run(
@@ -2252,6 +2267,7 @@ export class Store {
             Number(row.n),
             Number(row.input_tokens),
             Number(row.output_tokens),
+            Number(row.cached_tokens),
             Number(row.average_ms),
           );
         }
@@ -2264,12 +2280,12 @@ export class Store {
     if (this.usageCache && now - this.usageCache.at < USAGE_CACHE_MS) return this.usageCache.rows;
     const recent = this.sql
       .prepare(
-        'SELECT purpose,count(*) AS calls,sum(input_tokens) AS input_tokens,sum(output_tokens) AS output_tokens,round(avg(duration_ms)) AS average_ms FROM usage GROUP BY purpose',
+        'SELECT purpose,count(*) AS calls,sum(input_tokens) AS input_tokens,sum(output_tokens) AS output_tokens,sum(cached_tokens) AS cached_tokens,round(avg(duration_ms)) AS average_ms FROM usage GROUP BY purpose',
       )
       .all() as Row[];
     const archived = this.sql
       .prepare(
-        'SELECT purpose,sum(calls) AS calls,sum(input_tokens) AS input_tokens,sum(output_tokens) AS output_tokens,round(sum(average_ms*calls)*1.0/sum(calls)) AS average_ms FROM usage_daily GROUP BY purpose',
+        'SELECT purpose,sum(calls) AS calls,sum(input_tokens) AS input_tokens,sum(output_tokens) AS output_tokens,sum(cached_tokens) AS cached_tokens,round(sum(average_ms*calls)*1.0/sum(calls)) AS average_ms FROM usage_daily GROUP BY purpose',
       )
       .all() as Row[];
     const merged = new Map<string, Row>();
@@ -2288,6 +2304,7 @@ export class Store {
         calls: total,
         input_tokens: Number(prior.input_tokens) + Number(row.input_tokens),
         output_tokens: Number(prior.output_tokens) + Number(row.output_tokens),
+        cached_tokens: Number(prior.cached_tokens ?? 0) + Number(row.cached_tokens ?? 0),
         average_ms: total
           ? Math.round(
               (Number(prior.average_ms) * priorCalls + Number(row.average_ms) * rowCalls) / total,
@@ -2302,7 +2319,7 @@ export class Store {
   recentUsage() {
     return this.sql
       .prepare(
-        'SELECT u.purpose,u.input_tokens,u.output_tokens,u.duration_ms,u.created_at,p.address FROM usage u LEFT JOIN peers p ON p.id=u.peer_id ORDER BY u.id DESC LIMIT 12',
+        'SELECT u.purpose,u.input_tokens,u.output_tokens,u.cached_tokens,u.duration_ms,u.created_at,p.address FROM usage u LEFT JOIN peers p ON p.id=u.peer_id ORDER BY u.id DESC LIMIT 12',
       )
       .all();
   }

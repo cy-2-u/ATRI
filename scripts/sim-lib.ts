@@ -84,6 +84,7 @@ export function startSim(opts: SimOptions) {
           continuation: { role: 'assistant' as const, content: text, calls: callsOut },
           inputTokens: 20,
           outputTokens: 10,
+          cachedTokens: 0,
         };
       }
       const text = JSON.stringify(value);
@@ -93,6 +94,7 @@ export function startSim(opts: SimOptions) {
         continuation: { role: 'assistant' as const, content: text, calls: [] },
         inputTokens: 20,
         outputTokens: 10,
+        cachedTokens: 0,
       };
       return completion;
     },

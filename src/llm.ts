@@ -45,6 +45,9 @@ export interface Completion {
   continuation: ModelMessage;
   inputTokens: number;
   outputTokens: number;
+  /** 供应商报告的前缀缓存命中 token（各家字段不同，统一折算；未报告为 0）。
+   *  计费上命中部分通常大幅折扣，运维据此判断渠道缓存是否实际生效。 */
+  cachedTokens: number;
 }
 export interface Model {
   complete(
@@ -477,7 +480,8 @@ export class HttpModel implements Model {
       calls: ToolCall[] = [],
       raw: unknown,
       inputTokens = 0,
-      outputTokens = 0;
+      outputTokens = 0,
+      cachedTokens = 0;
     if (c.format === 'anthropic') {
       const content: Json[] = Array.isArray(data.content) ? data.content : [];
       raw = content;
@@ -498,6 +502,7 @@ export class HttpModel implements Model {
         Number(data.usage?.cache_creation_input_tokens ?? 0) +
         Number(data.usage?.cache_read_input_tokens ?? 0);
       outputTokens = Number(data.usage?.output_tokens ?? 0);
+      cachedTokens = Number(data.usage?.cache_read_input_tokens ?? 0);
     } else if (c.format === 'gemini') {
       const parts: Json[] = Array.isArray(data.candidates?.[0]?.content?.parts)
         ? data.candidates[0].content.parts
@@ -523,6 +528,7 @@ export class HttpModel implements Model {
         });
       inputTokens = Number(data.usageMetadata?.promptTokenCount ?? 0);
       outputTokens = Number(data.usageMetadata?.candidatesTokenCount ?? 0);
+      cachedTokens = Number(data.usageMetadata?.cachedContentTokenCount ?? 0);
     } else {
       const candidate = data.choices?.[0]?.message;
       const message: Json = candidate && typeof candidate === 'object' ? candidate : {};
@@ -554,6 +560,7 @@ export class HttpModel implements Model {
       });
       inputTokens = Number(data.usage?.prompt_tokens ?? 0);
       outputTokens = Number(data.usage?.completion_tokens ?? 0);
+      cachedTokens = Number(data.usage?.prompt_tokens_details?.cached_tokens ?? 0);
     }
     if (!text.trim() && !calls.length) throw new ModelError('模型没有返回可用内容');
     return {
@@ -562,6 +569,7 @@ export class HttpModel implements Model {
       continuation: { role: 'assistant', content: text, calls, raw },
       inputTokens,
       outputTokens,
+      cachedTokens,
     };
   }
 }
