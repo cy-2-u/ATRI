@@ -1,9 +1,0 @@
-chore: drop unused protocol surface and test helper exports
-
-Full dead-code audit (324 exports and 97 Store methods scanned against
-usage): the only unused code left was the original WeChat-AI library
-surface ATRI never calls - sendMedia/sendVoice/sendVideo/sendFile,
-uploadMedia, getBotToken, CDN base getters/setters, mediaKindLabel,
-isMediaOnlyWithoutText - plus unused test helper exports. Removed
-(~350 lines); inbound parsing for voice/video/file items stays intact.
-Everything else is exercised by tests, smoke or the month simulation.
