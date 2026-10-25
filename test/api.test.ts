@@ -32,7 +32,9 @@ function apiFixture(t: TestContext) {
   });
   const store = new Store(join(directory, 'atri.db'));
   cleanup(t, () => store.close());
-  const settings = new Settings(store, projectRoot);
+  // DATA_DIR 指向临时目录：Settings 构造时会建数据目录并生成管理密码，
+  // 不指过去的话每次跑测试都会在项目根重建 data/ 残留。
+  const settings = new Settings(store, projectRoot, { ...process.env, DATA_DIR: directory });
   const stickers = new Stickers(projectRoot, directory, store);
   const bridge = {
     status: () => ({ status: '未登录' }),
