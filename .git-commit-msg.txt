@@ -1,0 +1,24 @@
+fix: make weak models actually use stickers and JSON replies
+
+Live probe against glm-5.3-flash showed it ignores the JSON contract in
+the system prompt, ignores response_format, and honestly believes it
+cannot send images - so stickers never fired and long prose with code
+fences went out as one bubble.
+
+- Pin the output-format reminder at the end of the per-turn user
+  context block: models that ignore system-role format demands follow
+  user-role instructions placed right before the message they answer.
+- Try response_format json_object on OpenAI-compatible endpoints and
+  transparently drop it (cached per endpoint+model) when rejected.
+- resolveStickerInput: fuzzy-resolve invented sticker names through
+  description, tags, and real slugs embedded in the invented name
+  ("milk-tea-happy" -> happy) for both sticker objects and inline
+  [表情：x] text.
+- Parser leniency for weak models: a bare string messages value becomes
+  one bubble, {"role":"assistant","content":...}-shaped items become
+  text bubbles, markdown code fences are stripped from bubble text,
+  and the prose fallback splits on blank lines into separate bubbles.
+- chat.md: stickers are sent as real images by the system, no markdown,
+  short bubbles as separate messages entries.
+- scripts/_live-probe.ts: env-keyed live pipeline probe for future
+  model swaps.

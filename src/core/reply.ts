@@ -128,13 +128,40 @@ export function stripSourceAnnotations(text: string): { parts: ReplyPart[]; text
   };
 }
 
-/** 模型把历史展示格式 [表情：x] 写进文字时：按 slug→含义→标签匹配回目录
- *  真实表情并保持顺序（先文字后表情会颠倒发送顺序）。字符类有界：无界
- *  懒惰量组会让一串未闭合的 [表情： 产生二次方回溯。 */
+/** 按输入解析目录表情：slug → 含义 → 标签逐级模糊匹配。模型会发明
+ *  目录外的名字（"猫猫头"、"milk-tea-happy"），精确匹配失败就按
+ *  含义/标签/名字里嵌着的真实 slug 捞回目录里最接近的表情，实在
+ *  对不上才丢弃。 */
+export function resolveStickerInput(query: string, stickers: Sticker[]): Sticker | undefined {
+  const q = query.trim().toLowerCase();
+  if (!q || !stickers.length) return undefined;
+  return (
+    stickers.find((s) => s.slug.toLowerCase() === q) ??
+    stickers.find((s) => s.description.toLowerCase() === q) ??
+    stickers.find((s) => s.description.toLowerCase().includes(q)) ??
+    stickers.find((s) => (s.tags ?? []).some((t) => t.toLowerCase() === q)) ??
+    stickers.find((s) =>
+      (s.tags ?? []).some((t) => q.includes(t.toLowerCase()) || t.toLowerCase().includes(q)),
+    ) ??
+    // 发明的名字里嵌着真实 slug（"milk-tea-happy" → happy）。
+    (q.length >= 2 ? stickers.find((s) => q.includes(s.slug.toLowerCase())) : undefined) ??
+    (q.length >= 2 ? stickers.find((s) => s.slug.toLowerCase().includes(q)) : undefined)
+  );
+}
+
+/** 文本气泡的统一清洗：剥掉模型夹带的 Markdown 代码围栏（微信里就是
+ *  纯文本），压缩连续空行。 */
+function cleanBubbleText(value: string): string {
+  return value
+    .replace(/```[a-zA-Z0-9_-]*[^\S\n]*\n?/g, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 function splitInlineParts(text: string, stickers: Sticker[]): ReplyPart[] {
   const out: ReplyPart[] = [];
   const pushText = (value: string) => {
-    const body = value.trim();
+    const body = cleanBubbleText(value);
     if (!body) return;
     const last = out.at(-1);
     if (last?.type === 'text') last.text = `${last.text} ${body}`.trim();
@@ -146,23 +173,7 @@ function splitInlineParts(text: string, stickers: Sticker[]): ReplyPart[] {
     const match = re.exec(text);
     if (!match) break;
     pushText(text.slice(cursor, match.index) + (match[1] ?? ''));
-    const query = (match[2] ?? '').trim().toLowerCase();
-    const bySlug = query ? stickers.find((s) => s.slug.toLowerCase() === query) : undefined;
-    const byDescription = query
-      ? stickers.find(
-          (s) =>
-            s.description.toLowerCase().includes(query) ||
-            (s.tags ?? []).some((t) => t.toLowerCase() === query),
-        )
-      : undefined;
-    const byTag = query
-      ? stickers.find((s) =>
-          (s.tags ?? []).some(
-            (t) => query.includes(t.toLowerCase()) || t.toLowerCase().includes(query),
-          ),
-        )
-      : undefined;
-    const sticker = bySlug ?? byDescription ?? byTag;
+    const sticker = resolveStickerInput(match[2] ?? '', stickers);
     if (sticker)
       out.push({ type: 'sticker', slug: sticker.slug, description: sticker.description });
     cursor = match.index + match[0].length;
@@ -187,7 +198,11 @@ function normalizeTextParts(raw: unknown[], stickers: Sticker[]): ReplyPart[] {
       if (m && typeof m === 'object' && 'type' in m && m.type === 'sticker' && 'slug' in m) {
         const slug = m.slug;
         if (typeof slug !== 'string') return [];
-        const sticker = stickers.find((s) => s.slug === slug);
+        // 未知的 slug 先按含义/标签模糊回退（模型常编"猫猫头"这类名字），
+        // 对不上才整条丢弃——只发一个表情的轮次整条丢弃就是"回复没有
+        // 有效内容"。
+        const sticker =
+          stickers.find((s) => s.slug === slug) ?? resolveStickerInput(slug, stickers);
         if (sticker)
           return [
             { type: 'sticker' as const, slug: sticker.slug, description: sticker.description },
@@ -205,6 +220,13 @@ function normalizeTextParts(raw: unknown[], stickers: Sticker[]): ReplyPart[] {
         const parts = splitInlineParts(item.text, stickers);
         if (beat && parts.length) parts[0] = { ...parts[0]!, beat };
         return parts;
+      }
+      // {"role":"assistant","content":"…"}：模型模仿聊天记录的消息形状写
+      // 气泡（glm 实测行为），没有 type 字段。当文字气泡收下。
+      if (m && typeof m === 'object' && typeof (m as { content?: unknown }).content === 'string') {
+        const text = (m as { content: string }).content;
+        if (!text.trim()) return [];
+        return splitInlineParts(text, stickers);
       }
       return [];
     })
@@ -407,6 +429,7 @@ export function parseReply(
     const looksLikeJson = /^(?:\{\s*["}]|\[\s*[\[{"]|```\s*json)/i.test(blob);
     if (blob && !looksLikeJson) {
       // 先切分再清洗：反过来会把切分点洗掉，几段来源块塌成一个气泡。
+      // 弱模型常输出带空行长文：按空行拆成多个气泡，更像真人的连发。
       const annotated = stripSourceAnnotations(blob);
       const blocks = annotated.parts.length
         ? annotated.parts.map((p) => p.text ?? '')
@@ -414,7 +437,10 @@ export function parseReply(
           ? [annotated.text]
           : [];
       const all: ReplyPart[] = [];
-      for (const block of blocks) all.push(...splitInlineParts(block, stickers));
+      for (const block of blocks) {
+        for (const paragraph of block.split(/\n{2,}/))
+          all.push(...splitInlineParts(paragraph, stickers));
+      }
       if (!all.length) throw new Error('回复没有有效内容');
       return {
         parts: all.slice(0, MAX_REPLY_PARTS),
@@ -430,6 +456,8 @@ export function parseReply(
     throw new Error('回复格式无效');
   }
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('回复不是 JSON 对象');
+  // 弱模型会把 messages 写成单个字符串：当一条气泡收下。
+  if (typeof raw.messages === 'string') raw.messages = [raw.messages];
   if (!Array.isArray(raw.messages)) throw new Error('回复缺少 messages 数组');
   const parts = normalizeTextParts(raw.messages, stickers);
   if (!parts.length && !(allowSkip && raw.messages.length === 0))

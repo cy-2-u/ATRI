@@ -67,6 +67,63 @@ test('内联表情纠错：按 slug/含义/标签匹配回目录并保序，匹�
   assert.equal(byTag.parts[0]!.slug, 'happy');
 });
 
+test('弱模型宽容解析：字符串 messages、未知 slug 模糊回退、剥代码围栏', () => {
+  const wrapped = parseReply(JSON.stringify({ messages: '就一句话', memoryUpdates: [] }), stickers);
+  assert.equal(wrapped.parts.length, 1, 'messages 写成字符串时当一条气泡收下');
+  assert.equal(wrapped.parts[0]!.text, '就一句话');
+  const chatShape = parseReply(
+    JSON.stringify({
+      messages: [
+        { role: 'assistant', content: '在呀！' },
+        { role: 'assistant', content: '想聊什么呢？' },
+      ],
+      memoryUpdates: [],
+    }),
+    stickers,
+  );
+  assert.deepEqual(
+    chatShape.parts.map((p) => p.text),
+    ['在呀！', '想聊什么呢？'],
+    '模仿聊天记录形状（role/content）的气泡按文字收下',
+  );
+  const fuzzy = parseReply(
+    JSON.stringify({ messages: [{ type: 'sticker', slug: '开心' }], memoryUpdates: [] }),
+    stickers,
+  );
+  assert.equal(fuzzy.parts[0]!.slug, 'happy', '目录外的 slug 按含义/标签捞回真实表情');
+  const embedded = parseReply(
+    JSON.stringify({ messages: [{ type: 'sticker', slug: 'milk-tea-happy' }], memoryUpdates: [] }),
+    stickers,
+  );
+  assert.equal(embedded.parts[0]!.slug, 'happy', '发明的名字里嵌着真实 slug 也能捞回');
+  assert.throws(
+    () =>
+      parseReply(
+        JSON.stringify({ messages: [{ type: 'sticker', slug: '完全对不上' }], memoryUpdates: [] }),
+        stickers,
+      ),
+    /回复没有有效内容/,
+    '实在对不上的整条丢弃，空回复按失败走修复轮',
+  );
+  const fenced = parseReply(
+    JSON.stringify({
+      messages: ['```\n/\\_/\\\n( o.o )\n```\n后面还有一句'],
+      memoryUpdates: [],
+    }),
+    stickers,
+  );
+  assert.ok(!fenced.parts[0]!.text!.includes('```'), '文本气泡剥掉 Markdown 代码围栏');
+  assert.match(fenced.parts[0]!.text!, /o\.o/, '围栏里的内容保留');
+});
+
+test('纯文本兜底：按空行拆成多条气泡，更像真人的连发', () => {
+  const parsed = parseReply('第一段\n\n第二段\n\n第三段', stickers);
+  assert.deepEqual(
+    parsed.parts.map((p) => p.text),
+    ['第一段', '第二段', '第三段'],
+  );
+});
+
 test('来源标注剥除：行首按块拆分，句中就地清除', () => {
   const parsed = parseReply(
     JSON.stringify({

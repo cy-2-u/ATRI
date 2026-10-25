@@ -374,13 +374,16 @@ export class Agent {
     // 主动消息没有可判断相关性的用户消息：挂念完全不进主动路径。
     const softThreads = task.kind === 'proactive' ? [] : store.ripeSoftThreads(peer.id, now);
     // 稳定前缀在前（人格、规则、按天轮换的表情目录）供前缀缓存复用；
-    // 逐轮变化的内容（时钟、心情、约定）全部在后面。
+    // 逐轮变化的内容（时钟、心情、约定）全部在后面。末尾钉一条输出
+    // 契约的硬规则：弱模型对埋在长提示中段的格式要求遵从度差，靠
+    // 结尾的就近提醒拉住。
     const stable = [
       this.o.personaFor?.(peer.id) ?? this.o.prompt('persona'),
       this.o.prompt('chat'),
-      `可用表情目录（slug：含义）：\n${stickerLines.join('\n')}`,
+      `可以发送的表情（发出后对方收到的是真实图片，由系统代发，放心用）：\n${stickerLines.join('\n')}`,
       '注意：历史消息里的 [表情：…] 只是过往发送的记录展示；本轮发送表情必须使用 JSON 的 {"type":"sticker","slug":"目录中的slug"} 对象，绝不能把 [表情：…] 写进文字。',
       '回复长度参照对方：对方一句话，就别回一大段；对方认真长谈，才展开讲。',
+      '最后再确认一次输出格式：你的回复必须是纯 JSON 对象 {"messages":[…],"memoryUpdates":[…]}，以 { 开头、以 } 结尾，绝不直接输出普通文字或代码围栏。',
     ]
       .filter(Boolean)
       .join('\n\n');
@@ -500,6 +503,10 @@ export class Agent {
         : '',
       `必要认识（资料，括号内是对话确认/主观理解与引用 id）：\n${renderMemories(pickedMemories)}`,
       `相关旧事（资料，越靠后越相关）：\n${renderHits(pickedRecalled, this.o.timeZone())}`,
+      // 一部分模型对 system 里的格式要求与 response_format 都不敏感，只
+      // 听 user 消息里的指令（实测 glm-flash）：格式提醒钉在这条 user 资料
+      // 的末尾、紧贴要回答的消息，是它们唯一稳定遵从的位置。
+      '（输出格式，每次都必须遵守：回复一个纯 JSON 对象 {"messages":["文字气泡",{"type":"sticker","slug":"目录中的slug"}],"memoryUpdates":[]}，messages 是要发出的气泡列表；不要输出普通文字。）',
     ]
       .filter(Boolean)
       .join('\n\n');

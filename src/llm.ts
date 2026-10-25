@@ -368,6 +368,13 @@ export class HttpModel implements Model {
         }));
     }
     if (c.format !== 'gemini' && c.temperature !== undefined) body.temperature = c.temperature;
+    // JSON 模式（OpenAI 兼容）：弱模型对提示词里的格式契约遵从度差，
+    // response_format 直接在协议层强制。端点可能不支持：400 时摘掉
+    // 重试一次并记住（按端点+模型缓存，调用方每次请求新建 HttpModel
+    // 也不会丢探测结果），后续请求不再带。
+    const jsonModeKey = `${c.baseUrl}|${c.model}|${c.format}`;
+    let jsonMode = c.format === 'openai' && JSON_MODE_SUPPORTED.get(jsonModeKey) !== false;
+    if (jsonMode) body.response_format = { type: 'json_object' };
 
     // 瞬时故障两次指数退避重试（Retry-After 优先）；每次尝试都有完整的
     // 单请求超时，放不进整轮截止时间的重试直接放弃。
@@ -375,13 +382,22 @@ export class HttpModel implements Model {
     let lastError: ModelError;
     for (let attempt = 0; ; attempt++) {
       try {
-        return await this.attempt(url, headers, body, outer, c);
+        const result = await this.attempt(url, headers, body, outer, c);
+        if (jsonMode) JSON_MODE_SUPPORTED.set(jsonModeKey, true);
+        return result;
       } catch (error) {
         lastError =
           error instanceof ModelError
             ? error
             : new ModelError(error instanceof Error ? error.message : '未知错误');
         if (outer?.aborted) throw new ModelError('模型请求超时或已取消');
+        if (jsonMode && lastError.status === 400) {
+          // 大概率是端点不认 response_format：摘掉原样重发，不耗重试次数。
+          jsonMode = false;
+          JSON_MODE_SUPPORTED.set(jsonModeKey, false);
+          delete body.response_format;
+          continue;
+        }
         if (attempt >= 2 || !ModelError.transient(lastError.status, lastError.network))
           throw lastError;
       }
@@ -565,6 +581,9 @@ export class HttpModel implements Model {
     };
   }
 }
+
+/** response_format 探测结果（模块级，按 端点|模型|格式 缓存）。 */
+const JSON_MODE_SUPPORTED = new Map<string, boolean>();
 
 export function cosineSimilarity(a: Float32Array, b: Float32Array): number {
   if (a.length !== b.length || !a.length) return 0;
