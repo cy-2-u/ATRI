@@ -4,13 +4,7 @@ import { resolve, join, sep } from 'node:path';
 import type { TestContext } from 'node:test';
 import { Store, type Peer, type ReplyPart } from '../src/db/index.js';
 import { Runtime, type RuntimeConfig, type Sticker } from '../src/core/index.js';
-import type {
-  Model,
-  Completion,
-  ModelMessage,
-  ToolDefinition,
-  ToolCall,
-} from '../src/llm.js';
+import type { Model, Completion, ModelMessage, ToolDefinition, ToolCall } from '../src/llm.js';
 
 /** 共享夹具：临时目录、FakeModel、Runtime 装配、提示词全文断言工具。
  *  用 fixture(t) 建 Runtime/Store 测试；涉及时间显式传 timeZone。
