@@ -1,6 +1,7 @@
-/** 临时探针：用真实模型走完整对话管线，诊断表情/格式/解析问题。
- *  密钥只从环境变量读（ATRI_LIVE_KEY / ATRI_LIVE_URL / ATRI_LIVE_MODEL），不进仓库。
- *  运行：npx tsx scripts/_live-probe.ts <要说的第几句>...（默认三句固定台词） */
+/** 模型管线探针：用真实模型走完整对话管线（提示词组装→解析→投递），
+ *  打印模型原始输出与实际投递的差异，用于更换渠道/模型后的实测。
+ *  密钥与端点只从环境变量读（ATRI_LIVE_URL / ATRI_LIVE_KEY / ATRI_LIVE_MODEL），
+ *  不进仓库。运行：npx tsx scripts/_live-probe.ts <要说的第几句>...（默认三句固定台词） */
 import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,10 +9,11 @@ import { Store } from '../src/db/index.js';
 import { HttpModel, type Completion } from '../src/llm.js';
 import { Runtime, type Sticker } from '../src/core/index.js';
 
-const url = process.env.ATRI_LIVE_URL ?? 'https://sub.vcnovb.cn/v1';
+const url = process.env.ATRI_LIVE_URL ?? '';
 const key = process.env.ATRI_LIVE_KEY ?? '';
-const modelName = process.env.ATRI_LIVE_MODEL ?? 'glm-5.3-flash';
-if (!key) throw new Error('缺少 ATRI_LIVE_KEY');
+const modelName = process.env.ATRI_LIVE_MODEL ?? '';
+if (!url || !key || !modelName)
+  throw new Error('需要环境变量 ATRI_LIVE_URL / ATRI_LIVE_KEY / ATRI_LIVE_MODEL');
 
 const stickers: Sticker[] = JSON.parse(
   readFileSync(join(process.cwd(), 'assets', 'stickers', 'catalog.json'), 'utf8'),
