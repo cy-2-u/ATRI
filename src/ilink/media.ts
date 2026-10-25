@@ -155,19 +155,6 @@ export function isAllowedMediaUrl(
   return (opts.extraHosts ?? []).some((h) => host === h.trim().toLowerCase());
 }
 
-export function mediaKindLabel(kind: MediaKind): string {
-  switch (kind) {
-    case 'image':
-      return '图片';
-    case 'voice':
-      return '语音';
-    case 'video':
-      return '视频';
-    case 'file':
-      return '文件';
-  }
-}
-
 /** 提取纯文本（文字 + 语音转写）。includeVoiceTranscript=false 时语音无转写
  *  就当不可读媒体处理。 */
 export function extractText(
@@ -192,13 +179,6 @@ export function extractText(
     }
   }
   return parts.length ? parts.join('\n') : null;
-}
-
-export function isMediaOnlyWithoutText(
-  msg: WeixinMessage,
-  opts: { includeVoiceTranscript?: boolean } = {},
-): boolean {
-  return !extractText(msg, opts) && (msg.item_list?.length ?? 0) > 0;
 }
 
 /** 入站用户消息通常是 message_type === 1。 */

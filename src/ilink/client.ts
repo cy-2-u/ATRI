@@ -13,7 +13,6 @@ import type {
   TypingStatus,
   UploadMediaType,
   UploadedMedia,
-  WeixinItemType,
 } from './types.js';
 import { ITEM_TYPE, UPLOAD_MEDIA_TYPE } from './types.js';
 
@@ -141,17 +140,8 @@ export class ILinkClient {
   setBotToken(token: string) {
     this.botToken = token;
   }
-  getBotToken() {
-    return this.botToken;
-  }
   setBaseUrl(url: string) {
     this.baseUrl = url.replace(/\/$/, '');
-  }
-  setCdnBaseUrl(url: string) {
-    this.cdnBaseUrl = url.replace(/\/$/, '');
-  }
-  getCdnBaseUrl() {
-    return this.cdnBaseUrl;
   }
 
   async getBotQrcode(botType = 3): Promise<QrcodeResponse> {
@@ -422,19 +412,6 @@ export class ILinkClient {
     }
   }
 
-  /** 取上传凭证 → 加密上传 → 下载坐标（供需要裸上传坐标的调用方使用）。 */
-  async uploadMedia(params: {
-    toUserId: string;
-    data: Buffer;
-    mediaType?: UploadMediaType;
-  }): Promise<UploadedMedia> {
-    const mediaType = params.mediaType ?? 1;
-    if (!params.data?.length) throw new ILinkError('media buffer is empty');
-    if (params.data.length > this.mediaMaxBytes)
-      throw new ILinkError(`media too large: ${params.data.length} > ${this.mediaMaxBytes} bytes`);
-    return this.uploadBytes(params.toUserId, params.data, mediaType);
-  }
-
   async sendImage(params: {
     toUserId: string;
     contextToken: string;
@@ -469,122 +446,6 @@ export class ILinkClient {
         ],
       },
       base_info: { channel_version: this.channelVersion },
-    });
-  }
-
-  /** 非图片媒体发送：itemType/itemField 显式传参，便于按真实抓包纠正
-   *  推断的类型号而无需改代码。 */
-  async sendMedia(params: {
-    toUserId: string;
-    contextToken: string;
-    data: Buffer;
-    mediaType: UploadMediaType;
-    itemType: WeixinItemType;
-    itemField: string;
-    itemExtra?: Record<string, unknown>;
-    clientId?: string;
-  }): Promise<SendMessageResponse> {
-    this.requireToken();
-    if (!params.data?.length) throw new ILinkError(`${params.itemField} buffer is empty`);
-    if (params.data.length > this.mediaMaxBytes)
-      throw new ILinkError(`media too large: ${params.data.length} > ${this.mediaMaxBytes} bytes`);
-    const uploaded = await this.uploadBytes(params.toUserId, params.data, params.mediaType);
-    const clientId =
-      params.clientId ??
-      `wechat-ai-${params.itemField}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-    return this.postJson<SendMessageResponse>('/ilink/bot/sendmessage', {
-      msg: {
-        from_user_id: '',
-        to_user_id: params.toUserId,
-        client_id: clientId,
-        message_type: 2,
-        message_state: 2,
-        context_token: params.contextToken,
-        item_list: [
-          {
-            type: params.itemType,
-            [params.itemField]: {
-              media: {
-                encrypt_query_param: uploaded.downloadEncryptedQueryParam,
-                aes_key: encodeAesKeyField(uploaded.aesKey),
-                encrypt_type: 1,
-              },
-              mid_size: uploaded.cipherSize,
-              ...(params.itemExtra ?? {}),
-            },
-          },
-        ],
-      },
-      base_info: { channel_version: this.channelVersion },
-    });
-  }
-
-  async sendVoice(params: {
-    toUserId: string;
-    contextToken: string;
-    voice: Buffer;
-    durationMs?: number;
-    itemType?: WeixinItemType;
-    clientId?: string;
-  }): Promise<SendMessageResponse> {
-    const itemExtra: Record<string, unknown> = {};
-    if (typeof params.durationMs === 'number' && params.durationMs > 0) {
-      const ms = Math.round(params.durationMs);
-      itemExtra.duration_ms = ms;
-      itemExtra.voice_length = ms;
-    }
-    return this.sendMedia({
-      toUserId: params.toUserId,
-      contextToken: params.contextToken,
-      data: params.voice,
-      mediaType: UPLOAD_MEDIA_TYPE.voice,
-      itemType: params.itemType ?? ITEM_TYPE.voice,
-      itemField: 'voice_item',
-      itemExtra,
-      clientId: params.clientId,
-    });
-  }
-  async sendVideo(params: {
-    toUserId: string;
-    contextToken: string;
-    video: Buffer;
-    durationMs?: number;
-    itemType?: WeixinItemType;
-    clientId?: string;
-  }) {
-    const itemExtra: Record<string, unknown> = {};
-    if (typeof params.durationMs === 'number' && params.durationMs > 0)
-      itemExtra.duration_ms = Math.round(params.durationMs);
-    return this.sendMedia({
-      toUserId: params.toUserId,
-      contextToken: params.contextToken,
-      data: params.video,
-      mediaType: UPLOAD_MEDIA_TYPE.video,
-      itemType: params.itemType ?? ITEM_TYPE.video,
-      itemField: 'video_item',
-      itemExtra,
-      clientId: params.clientId,
-    });
-  }
-  async sendFile(params: {
-    toUserId: string;
-    contextToken: string;
-    file: Buffer;
-    fileName: string;
-    itemType?: WeixinItemType;
-    clientId?: string;
-  }) {
-    const name = params.fileName?.trim();
-    if (!name) throw new ILinkError('fileName is required for sendFile');
-    return this.sendMedia({
-      toUserId: params.toUserId,
-      contextToken: params.contextToken,
-      data: params.file,
-      mediaType: UPLOAD_MEDIA_TYPE.file,
-      itemType: params.itemType ?? ITEM_TYPE.file,
-      itemField: 'file_item',
-      itemExtra: { file_name: name, file_size: params.file.length },
-      clientId: params.clientId,
     });
   }
 

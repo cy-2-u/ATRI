@@ -1,6 +1,6 @@
 /** iLink Bot 消息条目类型（社区逆向 + 插件行为）。
  *  1 文本、2 图片、3 语音（入站确认）已实测；4 视频、5 文件为推断值，
- *  sendMedia 允许按抓包纠正。 */
+ *  仅入站解析使用（KIND_BY_ITEM_TYPE），出站只发文本与图片。 */
 
 export type WeixinItemType = 1 | 2 | 3 | 4 | 5;
 

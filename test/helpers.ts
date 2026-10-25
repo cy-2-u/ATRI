@@ -70,7 +70,7 @@ export class FakeModel implements Model {
   }
 }
 
-export const fixtureStickers: Sticker[] = [
+const fixtureStickers: Sticker[] = [
   { slug: 'happy', description: '开心', tags: ['开心'], file: 'happy.png' },
   { slug: 'cheer', description: '加油', tags: ['加油'], file: 'cheer.png' },
   { slug: 'hug', description: '抱抱', tags: ['抱抱'], file: 'hug.png' },
@@ -133,12 +133,6 @@ export function fixture(
   return { directory, store, model, runtime, delivered, config };
 }
 
-/** 全部用户角色内容里的来源 id。 */
-export function userSources(messages: ModelMessage[]): string[] {
-  return messages
-    .filter((m) => m.role === 'user')
-    .flatMap((m) => [...m.content.matchAll(/\[来源 ([^\s|]+) \|/g)].map((v) => v[1]));
-}
 /** 模型看到的全部文本（系统提示 + 资料 + 历史）：资料块搬到历史后的
  * 独立 user 消息里，断言事实到达模型要看全量而不是 messages[0]。 */
 export function promptText(messages: ModelMessage[]): string {
