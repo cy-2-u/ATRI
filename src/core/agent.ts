@@ -113,6 +113,7 @@ export interface SandboxTools {
   }>;
   write(path: string, content: string): Promise<{ bytes: number; path: string }>;
   read(path: string): Promise<{ content: string; path: string }>;
+  delete(path: string, recursive?: boolean): Promise<{ deleted: number; path: string }>;
   list(
     path: string,
   ): Promise<{ path: string; entries: { name: string; kind: string; size: number }[] }>;
@@ -176,6 +177,16 @@ export const SANDBOX_TOOLS: ToolDefinition[] = [
     name: 'read_file',
     description: '读取沙箱目录里某个文件的内容。',
     parameters: object({ path: { type: 'string', maxLength: 200 } }, ['path']),
+  },
+  {
+    name: 'delete_file',
+    description:
+      '删除沙箱目录里不再需要的文件，清理自己留下的临时产物。目录默认须为空，' +
+      '确认要整棵删掉时才把 recursive 设为 true；沙箱根目录不能删。',
+    parameters: object(
+      { path: { type: 'string', maxLength: 200 }, recursive: { type: 'boolean' } },
+      ['path'],
+    ),
   },
   {
     name: 'list_files',
@@ -954,6 +965,7 @@ export class Agent {
       if (name === 'run_command') return sandbox.run(String(args.command ?? ''), signal);
       if (name === 'write_file') return sandbox.write(pathArg(), String(args.content ?? ''));
       if (name === 'read_file') return sandbox.read(pathArg());
+      if (name === 'delete_file') return sandbox.delete(pathArg(), args.recursive === true);
       return sandbox.list(pathArg());
     } else throw new Error('未知工具');
     hits = hits.slice(0, 12).map((h) => ({ ...h, content: h.content.slice(0, 1600) }));

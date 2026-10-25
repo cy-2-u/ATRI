@@ -11,6 +11,7 @@ delivery.test.ts      投递状态机、部分失败、送达不明、重启恢�
 proactive.test.ts     主动门控、开环独立配额、askedLoops 契约、挂念生命周期、读空气、作息择时
 retrieval.test.ts     全文检索、稀有度、纠正替代、删除失效链、语义去重、向量回填
 platform.test.ts      三种模型接口（含缓存命中解析）、重试与预算、嵌入客户端、微信协议工具、私网判定
+sandbox.test.ts       沙箱文件工具：删除（文件/目录/递归）、路径逃逸、开关关闭时拒绝
 api.test.ts           HTTP 层：鉴权、配置校验、人格、表情、联系人、任务动作、备份
 ```
 

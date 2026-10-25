@@ -3,6 +3,7 @@ import {
   mkdirSync,
   mkdtempSync as mkdirTemp,
   readdirSync,
+  rmdirSync,
   rmSync,
   statSync,
   existsSync,
@@ -273,6 +274,29 @@ export class Sandbox {
           };
         }),
     };
+  }
+
+  /** 删除沙箱内的文件或目录。与 write/read 一样是纯文件系统操作，不经过
+   *  nsjail——此前删除只能靠 run_command 的 rm，Windows 预览和 nsjail
+   *  不可用的主机连这条路也没有，模型写的临时产物永远清不掉。目录默认
+   *  必须为空，显式 recursive 才递归删除；沙箱根本身不可删。 */
+  async delete(path: string, recursive = false): Promise<{ deleted: number; path: string }> {
+    if (!this.enabled) throw new Error('沙箱未启用');
+    const target = this.safePath(path);
+    if (target === resolve(this.root)) throw new Error('不能删除沙箱根目录');
+    const stat = lstatSync(target, { throwIfNoEntry: false });
+    if (!stat) throw new Error('文件不存在');
+    // lstat 保证删的是链接本身而非其目标；safePath 的 realpath 检查已把
+    // 指向沙箱外的符号链接挡在前面。目录分两路：空目录 rmdirSync 即可
+    // （Windows 上 rmSync 不带 recursive 删目录会 EISDIR），recursive 才
+    // 用递归删除。
+    if (stat.isDirectory()) {
+      if (!recursive && readdirSync(target).length)
+        throw new Error('目录非空；确认后用 recursive 递归删除');
+      if (recursive) rmSync(target, { recursive: true, force: false });
+      else rmdirSync(target);
+    } else rmSync(target, { force: false });
+    return { deleted: 1, path: relative(this.root, target) || '.' };
   }
 
   async run(command: string, signal?: AbortSignal): Promise<SandboxResult> {
