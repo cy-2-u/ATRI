@@ -115,7 +115,17 @@ test('弱模型宽容解析：字符串 messages、未知 slug 模糊回退、�
   const joined = fenced.parts.map((p) => p.text ?? '').join('\n');
   assert.ok(!joined.includes('```'), '文本气泡剥掉 Markdown 代码围栏');
   assert.match(joined, /o\.o/, '围栏里的内容保留');
-  assert.ok(fenced.parts.length >= 2, '多行内容按换行拆成独立气泡');
+  assert.equal(fenced.parts.length, 1, '非列表的多行内容（颜文字等）保持单条不拆');
+  // 有意的多行正文（短诗）不被拆分
+  const poem = parseReply(
+    JSON.stringify({
+      messages: ['晚风把云吹散了\n月亮露出半张脸\n像谁没说完的话'],
+      memoryUpdates: [],
+    }),
+    stickers,
+  );
+  assert.equal(poem.parts.length, 1, '无列表符号的多行正文原样保留');
+  assert.ok(poem.parts[0]!.text!.includes('\n'));
 });
 
 test('纯文本兜底：按空行拆成多条气泡，更像真人的连发', () => {

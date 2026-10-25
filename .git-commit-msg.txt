@@ -1,28 +1,20 @@
-fix: teach weak proxy models reminders, mood pulses and bubble breaks
+fix: scope the leniency layers so normal output is never touched
 
-Second live round against the cheap glm-5.3-flash relay exposed three
-more failure modes, all fixed without touching the good channel's
-behavior:
+Audit pass over the weak-model fallbacks to make sure a well-behaved
+model is unaffected:
 
-- The model told users it "cannot send timed reminders" (it can - the
-  open-loop scheduler does it) and then wrote memoryUpdates as bare
-  strings that were silently dropped: "I'll remember" became a lie.
-  parseMemories now accepts string entries as source-less
-  interpretations; agent attaches the triggering user message as their
-  source. parseOpenLoops keeps source-less loops through the shape pass
-  and back-fills the same way. stated facts still require explicit,
-  visible sources - auto-sourced entries are always downgraded to
-  interpretation.
-- Capability line pinned in the stable system prompt and chat.md:
-  sticker objects and open-loop reminders are really sent by the
-  system, never claim otherwise. The per-turn user-side format reminder
-  now also names openLoops and moodPulse so instruction-blind models
-  emit them.
-- Bubbles that contain newlines ("- a\n- b" lists) are split into
-  separate bubbles - one line, one WeChat message; beat pauses stay on
-  the first piece. Prose fallback keeps splitting on blank lines.
+- Bubble newline splitting now triggers only on markdown lists (two or
+  more lines starting with - / bullet / * / numbered markers). Poems,
+  ASCII art, addresses and any intentional multi-line text stay in one
+  bubble. Unit tests lock both directions.
+- The {"role":"assistant","content":...} bubble fallback requires the
+  object to have no "type" key; unknown typed objects are still dropped
+  per contract.
+- Source-less open-loop shape placeholders use due 0 instead of now:
+  the validation pass rejects 0, so an unparseable due time can never
+  become a fake immediately-due reminder.
 
-Live-verified on the relay: the water reminder landed as an open loop
-due 2026-10-26 08:00 with a real source id, both memories persisted,
-moodPulse flowing every turn, list replies delivered as separate
-bubbles.
+Live-verified on both relays: the cheap one keeps flowing mood pulses,
+sourced memories and one-line-per-bubble lists; the good one needed
+zero fallbacks and even resolved "remind me Sunday 9am" said on a
+Sunday to next week's Sunday via a local-time due string.

@@ -161,6 +161,10 @@ function cleanBubbleText(value: string): string {
     .trim();
 }
 
+/** Markdown 列表行："- "、"• "、"* "、"1. "、"2、" 等起头。仅用于识别
+ *  弱模型塞进单条气泡的列表（两行以上命中才拆），不影响有意写的多行。 */
+const LIST_LINE = /^\s*(?:[-•*·]|\d+[.、)])\s+\S/;
+
 function splitInlineParts(text: string, stickers: Sticker[]): ReplyPart[] {
   const out: ReplyPart[] = [];
   const pushText = (value: string) => {
@@ -226,10 +230,12 @@ function normalizeTextParts(raw: unknown[], stickers: Sticker[]): ReplyPart[] {
           return parts;
         }
         // {"role":"assistant","content":"…"}：模型模仿聊天记录的消息形状写
-        // 气泡（glm 实测行为），没有 type 字段。当文字气泡收下。
+        // 气泡（glm 实测行为），没有 type 字段。当文字气泡收下；带 type
+        // 的对象不进这条（未知 type 仍按契约丢弃）。
         if (
           m &&
           typeof m === 'object' &&
+          !('type' in m) &&
           typeof (m as { content?: unknown }).content === 'string'
         ) {
           const text = (m as { content: string }).content;
@@ -238,13 +244,16 @@ function normalizeTextParts(raw: unknown[], stickers: Sticker[]): ReplyPart[] {
         }
         return [];
       })
-      // 微信里一句话一条：JSON 路径的文本气泡按换行拆开（弱模型爱在
-      // 一条里塞 "- a\n- b" 式列表）。beat 停顿保留在拆出的第一条上。
+      // 仅拆 Markdown 列表（弱模型把 "- a\n- b" 塞进一条气泡）：两行以上
+      // 以列表符号起头才拆，一行一条微信消息。模型有意写的多行正文——
+      // 短诗、颜文字、地址——保持原样，不碰正常行为。
       .flatMap((p): ReplyPart[] => {
         if (p.type !== 'text' || !p.text || !p.text.includes('\n')) return [p];
+        const lines = p.text.split('\n');
+        const marked = lines.filter((l) => LIST_LINE.test(l)).length;
+        if (marked < 2) return [p];
         const beat = p.beat;
-        return p.text
-          .split('\n')
+        return lines
           .map((line, i) => {
             const t = line.trim();
             if (!t) return null;
@@ -295,7 +304,9 @@ export function parseOpenLoops(
   });
 }
 
-/** 无来源开环的形状占位（仅形状校验阶段使用，id 待调用方补挂）。 */
+/** 无来源开环的形状占位（仅形状校验阶段使用，id 待调用方补挂）。
+ *  due 解析失败时占位为 0：二次校验的 resolveDue 会把 0 判无效丢弃，
+ *  不能用 now 兜底——那会变成"立即到期"的伪约定。 */
 function keepShapelessLoop(
   v: { content: string; dueAt?: unknown; due?: unknown; dueText?: unknown; recurring?: unknown },
   now: number,
@@ -303,7 +314,7 @@ function keepShapelessLoop(
 ): OpenLoopInput {
   return {
     content: v.content.slice(0, 300),
-    dueAt: resolveDue(v.dueAt, v.due, now, timeZone) ?? now,
+    dueAt: resolveDue(v.dueAt, v.due, now, timeZone) ?? 0,
     dueText: typeof v.dueText === 'string' ? v.dueText.slice(0, 60) : '',
     sources: [],
     ...(v.recurring === 'yearly' ? { recurring: 'yearly' as const } : {}),
