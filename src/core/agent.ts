@@ -264,9 +264,22 @@ export class Agent {
     );
     return result;
   }
-  private filteredUpdates(updates: MemoryUpdate[], available: Set<string>) {
+  /** 来源过滤：显式给出的来源必须本轮可见；模型没给来源的条目（弱模型
+   *  把记忆写成字符串、只写 content 不写 sources）挂到触发本轮的用户
+   *  消息上并降级为 interpretation——"我记下来了"不能变成空话。
+   *  stated 仍然必须由模型显式给出合法来源，不自动补。 */
+  private filteredUpdates(
+    updates: MemoryUpdate[],
+    available: Set<string>,
+    fallbackSource?: string,
+  ) {
     return updates
-      .filter((u) => u.sources.length > 0 && u.sources.every((id) => available.has(id)))
+      .filter((u) => u.sources.every((id) => available.has(id)))
+      .flatMap((u) => {
+        if (u.sources.length) return [u];
+        if (!fallbackSource || !available.has(fallbackSource) || u.kind === 'stated') return [];
+        return [{ ...u, kind: 'interpretation' as const, sources: [fallbackSource] }];
+      })
       .map((u) => ({ ...u, supersedes: u.supersedes?.filter((id) => available.has(id)) }));
   }
 
@@ -382,6 +395,7 @@ export class Agent {
       this.o.prompt('chat'),
       `可以发送的表情（发出后对方收到的是真实图片，由系统代发，放心用）：\n${stickerLines.join('\n')}`,
       '注意：历史消息里的 [表情：…] 只是过往发送的记录展示；本轮发送表情必须使用 JSON 的 {"type":"sticker","slug":"目录中的slug"} 对象，绝不能把 [表情：…] 写进文字。',
+      '你的能力是真实的：表情图片由系统代发；对方拜托你"明天几点提醒我"时，把安排写进 openLoops，到点系统会替你主动发消息提醒——你确实能定时提醒，不要声称做不到。',
       '回复长度参照对方：对方一句话，就别回一大段；对方认真长谈，才展开讲。',
       '最后再确认一次输出格式：你的回复必须是纯 JSON 对象 {"messages":[…],"memoryUpdates":[…]}，以 { 开头、以 } 结尾，绝不直接输出普通文字或代码围栏。',
     ]
@@ -506,7 +520,7 @@ export class Agent {
       // 一部分模型对 system 里的格式要求与 response_format 都不敏感，只
       // 听 user 消息里的指令（实测 glm-flash）：格式提醒钉在这条 user 资料
       // 的末尾、紧贴要回答的消息，是它们唯一稳定遵从的位置。
-      '（输出格式，每次都必须遵守：回复一个纯 JSON 对象 {"messages":["文字气泡",{"type":"sticker","slug":"目录中的slug"}],"memoryUpdates":[]}，messages 是要发出的气泡列表；不要输出普通文字。）',
+      '（输出格式，每次都必须遵守：回复一个纯 JSON 对象 {"messages":["文字气泡",{"type":"sticker","slug":"目录中的slug"}],"memoryUpdates":[{"content":"…","kind":"…","sources":["来源ID"],"importance":0.5}]}。messages 是要发出的气泡列表，一条气泡内不要用换行和列表符号，多个要点拆成多条。对方拜托你定时提醒时加 openLoops 数组：{"content":"…","dueAt":毫秒时间戳,"sources":["来源ID"]}，到点系统会替你主动发消息。每轮再附上 moodPulse：{"valence":-1到1,"energy":-1到1,"patience":-1到1,"reason":"简短原因"}。不要输出普通文字。）',
     ]
       .filter(Boolean)
       .join('\n\n');
@@ -701,9 +715,17 @@ export class Agent {
       deadlineAt,
       plan.dueLoopsShown,
     );
-    result.memories = this.filteredUpdates(result.memories, plan.available);
+    // 触发本轮的用户消息：无来源记忆/开环的回退依据。
+    const triggerSource = [...history].reverse().find((m) => m.role === 'user')?.id;
+    result.memories = this.filteredUpdates(result.memories, plan.available, triggerSource);
     result.pickedMemoryIds = plan.pickedMemoryIds;
-    result.openLoops = parseOpenLoops(result.openLoops, plan.available, now, this.o.timeZone());
+    result.openLoops = parseOpenLoops(
+      result.openLoops,
+      plan.available,
+      now,
+      this.o.timeZone(),
+      triggerSource,
+    );
     // 汇报可能早于到期（“面试搞定了”）：任何仍开着的约定都可被了结。
     const openIds = new Set(store.openLoops(peer.id, true).map((l) => l.id));
     result.resolveLoops = result.resolveLoops.filter((id) => openIds.has(id));

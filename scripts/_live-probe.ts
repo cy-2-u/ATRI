@@ -99,5 +99,13 @@ for (const [i, text] of turns.entries()) {
     );
   delivered.length = 0;
 }
+console.log('\n===== 落库状态 =====');
+console.log(`心情：${JSON.stringify(store.mood(PEER))}`);
+for (const m of store.memories(PEER))
+  console.log(
+    `记忆[${m.kind}]：${m.content.slice(0, 40)}（importance=${m.importance}${m.emotion ? ` emotion=${m.emotion}` : ''}）`,
+  );
+for (const l of store.openLoops(PEER, true))
+  console.log(`开环：${l.content}（due=${new Date(l.due_at).toLocaleString('zh-CN')}）`);
 await runtime.stop();
 store.close();

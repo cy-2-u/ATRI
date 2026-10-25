@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fixture, FakeModel, completion, promptText } from './helpers.js';
-import { parseReply, resolveDue, type Sticker } from '../src/core/index.js';
+import { parseReply, parseOpenLoops, resolveDue, type Sticker } from '../src/core/index.js';
 
 const stickers: Sticker[] = [
   { slug: 'happy', description: '开心', tags: ['开心'], file: 'happy.png' },
@@ -112,8 +112,10 @@ test('弱模型宽容解析：字符串 messages、未知 slug 模糊回退、�
     }),
     stickers,
   );
-  assert.ok(!fenced.parts[0]!.text!.includes('```'), '文本气泡剥掉 Markdown 代码围栏');
-  assert.match(fenced.parts[0]!.text!, /o\.o/, '围栏里的内容保留');
+  const joined = fenced.parts.map((p) => p.text ?? '').join('\n');
+  assert.ok(!joined.includes('```'), '文本气泡剥掉 Markdown 代码围栏');
+  assert.match(joined, /o\.o/, '围栏里的内容保留');
+  assert.ok(fenced.parts.length >= 2, '多行内容按换行拆成独立气泡');
 });
 
 test('纯文本兜底：按空行拆成多条气泡，更像真人的连发', () => {
@@ -122,6 +124,58 @@ test('纯文本兜底：按空行拆成多条气泡，更像真人的连发', ()
     parsed.parts.map((p) => p.text),
     ['第一段', '第二段', '第三段'],
   );
+});
+
+test('弱模型宽容解析二：换行列表拆条、字符串记忆、无来源开环', () => {
+  // JSON 路径：一条气泡内塞换行列表 → 按行拆成多条
+  const listed = parseReply(
+    JSON.stringify({
+      messages: ['适合什么心情读：\n- 🌙 迷茫的时候\n- 🌧️ 想安静的时候'],
+      memoryUpdates: [],
+    }),
+    stickers,
+  );
+  assert.deepEqual(
+    listed.parts.map((p) => p.text),
+    ['适合什么心情读：', '- 🌙 迷茫的时候', '- 🌧️ 想安静的时候'],
+    '气泡内的换行拆成独立气泡',
+  );
+  // memoryUpdates 写成字符串 → 收下为无来源 interpretation（agent 补挂来源）
+  const strMem = parseReply(
+    JSON.stringify({ messages: ['好呀'], memoryUpdates: ['用户想明天八点被提醒喝水'] }),
+    stickers,
+  );
+  assert.equal(strMem.memories.length, 1);
+  assert.equal(strMem.memories[0]!.kind, 'interpretation');
+  assert.deepEqual(strMem.memories[0]!.sources, []);
+  // openLoops 无来源：形状阶段保留，校验阶段用回退来源补挂
+  const shapePass = parseReply(
+    JSON.stringify({
+      messages: ['好呀'],
+      memoryUpdates: [],
+      openLoops: [{ content: '提醒喝水', dueAt: Date.now() + 3600000 }],
+    }),
+    stickers,
+  );
+  assert.equal(shapePass.openLoops.length, 1, '形状阶段保留无来源开环');
+  assert.deepEqual(shapePass.openLoops[0]!.sources, []);
+  const available = new Set(['msg-1']);
+  const verified = parseOpenLoops(
+    shapePass.openLoops,
+    available,
+    Date.now(),
+    'Asia/Shanghai',
+    'msg-1',
+  );
+  assert.deepEqual(verified[0]!.sources, ['msg-1'], '校验阶段用触发消息补挂来源');
+  const dropped = parseOpenLoops(
+    shapePass.openLoops,
+    available,
+    Date.now(),
+    'Asia/Shanghai',
+    'msg-2',
+  );
+  assert.equal(dropped.length, 0, '回退来源不可见时丢弃');
 });
 
 test('来源标注剥除：行首按块拆分，句中就地清除', () => {

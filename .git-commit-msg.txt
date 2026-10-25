@@ -1,24 +1,28 @@
-fix: make weak models actually use stickers and JSON replies
+fix: teach weak proxy models reminders, mood pulses and bubble breaks
 
-Live probe against glm-5.3-flash showed it ignores the JSON contract in
-the system prompt, ignores response_format, and honestly believes it
-cannot send images - so stickers never fired and long prose with code
-fences went out as one bubble.
+Second live round against the cheap glm-5.3-flash relay exposed three
+more failure modes, all fixed without touching the good channel's
+behavior:
 
-- Pin the output-format reminder at the end of the per-turn user
-  context block: models that ignore system-role format demands follow
-  user-role instructions placed right before the message they answer.
-- Try response_format json_object on OpenAI-compatible endpoints and
-  transparently drop it (cached per endpoint+model) when rejected.
-- resolveStickerInput: fuzzy-resolve invented sticker names through
-  description, tags, and real slugs embedded in the invented name
-  ("milk-tea-happy" -> happy) for both sticker objects and inline
-  [表情：x] text.
-- Parser leniency for weak models: a bare string messages value becomes
-  one bubble, {"role":"assistant","content":...}-shaped items become
-  text bubbles, markdown code fences are stripped from bubble text,
-  and the prose fallback splits on blank lines into separate bubbles.
-- chat.md: stickers are sent as real images by the system, no markdown,
-  short bubbles as separate messages entries.
-- scripts/_live-probe.ts: env-keyed live pipeline probe for future
-  model swaps.
+- The model told users it "cannot send timed reminders" (it can - the
+  open-loop scheduler does it) and then wrote memoryUpdates as bare
+  strings that were silently dropped: "I'll remember" became a lie.
+  parseMemories now accepts string entries as source-less
+  interpretations; agent attaches the triggering user message as their
+  source. parseOpenLoops keeps source-less loops through the shape pass
+  and back-fills the same way. stated facts still require explicit,
+  visible sources - auto-sourced entries are always downgraded to
+  interpretation.
+- Capability line pinned in the stable system prompt and chat.md:
+  sticker objects and open-loop reminders are really sent by the
+  system, never claim otherwise. The per-turn user-side format reminder
+  now also names openLoops and moodPulse so instruction-blind models
+  emit them.
+- Bubbles that contain newlines ("- a\n- b" lists) are split into
+  separate bubbles - one line, one WeChat message; beat pauses stay on
+  the first piece. Prose fallback keeps splitting on blank lines.
+
+Live-verified on the relay: the water reminder landed as an open loop
+due 2026-10-26 08:00 with a real source id, both memories persisted,
+moodPulse flowing every turn, list replies delivered as separate
+bubbles.

@@ -71,19 +71,22 @@ export function parseJson(text: string): any {
 
 export function parseMemories(value: unknown): MemoryUpdate[] {
   if (!Array.isArray(value)) return [];
-  return value.slice(0, MAX_MEMORY_UPDATES).flatMap((v) => {
-    if (
-      !v ||
-      typeof v.content !== 'string' ||
-      !Array.isArray(v.sources) ||
-      !['stated', 'interpretation'].includes(v.kind)
-    )
+  return value.slice(0, MAX_MEMORY_UPDATES).flatMap((v): MemoryUpdate[] => {
+    // 弱模型会把整条记忆写成一个字符串：收下为无来源的 interpretation，
+    // 由调用方（agent）挂到触发本轮的消息上，不让"我记下来了"变成空话。
+    if (typeof v === 'string' && v.trim())
+      return [{ content: v.slice(0, 800), kind: 'interpretation', sources: [] }];
+    if (!v || typeof v !== 'object' || typeof v.content !== 'string' || !v.content.trim())
       return [];
+    const kind = v.kind === 'stated' ? ('stated' as const) : ('interpretation' as const);
+    const sources = Array.isArray(v.sources)
+      ? v.sources.filter((s: unknown) => typeof s === 'string').slice(0, 20)
+      : [];
     return [
       {
         content: v.content.slice(0, 800),
-        kind: v.kind,
-        sources: v.sources.filter((s: unknown) => typeof s === 'string').slice(0, 20),
+        kind,
+        sources,
         supersedes: Array.isArray(v.supersedes)
           ? v.supersedes.filter((s: unknown) => typeof s === 'string').slice(0, 12)
           : [],
@@ -185,69 +188,98 @@ function splitInlineParts(text: string, stickers: Sticker[]): ReplyPart[] {
 function normalizeTextParts(raw: unknown[], stickers: Sticker[]): ReplyPart[] {
   // 输入条数有上限，但一条里的内联表情会各自成段：总帽防止一次输出
   // 变成几十个间隔发送的气泡。
-  return raw
-    .slice(0, MAX_REPLY_PARTS)
-    .flatMap<ReplyPart>((m: unknown) => {
-      if (typeof m === 'string' && m.trim()) {
-        const head = stripSourceAnnotations(m);
-        const segments = head.parts.length
-          ? head.parts.flatMap((p) => (p.type === 'text' && p.text ? [p.text] : []))
-          : [head.text];
-        return segments.flatMap<ReplyPart>((segment) => splitInlineParts(segment, stickers));
-      }
-      if (m && typeof m === 'object' && 'type' in m && m.type === 'sticker' && 'slug' in m) {
-        const slug = m.slug;
-        if (typeof slug !== 'string') return [];
-        // 未知的 slug 先按含义/标签模糊回退（模型常编"猫猫头"这类名字），
-        // 对不上才整条丢弃——只发一个表情的轮次整条丢弃就是"回复没有
-        // 有效内容"。
-        const sticker =
-          stickers.find((s) => s.slug === slug) ?? resolveStickerInput(slug, stickers);
-        if (sticker)
-          return [
-            { type: 'sticker' as const, slug: sticker.slug, description: sticker.description },
-          ];
-      }
-      // {"type":"text","text":"…","beat":"short|medium|long"}：模型对节奏的
-      // 语义表达，beat 挂到该条拆出的第一个气泡上。
-      if (m && typeof m === 'object' && 'type' in m && m.type === 'text' && 'text' in m) {
-        const item = m as { text?: unknown; beat?: unknown };
-        if (typeof item.text !== 'string' || !item.text.trim()) return [];
-        const beat =
-          item.beat === 'short' || item.beat === 'medium' || item.beat === 'long'
-            ? item.beat
-            : undefined;
-        const parts = splitInlineParts(item.text, stickers);
-        if (beat && parts.length) parts[0] = { ...parts[0]!, beat };
-        return parts;
-      }
-      // {"role":"assistant","content":"…"}：模型模仿聊天记录的消息形状写
-      // 气泡（glm 实测行为），没有 type 字段。当文字气泡收下。
-      if (m && typeof m === 'object' && typeof (m as { content?: unknown }).content === 'string') {
-        const text = (m as { content: string }).content;
-        if (!text.trim()) return [];
-        return splitInlineParts(text, stickers);
-      }
-      return [];
-    })
-    .slice(0, MAX_REPLY_PARTS);
+  return (
+    raw
+      .slice(0, MAX_REPLY_PARTS)
+      .flatMap<ReplyPart>((m: unknown) => {
+        if (typeof m === 'string' && m.trim()) {
+          const head = stripSourceAnnotations(m);
+          const segments = head.parts.length
+            ? head.parts.flatMap((p) => (p.type === 'text' && p.text ? [p.text] : []))
+            : [head.text];
+          return segments.flatMap<ReplyPart>((segment) => splitInlineParts(segment, stickers));
+        }
+        if (m && typeof m === 'object' && 'type' in m && m.type === 'sticker' && 'slug' in m) {
+          const slug = m.slug;
+          if (typeof slug !== 'string') return [];
+          // 未知的 slug 先按含义/标签模糊回退（模型常编"猫猫头"这类名字），
+          // 对不上才整条丢弃——只发一个表情的轮次整条丢弃就是"回复没有
+          // 有效内容"。
+          const sticker =
+            stickers.find((s) => s.slug === slug) ?? resolveStickerInput(slug, stickers);
+          if (sticker)
+            return [
+              { type: 'sticker' as const, slug: sticker.slug, description: sticker.description },
+            ];
+        }
+        // {"type":"text","text":"…","beat":"short|medium|long"}：模型对节奏的
+        // 语义表达，beat 挂到该条拆出的第一个气泡上。
+        if (m && typeof m === 'object' && 'type' in m && m.type === 'text' && 'text' in m) {
+          const item = m as { text?: unknown; beat?: unknown };
+          if (typeof item.text !== 'string' || !item.text.trim()) return [];
+          const beat =
+            item.beat === 'short' || item.beat === 'medium' || item.beat === 'long'
+              ? item.beat
+              : undefined;
+          const parts = splitInlineParts(item.text, stickers);
+          if (beat && parts.length) parts[0] = { ...parts[0]!, beat };
+          return parts;
+        }
+        // {"role":"assistant","content":"…"}：模型模仿聊天记录的消息形状写
+        // 气泡（glm 实测行为），没有 type 字段。当文字气泡收下。
+        if (
+          m &&
+          typeof m === 'object' &&
+          typeof (m as { content?: unknown }).content === 'string'
+        ) {
+          const text = (m as { content: string }).content;
+          if (!text.trim()) return [];
+          return splitInlineParts(text, stickers);
+        }
+        return [];
+      })
+      // 微信里一句话一条：JSON 路径的文本气泡按换行拆开（弱模型爱在
+      // 一条里塞 "- a\n- b" 式列表）。beat 停顿保留在拆出的第一条上。
+      .flatMap((p): ReplyPart[] => {
+        if (p.type !== 'text' || !p.text || !p.text.includes('\n')) return [p];
+        const beat = p.beat;
+        return p.text
+          .split('\n')
+          .map((line, i) => {
+            const t = line.trim();
+            if (!t) return null;
+            const part: ReplyPart = { type: 'text', text: t };
+            if (i === 0 && beat) part.beat = beat;
+            return part;
+          })
+          .filter((x): x is ReplyPart => x !== null);
+      })
+      .slice(0, MAX_REPLY_PARTS)
+  );
 }
 
-/** 模型输出的开环：content+到期时间，来源必须本轮可见（available 缺省时
- *  只做形状校验）。due 接受毫秒时间戳或本地时间字符串。 */
+/** 模型输出的开环：content+到期时间。来源缺失时：形状校验阶段（available
+ *  缺省）保留条目等待调用方补挂；校验阶段（available 给出）用 fallbackId
+ *  （触发本轮的用户消息）补上，实在没有才丢弃。due 接受毫秒时间戳或
+ *  本地时间字符串。 */
 export function parseOpenLoops(
   value: unknown,
   available?: Set<string>,
   now = Date.now(),
   timeZone = 'Asia/Shanghai',
+  fallbackId?: string,
 ): OpenLoopInput[] {
   if (!Array.isArray(value)) return [];
   return value.slice(0, OPEN_LOOP_PROMPT_MAX).flatMap((v) => {
     if (!v || typeof v.content !== 'string' || !v.content.trim()) return [];
-    const sources = Array.isArray(v.sources)
+    let sources = Array.isArray(v.sources)
       ? v.sources.filter((s: unknown): s is string => typeof s === 'string')
       : [];
-    if (!sources.length) return [];
+    if (!sources.length) {
+      if (!available) return [keepShapelessLoop(v, now, timeZone)];
+      if (fallbackId && available.has(fallbackId)) sources = [fallbackId];
+      else return [];
+    }
     if (available && !sources.every((id: string) => available.has(id))) return [];
     const dueAt = resolveDue(v.dueAt, v.due, now, timeZone);
     if (dueAt === undefined) return [];
@@ -261,6 +293,21 @@ export function parseOpenLoops(
       },
     ];
   });
+}
+
+/** 无来源开环的形状占位（仅形状校验阶段使用，id 待调用方补挂）。 */
+function keepShapelessLoop(
+  v: { content: string; dueAt?: unknown; due?: unknown; dueText?: unknown; recurring?: unknown },
+  now: number,
+  timeZone: string,
+): OpenLoopInput {
+  return {
+    content: v.content.slice(0, 300),
+    dueAt: resolveDue(v.dueAt, v.due, now, timeZone) ?? now,
+    dueText: typeof v.dueText === 'string' ? v.dueText.slice(0, 60) : '',
+    sources: [],
+    ...(v.recurring === 'yearly' ? { recurring: 'yearly' as const } : {}),
+  };
 }
 
 /** 无日期挂念：来源校验同开环；revisitAfter 夹紧，模型不能排"300 天后
