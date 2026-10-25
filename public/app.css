@@ -1,0 +1,2078 @@
+/* ATRI 控制台 · 奶油底色的陪伴式界面（浅色主题） */
+
+* {
+  box-sizing: border-box;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+:root {
+  color-scheme: light;
+  --bg: #f5f3ef;
+  --bg-soft: #efece6;
+  --surface: #ffffff;
+  --surface-2: #f4f1ea;
+  --surface-3: #ece7de;
+  --border: #e2dcd2;
+  --border-soft: #eae5dc;
+  --text: #2b2823;
+  --text-dim: #6e6960;
+  /* Contrast, not taste: #a29c92 measured 2.3–2.7:1 on these backgrounds, and it
+     carries ~20 secondary labels including 12px nav text and empty states — well under the WCAG AA floor of 4.5:1. This value clears it on --bg,
+     --bg-soft, --surface and --surface-2. */
+  --text-faint: #706a60;
+  /* Decorative accent stays saturated; anything that has to be *read* uses the
+     ink variant (5.35:1 on white, 4.80:1 on --accent-soft). */
+  --accent: #e8703c;
+  --accent-2: #f2924f;
+  --accent-ink: #b04d1b;
+  --accent-strong: #d95f2b;
+  /* Primary buttons: white text needs a darker base (5.76:1 / 4.35:1).
+     The second stop was under AA for 14px/600 white text and hover made it
+     worse by brightening it; #b4531e measures 4.9:1 and hover now darkens. */
+  --accent-btn-1: #ab4718;
+  --accent-btn-2: #b4531e;
+  --on-accent: #ffffff;
+  --accent-soft: rgba(232, 112, 60, 0.1);
+  --her-bubble: #fdeee3;
+  --her-border: #f3dcc9;
+  --mine-bubble: #e9ebef;
+  --mine-border: #dde0e6;
+  /* --danger is saturated and only 4.38:1 on white, so it is for borders and
+     icons. Error text — the kind the operator must actually read — uses the ink
+     variant (6.1:1 on white, 5.6:1 on --danger-soft). */
+  --danger: #d64545;
+  --danger-ink: #a82f2f;
+  --danger-soft: rgba(214, 69, 69, 0.1);
+  /* The 8px connection/allowed dot is the only colour signal for that state;
+     2.82:1 was below the 3:1 non-text minimum. */
+  --ok: #1a7259;
+  --shadow: 0 8px 28px rgba(60, 50, 40, 0.14);
+  --shadow-xs: 0 1px 3px rgba(60, 50, 40, 0.1);
+  --overlay: rgba(43, 40, 35, 0.45);
+  --radius: 14px;
+  --radius-sm: 10px;
+  --serif: 'Noto Serif SC', 'Songti SC', 'SimSun', Georgia, 'Times New Roman', serif;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font:
+    15px/1.6 system-ui,
+    -apple-system,
+    'PingFang SC',
+    'Microsoft YaHei',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  flex: none;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--surface-3);
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+:focus-visible {
+  /* --accent on --bg is 2.78:1, short of the 3:1 a focus indicator needs. */
+  outline: 2px solid var(--accent-ink);
+  outline-offset: 2px;
+}
+
+/* ---------- 登录 ---------- */
+
+.login {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  gap: 28px;
+  padding: 24px;
+  background: radial-gradient(60% 50% at 50% 8%, var(--accent-soft), transparent 70%), var(--bg);
+}
+
+.login-art {
+  width: clamp(180px, 44vw, 260px);
+  height: clamp(180px, 44vw, 260px);
+  border-radius: 50%;
+  object-fit: cover;
+  border: 3px solid var(--accent-soft);
+  box-shadow: var(--shadow);
+}
+
+.login-card {
+  width: min(360px, 100%);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 32px 28px;
+  display: grid;
+  gap: 18px;
+  box-shadow: var(--shadow);
+}
+
+.login-card h1 {
+  margin: 0;
+  font-size: 30px;
+  letter-spacing: 6px;
+  text-align: center;
+  background: linear-gradient(120deg, var(--accent), var(--accent-2));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.login-sub {
+  margin: -8px 0 4px;
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+/* ---------- 布局骨架 ---------- */
+
+.app {
+  height: 100dvh;
+  display: grid;
+  grid-template-areas:
+    'topbar topbar'
+    'nav main';
+  grid-template-columns: 84px 1fr;
+  grid-template-rows: 56px 1fr;
+}
+
+.topbar {
+  grid-area: topbar;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--bg-soft);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 700;
+  letter-spacing: 3px;
+  font-size: 16px;
+}
+
+.brand img {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+.topbar-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-dim);
+  border-radius: 999px;
+  padding: 5px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  transition:
+    border-color 0.15s,
+    color 0.15s;
+}
+
+.pill:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.pill-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-faint);
+}
+
+.pill.online {
+  color: var(--text);
+}
+
+.pill.online .pill-dot {
+  background: var(--ok);
+  box-shadow: 0 0 8px var(--ok);
+}
+
+.icon-btn {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.icon-btn:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.bell-badge {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  border-radius: 9px;
+  background: var(--danger);
+  color: #fff;
+  font-size: 11px;
+  line-height: 17px;
+  text-align: center;
+}
+
+.nav {
+  grid-area: nav;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 8px;
+  border-right: 1px solid var(--border-soft);
+  background: var(--bg-soft);
+}
+
+.nav-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 10px 4px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-faint);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.nav-item svg {
+  width: 22px;
+  height: 22px;
+}
+
+.nav-item:hover {
+  color: var(--text-dim);
+  background: var(--surface);
+}
+
+.nav-item.selected {
+  color: var(--accent-ink);
+  background: var(--accent-soft);
+  /* The soft tint is only 1.10:1 against the sidebar, so colour alone was the
+     sole marker of "current tab". The inset edge is a second, measurable cue. */
+  box-shadow: inset 0 0 0 1.5px var(--accent-ink);
+}
+
+.main {
+  grid-area: main;
+  overflow: hidden;
+  min-width: 0;
+}
+
+.view {
+  height: 100%;
+  overflow-y: auto;
+  padding: 20px 22px 32px;
+}
+
+/* Non-chat views read as a centered column instead of hugging the nav side.
+   The chat view manages its own two-pane layout and is excluded below.
+   width:fit-content keeps inline-flex elements (subtabs) centerable — auto
+   margins alone do nothing on inline-level boxes. */
+.view[data-panel='journal'] > *,
+.view[data-panel='persona'] > *,
+.view[data-panel='stickers'] > *,
+.view[data-panel='settings'] > * {
+  width: fit-content;
+  max-width: 980px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+/* fit-content would shrink full-width forms/cards to their content; these
+   must span the whole centered column. */
+.view[data-panel='journal'] > .stack,
+.view[data-panel='persona'] > .persona-layout,
+.view[data-panel='stickers'] > .card,
+.view[data-panel='stickers'] > .sticker-grid,
+.view[data-panel='settings'] > .settings-columns {
+  width: auto;
+}
+
+/* ---------- 通用组件 ---------- */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  padding: 8px 16px;
+  font-size: 14px;
+  cursor: pointer;
+  transition:
+    filter 0.15s,
+    background 0.15s,
+    border-color 0.15s;
+}
+
+.btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.btn.primary {
+  /* White on --accent (#e8703c → #f2924f) measured 3.08:1 and 2.33:1: every
+     primary action in the app failed AA. These two shades clear it. */
+  background: linear-gradient(135deg, var(--accent-btn-1), var(--accent-btn-2));
+  color: var(--on-accent);
+  font-weight: 600;
+}
+
+.btn.primary:hover {
+  filter: brightness(0.95);
+}
+
+.btn.ghost {
+  background: var(--surface-2);
+  border-color: var(--border);
+  color: var(--text-dim);
+}
+
+.btn.ghost:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.btn.danger {
+  /* Same specificity as .btn.ghost but declared later, so this used to erase the
+     ghost background and border: "清空沙箱目录" rendered as borderless grey text
+     next to a normal-looking "刷新状态", i.e. the destructive button looked *less*
+     clickable than the safe one. Give it a surface and a visible edge, and let
+     only the colour carry the warning. */
+  background: var(--surface-2);
+  border-color: color-mix(in srgb, var(--danger) 40%, var(--border));
+  color: var(--danger-ink);
+}
+
+.btn.danger:hover,
+.btn.danger.armed {
+  background: var(--danger-soft);
+  color: var(--danger-ink);
+  border-color: var(--danger);
+}
+
+.btn.small {
+  padding: 4px 10px;
+  font-size: 12.5px;
+}
+
+.btn.block {
+  width: 100%;
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  padding: 20px 24px;
+  margin: 0 0 16px;
+}
+
+.card h2 {
+  margin: 0 0 16px;
+  font-size: 17px;
+}
+
+/* h3 was 14px + --text-dim while the body it introduces is 15px — subheadings
+   rendered smaller and fainter than their own content, so the drawer's three
+   sections read as footnotes. */
+.card h3 {
+  margin: 0 0 10px;
+  font-size: 15px;
+  color: var(--text);
+}
+
+/* Visible to screen readers only: a live region that announces new messages
+   without being rendered again on every poll. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.stack-tight > .row {
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  margin-bottom: 12px;
+}
+
+.stack-tight > .row:last-child {
+  margin-bottom: 2px;
+}
+
+/* Row internals: the ID line, the badge row and controls each get their own
+   breath instead of a cramped single grid. */
+.stack-tight > .row.peer-row {
+  gap: 10px;
+}
+
+.row {
+  display: grid;
+  gap: 8px;
+}
+
+.row-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* WeChat IDs are opaque 40+ char strings; as a row title they must wrap or
+   truncate inside the card, never stretch it. The min-width:0 chain lets
+   the flex item actually shrink. */
+.row-title > span:first-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+
+.row p {
+  margin: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.badge-row,
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+/* Mood/loop/last-greeting badges wrap onto several lines in the drawer; a
+   little vertical rhythm keeps them from reading as stray tags. */
+.badge-row {
+  row-gap: 6px;
+}
+
+.actions.between {
+  justify-content: space-between;
+}
+
+.actions.end {
+  justify-content: flex-end;
+}
+
+/* 立即备份数据库 and 保存全部设置 mirror each other: equal width, one pinned
+   left and one pinned right, so the card reads as a balanced pair instead of a
+   primary button with the backup trailing behind it. */
+.maintenance-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.maintenance-actions > .btn {
+  flex: 1 1 0;
+  justify-content: center;
+  min-width: 0;
+}
+
+/* Only allocates space once there is something to say; .hint has margin 0, so
+   an empty status line collapses instead of leaving a gap under the buttons. */
+.maintenance-actions + .hint:not(:empty) {
+  margin-top: 10px;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  line-height: 1.6;
+  background: var(--surface-2);
+  color: var(--text-dim);
+  border: 1px solid var(--border-soft);
+}
+
+.badge.alert {
+  background: var(--danger-soft);
+  color: var(--danger-ink);
+  border-color: transparent;
+}
+
+.hint {
+  margin: 0;
+  /* --text-faint measured ~2.5:1 on the cream background — under half the
+     WCAG AA minimum for this size. --text-dim passes. */
+  color: var(--text-dim);
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+
+/* wxids, model-returned URLs and raw error strings have no spaces to break on.
+   The issues list renders them inside .card (not .row), which was the only place
+   with a wrap rule, so a long value pushed the drawer into horizontal scroll —
+   in exactly the panel where the operator needs to read the error. */
+.wrap {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.status-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  margin: 2px 8px 2px 0;
+  padding: 4px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  background: var(--surface-2);
+  font-size: 12.5px;
+  /* Values here are short phrases (已开启 / nsjail 沙箱目录). `anywhere` split
+     them mid-word on narrow screens; wrapping the chip as a whole is enough. */
+  max-width: 100%;
+}
+
+.status-chip-label {
+  color: var(--text-dim);
+  flex: none;
+}
+
+.status-chip-value {
+  color: var(--text);
+  font-weight: 500;
+  min-width: 0;
+  overflow-wrap: break-word;
+}
+
+/* Degraded isolation is a security fact, not a preference: it must read as a
+   warning rather than blend into the neutral chips beside it. */
+.status-chip.status-chip-warn {
+  border-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 10%, var(--surface-2));
+}
+
+.status-chip.status-chip-warn .status-chip-value {
+  color: var(--danger-ink);
+  font-weight: 600;
+}
+
+.hint.alert-text {
+  color: var(--danger-ink);
+}
+
+/* Sandbox status chips sit between the quota fields and the action buttons;
+   breathing room on both sides keeps the three blocks distinct. */
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0 14px;
+}
+
+.sandbox-actions {
+  margin-top: 4px;
+}
+
+.empty {
+  margin: 0;
+  padding: 26px 12px;
+  text-align: center;
+  color: var(--text-faint);
+  font-size: 13.5px;
+}
+
+.field {
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.field.inline {
+  grid-auto-flow: column;
+  align-items: center;
+  gap: 10px;
+  /* The second column is the control. Without minmax(0, ...) a long contact id
+     sizes the column to its full intrinsic width, which blows the toolbar out and
+     pushes the adjacent button onto its own row. */
+  grid-template-columns: auto minmax(0, 1fr);
+  min-width: 0;
+}
+
+.field.grow {
+  flex: 1;
+}
+
+.field input,
+.field textarea,
+.dropdown-host .dropdown-toggle {
+  width: 100%;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  padding: 9px 12px;
+  font: inherit;
+  font-size: 14px;
+}
+
+.field input:focus,
+.field textarea:focus,
+.dropdown-host .dropdown-toggle:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* Mouse clicks keep the quiet border treatment; keyboard focus still gets the
+   global visible outline, matching the rest of the console. */
+.field input:focus:not(:focus-visible),
+.field textarea:focus:not(:focus-visible),
+.dropdown-host .dropdown-toggle:focus:not(:focus-visible) {
+  outline: none;
+}
+
+.field input:focus-visible,
+.field textarea:focus-visible,
+.dropdown-host .dropdown-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.field textarea {
+  resize: vertical;
+  min-height: 80px;
+}
+
+.field-with-action {
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+  margin-bottom: 12px;
+}
+
+.field-with-action .field {
+  margin-bottom: 0;
+}
+
+.field-with-action .btn {
+  flex: none;
+  margin-bottom: 1px;
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 4px 0 12px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.check input {
+  width: 17px;
+  height: 17px;
+  accent-color: var(--accent);
+}
+
+.grid-2 {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.grid-3 {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.grid-4 {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.inline-form {
+  display: grid;
+  gap: 12px;
+}
+
+/* ---------- 自定义下拉框 ---------- */
+
+.dropdown-host {
+  min-width: 0;
+}
+
+.dropdown {
+  position: relative;
+  width: 100%;
+}
+
+.dropdown-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  padding: 9px 12px;
+  font: inherit;
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.dropdown-toggle .dropdown-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dropdown-toggle.placeholder {
+  color: var(--text-faint);
+}
+
+.dropdown-caret {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-style: solid;
+  border-width: 0 2px 2px 0;
+  border-color: var(--text-faint);
+  transform: rotate(45deg) translateY(-2px);
+  transition: transform 0.15s;
+}
+
+.dropdown.open .dropdown-caret {
+  transform: rotate(-45deg);
+}
+
+.dropdown-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 80;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow);
+  padding: 4px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.dropdown-option {
+  display: block;
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  border-radius: 7px;
+  padding: 7px 10px;
+  font: inherit;
+  font-size: 13.5px;
+  text-align: left;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.dropdown-option:hover,
+.dropdown-option:focus-visible {
+  background: var(--surface-2);
+  color: var(--text);
+  outline: none;
+}
+
+.dropdown-option.selected {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+
+.dropdown-empty {
+  margin: 0;
+  padding: 10px;
+  color: var(--text-faint);
+  font-size: 12.5px;
+  text-align: center;
+}
+
+/* ---------- 对话 ---------- */
+
+.chat-view {
+  display: grid;
+  grid-template-columns: 236px minmax(0, 1fr);
+  padding: 0;
+  overflow: hidden;
+}
+
+.chat-side {
+  border-right: 1px solid var(--border-soft);
+  background: var(--bg-soft);
+  padding: 14px 10px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.side-title {
+  font-size: 12px;
+  color: var(--text-faint);
+  padding: 0 8px;
+}
+
+.peer-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.peer-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+  /* WeChat ids are 40+ opaque characters. Wrapping them turned a one-line pill
+     into a two-line block on a phone; the full id is available in the connection
+     drawer, so truncate here. */
+  min-width: 0;
+}
+
+.peer-item > span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.peer-item:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.peer-item.selected {
+  background: var(--accent-soft);
+  color: var(--text);
+  /* Same reason as .nav-item.selected: 1.10:1 of background difference is not
+     perceivable on its own. */
+  box-shadow: inset 0 0 0 1.5px var(--accent-ink);
+}
+
+.peer-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--text-faint);
+}
+
+.peer-item .peer-dot.ok {
+  background: var(--ok);
+}
+
+.peer-item .peer-dot.preview {
+  background: var(--accent);
+}
+
+.chat-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.chat-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--bg-soft);
+}
+
+.chat-head-name {
+  display: grid;
+  line-height: 1.35;
+  min-width: 0;
+}
+
+.chat-head-name strong {
+  font-size: 15px;
+}
+
+.messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 18px 18px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  scroll-behavior: smooth;
+}
+
+.msg {
+  display: flex;
+  flex-direction: column;
+  max-width: min(72%, 560px);
+}
+
+.msg.mine {
+  align-self: flex-end;
+  align-items: flex-end;
+}
+
+.msg.her {
+  align-self: flex-start;
+  align-items: flex-start;
+}
+
+.bubble {
+  position: relative;
+  border-radius: 16px;
+  padding: 9px 13px;
+  font-size: 14.5px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.msg.her .bubble {
+  background: var(--her-bubble);
+  border: 1px solid var(--her-border);
+  border-top-left-radius: 6px;
+}
+
+.msg.mine .bubble {
+  background: var(--mine-bubble);
+  border: 1px solid var(--mine-border);
+  border-top-right-radius: 6px;
+}
+
+.bubble-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--text-faint);
+  padding: 0 6px 2px;
+}
+
+.bubble-del {
+  opacity: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-faint);
+  font-size: 11.5px;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+.bubble-del:hover {
+  color: var(--danger-ink);
+}
+
+.msg:hover .bubble-del,
+.msg:focus-within .bubble-del {
+  opacity: 1;
+}
+
+.sticker-img {
+  display: block;
+  max-width: 120px;
+  max-height: 120px;
+  border-radius: 8px;
+}
+
+.bubble img.sticker-inline {
+  display: inline-block;
+  max-width: 96px;
+  max-height: 96px;
+  vertical-align: middle;
+  border-radius: 6px;
+}
+
+.media-note {
+  margin: 4px 2px 0;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.date-sep {
+  align-self: center;
+  font-size: 11.5px;
+  color: var(--text-faint);
+  background: var(--surface-2);
+  border-radius: 999px;
+  padding: 2px 12px;
+  margin: 8px 0;
+}
+
+.typing {
+  align-self: flex-start;
+  color: var(--text-faint);
+  font-size: 13px;
+  padding: 4px 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.typing-dots {
+  display: inline-flex;
+  gap: 3px;
+}
+
+.typing-dots i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: blink 1.2s infinite;
+}
+
+.typing-dots i:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.typing-dots i:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+@keyframes blink {
+  0%,
+  60%,
+  100% {
+    opacity: 0.25;
+  }
+  30% {
+    opacity: 1;
+  }
+}
+
+.composer {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border-soft);
+  background: var(--bg-soft);
+}
+
+.composer textarea {
+  flex: 1;
+  resize: none;
+  max-height: 160px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  color: var(--text);
+  padding: 10px 14px;
+  font: inherit;
+  font-size: 14.5px;
+  line-height: 1.5;
+}
+
+.composer textarea:focus:not(:focus-visible) {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* Restore the global focus ring for keyboard users: the rule above outranks
+   :focus-visible (0,2,1 vs 0,1,0), so tabbing into the composer left the accent
+   border as the only cue at 2.73:1 — effectively invisible. */
+.composer textarea:focus-visible {
+  outline: 2px solid var(--accent-ink);
+  outline-offset: 1px;
+  border-color: var(--accent);
+}
+
+.composer .send {
+  width: 42px;
+  height: 42px;
+  padding: 0;
+  border-radius: 12px;
+}
+
+.composer .send svg {
+  width: 18px;
+  height: 18px;
+}
+
+.chat-hint {
+  padding: 6px 18px 12px;
+  background: var(--bg-soft);
+}
+
+/* ---------- 日记 · 记忆 · 惦记 ---------- */
+
+.view-toolbar {
+  display: flex;
+  /* nowrap is load-bearing. With wrap, the line break is decided from each
+     item's flex-basis (auto = max-content), so a long contact id alone could
+     exceed the row and bump the button onto a second line no matter how far the
+     field was allowed to shrink. One row, and the field absorbs the squeeze. */
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+/* An inline field is the flexible half of a toolbar: basis 0 keeps its
+   hypothetical size out of the line-breaking maths, so width always comes from
+   flex-grow rather than from the id inside the dropdown. */
+.view-toolbar > .field.inline {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.view-toolbar > .field.inline > .dropdown-host {
+  min-width: 0;
+}
+
+.view-toolbar > .btn {
+  flex: none;
+}
+
+.subtabs {
+  display: inline-flex;
+  gap: 4px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  padding: 4px;
+  margin-bottom: 16px;
+}
+
+/* Inside the centered journal column the tab strip must become block-level
+   before auto margins can center it: an inline-flex box resolves auto
+   margins to zero per CSS2.1, which is why it stayed glued to the left. */
+.view[data-panel='journal'] > .subtabs {
+  display: flex;
+  width: fit-content;
+}
+
+.subtab {
+  border: none;
+  background: transparent;
+  color: var(--text-faint);
+  border-radius: 9px;
+  padding: 6px 16px;
+  font-size: 13.5px;
+  cursor: pointer;
+}
+
+.subtab:hover {
+  color: var(--text-dim);
+}
+
+.subtab.selected {
+  background: var(--surface);
+  color: var(--accent-ink);
+  /* The raised surface was 1.13:1 against the trough plus a hardcoded shadow
+     that bypassed the tokens; the inset edge makes the selection legible. */
+  box-shadow:
+    inset 0 0 0 1.5px var(--accent-ink),
+    var(--shadow-xs);
+}
+
+.journal-list {
+  display: grid;
+  gap: 12px;
+}
+
+.entry-date {
+  font-size: 12.5px;
+  color: var(--text-faint);
+  margin-bottom: -4px;
+}
+
+.entry {
+  font-family: var(--serif);
+  font-size: 15px;
+  line-height: 1.9;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.journal-list .row {
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+}
+
+.memory-correction {
+  display: grid;
+  gap: 8px;
+  border-top: 1px dashed var(--border);
+  padding-top: 10px;
+}
+
+.memory-correction[hidden] {
+  display: none;
+}
+
+/* ---------- 人设 ---------- */
+
+.persona-layout {
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+}
+
+/* 新建人格 is its own row above the list, so the list can be one persona per
+   row without the button competing for the same line. */
+.persona-new {
+  width: 100%;
+  margin-bottom: 10px;
+}
+
+.persona-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.persona-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 8px 8px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  text-align: left;
+  font: inherit;
+  color: var(--text-dim);
+}
+
+/* The row is the selection target, so it stays a plain container: nesting the
+   delete button inside a <button> would be invalid and unfocusable. */
+.persona-item:hover {
+  border-color: var(--accent);
+}
+
+.persona-item.selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+.persona-pick {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.persona-pick .name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.persona-pick .tag {
+  flex: none;
+}
+
+/* Sized for the glyph, not for text: the arm-to-confirm step below swaps the
+   label, so a fixed square turned "删除？" into three stacked characters. It
+   stays a square while idle and grows to fit the confirmation. */
+.persona-del {
+  flex: none;
+  min-width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 6px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: none;
+  color: var(--text-faint);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.persona-del svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.persona-del:hover {
+  border-color: var(--danger);
+  color: var(--danger-ink);
+}
+
+.persona-del.armed {
+  background: var(--danger-soft);
+  border-color: var(--danger);
+  color: var(--danger-ink);
+  font-weight: 600;
+}
+
+.persona-del:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.persona-del[disabled] {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+/* Makes the 默认 tag reachable. Without it the tag was purely informational and
+   the delete guard ("先设置其他人格为默认") pointed at something the page could
+   not do, so the default persona could never be deleted. */
+.persona-default {
+  flex: none;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: none;
+  color: var(--text-faint);
+  font: inherit;
+  font-size: 11.5px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.persona-default:hover {
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+
+.persona-default:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* The default persona has no delete affordance at all — showing a permanently
+   disabled button just invited taps. The slot is kept so rows stay aligned. */
+.persona-del-slot {
+  flex: none;
+  width: 28px;
+}
+
+.persona-item .tag {
+  font-size: 11.5px;
+  color: var(--accent-ink);
+}
+
+.persona-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.persona-editor .field.grow textarea {
+  min-height: 320px;
+}
+
+/* ---------- 表情 ---------- */
+
+/* The browser's native file button hugs the input edge; give the whole
+   control some inner padding so it doesn't look cramped. */
+.sticker-form input[type='file'] {
+  padding: 8px 10px;
+}
+
+.sticker-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+  gap: 14px;
+}
+
+.sticker-card {
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  padding: 12px;
+  display: grid;
+  gap: 8px;
+  justify-items: center;
+  text-align: center;
+}
+
+.sticker-card img {
+  width: 96px;
+  height: 96px;
+  object-fit: contain;
+  background: var(--surface-2);
+  border-radius: 10px;
+}
+
+.sticker-card strong {
+  font-size: 13px;
+}
+
+.sticker-card p {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+
+/* ---------- 设置 ---------- */
+
+.settings-columns {
+  max-width: 1080px;
+}
+
+/* The save state used to live in the sixth of seven stacked cards, ~2500px above
+   the save button on a phone, so editing the first field showed no feedback at
+   all. Pin a one-line status bar to the top of the settings panel instead. */
+.settings-statusbar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--surface);
+  font-size: 12.5px;
+}
+
+.settings-statusbar .hint:not(:empty) {
+  color: var(--accent-ink);
+}
+
+/* Desktop only: split settings into two columns so the right side is not dead
+   space. Below the breakpoint this falls back to a single stacked column, so
+   mobile keeps its original layout. */
+@media (min-width: 961px) {
+  .settings-columns {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(320px, 400px);
+    gap: 16px;
+    align-items: start;
+  }
+
+  .settings-col {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    min-width: 0;
+  }
+
+  /* The usage card is short; pinning it to the top avoids a tall empty column. */
+  .settings-col:last-of-type .card {
+    position: sticky;
+    top: 0;
+  }
+}
+
+/* Between the mobile breakpoint and a comfortable desktop width, the left
+   settings column shrinks to ~500px and a three-column grid wrapped long
+   Chinese labels onto every line. Two columns read fine down to ~400px. */
+@media (min-width: 961px) and (max-width: 1200px) {
+  .grid-3 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.budget-card {
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  margin-bottom: 12px;
+  background: var(--surface-2);
+}
+
+.budget-card.invalid {
+  border-color: var(--danger);
+}
+
+.budget-nums {
+  display: flex;
+  gap: 18px;
+  font-size: 13px;
+  color: var(--text-dim);
+  margin-bottom: 8px;
+}
+
+.budget-nums strong {
+  color: var(--text);
+}
+
+.budget-card progress {
+  width: 100%;
+  height: 8px;
+  appearance: none;
+  border: none;
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--surface-3);
+}
+
+.budget-card progress::-webkit-progress-bar {
+  background: var(--surface-3);
+}
+
+.budget-card progress::-webkit-progress-value {
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+}
+
+.budget-card progress::-moz-progress-bar {
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+}
+
+.usage-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.usage-card {
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  display: grid;
+  gap: 4px;
+  background: var(--surface-2);
+}
+
+.usage-card strong {
+  font-size: 14px;
+}
+
+.usage-count {
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+.usage-card p {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text-dim);
+  white-space: pre-wrap;
+}
+
+.recent-list {
+  display: grid;
+  gap: 8px;
+}
+
+.recent-call {
+  display: grid;
+  gap: 2px;
+  padding: 8px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+}
+
+.recent-call > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.recent-call p {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+
+.recent-call .recent-address {
+  color: var(--text-faint);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-suggestions {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  padding: 10px;
+  margin-top: 8px;
+}
+
+.model-suggestions-head {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.model-suggestions-head input {
+  flex: 1;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  padding: 6px 10px;
+  font: inherit;
+  font-size: 13px;
+}
+
+.model-suggestions-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.model-suggestion-item {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-dim);
+  border-radius: 8px;
+  padding: 4px 10px;
+  font-size: 12.5px;
+  cursor: pointer;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-suggestion-item:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.model-suggestion-item.current {
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+
+.model-suggestion-empty {
+  color: var(--text-faint);
+  font-size: 12.5px;
+}
+
+/* ---------- 抽屉 ---------- */
+
+.drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(2px);
+  z-index: 60;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.drawer-backdrop[hidden] {
+  display: none;
+}
+
+.drawer {
+  width: min(430px, 100%);
+  height: 100%;
+  background: var(--bg-soft);
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  box-shadow: var(--shadow);
+  animation: slide-in 0.18s ease-out;
+}
+
+@keyframes slide-in {
+  from {
+    transform: translateX(24px);
+    opacity: 0.4;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+
+.drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.drawer-head h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.drawer-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 18px 18px 24px;
+}
+
+/* Cards inside the narrow drawer: slightly tighter than the main page but
+   with real separation, so three stacked sections don't read as one slab. */
+.drawer-body .card {
+  padding: 16px 18px;
+  margin-bottom: 14px;
+}
+
+.qr {
+  display: block;
+  width: 200px;
+  margin: 10px auto;
+  border-radius: 10px;
+  background: #fff;
+  padding: 8px;
+}
+
+/* ---------- 对话框与提示 ---------- */
+
+dialog {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  padding: 18px;
+  width: min(560px, calc(100vw - 48px));
+  max-height: min(72vh, 640px);
+  overflow-y: auto;
+  box-shadow: var(--shadow);
+}
+
+dialog::backdrop {
+  background: rgba(0, 0, 0, 0.5);
+}
+
+dialog h2 {
+  margin: 0 0 12px;
+  font-size: 16px;
+}
+
+dialog .row {
+  border-top: 1px solid var(--border-soft);
+  padding: 10px 0;
+}
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 26px;
+  transform: translateX(-50%);
+  z-index: 100;
+  max-width: min(480px, calc(100vw - 32px));
+  background: var(--surface-3);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 18px;
+  font-size: 13.5px;
+  box-shadow: var(--shadow);
+  overflow-wrap: anywhere;
+}
+
+.toast.error {
+  background: var(--danger-soft);
+  border-color: var(--danger);
+  color: var(--danger-ink);
+}
+
+/* ---------- 响应式 ---------- */
+
+@media (max-width: 960px) {
+  .app {
+    grid-template-areas:
+      'topbar'
+      'main';
+    grid-template-columns: 1fr;
+    grid-template-rows: 56px 1fr;
+  }
+
+  .nav {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 50;
+    flex-direction: row;
+    justify-content: space-around;
+    padding: 6px 4px calc(6px + env(safe-area-inset-bottom));
+    border-right: none;
+    border-top: 1px solid var(--border-soft);
+  }
+
+  .nav-item {
+    flex: 1;
+    padding: 6px 2px;
+    gap: 2px;
+    font-size: 11px;
+  }
+
+  .nav-item svg {
+    width: 20px;
+    height: 20px;
+  }
+
+  .main {
+    padding-bottom: calc(64px + env(safe-area-inset-bottom));
+  }
+
+  /* The toast sat at bottom:26px with z-index 100, directly on top of the fixed
+     bottom nav (z-index 50, ~64px tall). Errors stay up for 12 seconds, and for
+     those 12 seconds every nav tab was covered and untappable. Lift it clear of
+     the bar instead. */
+  .toast {
+    bottom: calc(76px + env(safe-area-inset-bottom));
+  }
+
+  /* Touch targets: icon buttons were 38x38 and the journal sub-tabs 33.6px,
+     both below the 44px minimum and both present on phones. */
+  .icon-btn {
+    width: 44px;
+    height: 44px;
+  }
+
+  .subtab {
+    padding: 11px 16px;
+  }
+
+  .view {
+    padding: 14px 14px 24px;
+  }
+
+  .chat-view {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+    /* .view's mobile padding would inset the two-pane chat layout and make the
+       sidebar/composer look like floating cards. Chat manages its own spacing. */
+    padding: 0;
+  }
+
+  .chat-side {
+    flex-direction: row;
+    align-items: center;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 8px 10px;
+    gap: 6px;
+    border-right: none;
+    border-bottom: 1px solid var(--border-soft);
+  }
+
+  .side-title {
+    display: none;
+  }
+
+  .peer-list {
+    flex-direction: row;
+  }
+
+  .peer-item {
+    flex: none;
+    padding: 6px 12px;
+    border: 1px solid var(--border-soft);
+    border-radius: 999px;
+    background: var(--surface);
+    /* The row scrolls horizontally, so an unbounded pill would push every other
+       contact off-screen. Cap it and let the id ellipsize. */
+    max-width: 62vw;
+  }
+
+  .messages {
+    padding: 12px 12px 8px;
+  }
+
+  .msg {
+    max-width: 86%;
+  }
+
+  .bubble-del {
+    opacity: 1;
+  }
+
+  .grid-2,
+  .grid-3,
+  .grid-4 {
+    grid-template-columns: 1fr;
+  }
+
+  .persona-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .field-with-action {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .field-with-action .btn {
+    margin-bottom: 0;
+  }
+
+  /* iOS zooms any input under 16px on focus, blowing out the whole layout.
+     16px is the documented threshold. */
+  .field input,
+  .field textarea,
+  .dropdown-host .dropdown-toggle,
+  .composer textarea,
+  .model-filter,
+  #model-filter {
+    font-size: 16px;
+  }
+
+  /* Row-level small buttons were ~30px tall — under half the recommended
+     touch target. Bubble delete gets a padded hit area instead of a bigger
+     visible glyph. */
+  .btn.small {
+    padding: 9px 14px;
+    font-size: 13px;
+  }
+
+  .bubble-del {
+    padding: 8px;
+  }
+
+  .pill {
+    padding: 7px 13px;
+  }
+
+  .drawer-backdrop {
+    justify-content: center;
+    align-items: flex-end;
+  }
+
+  .drawer {
+    width: 100%;
+    max-height: 88%;
+    height: auto;
+    border-left: none;
+    border-top: 1px solid var(--border);
+    border-radius: 18px 18px 0 0;
+    animation: rise-in 0.18s ease-out;
+  }
+
+  @keyframes rise-in {
+    from {
+      transform: translateY(24px);
+      opacity: 0.4;
+    }
+    to {
+      transform: none;
+      opacity: 1;
+    }
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  .messages {
+    scroll-behavior: auto;
+  }
+}

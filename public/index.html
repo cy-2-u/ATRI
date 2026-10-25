@@ -1,0 +1,623 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>ATRI · 与她有关的一切</title>
+    <link rel="icon" href="/atri.webp" type="image/webp" />
+    <link rel="stylesheet" href="/app.css" />
+  </head>
+  <body>
+    <main id="login" class="login">
+      <img class="login-art" src="/atri.webp" alt="亚托莉" />
+      <form id="login-form" class="login-card">
+        <h1>ATRI</h1>
+        <p class="login-sub">她醒着，等你回来。</p>
+        <label class="field">
+          <span>管理密码</span>
+          <input id="password" type="password" autocomplete="current-password" required />
+        </label>
+        <button class="btn primary block" type="submit">进入</button>
+      </form>
+    </main>
+
+    <div id="dashboard" class="app" hidden>
+      <header class="topbar">
+        <div class="brand">
+          <img src="/atri.webp" alt="" />
+          <span>ATRI</span>
+        </div>
+        <button
+          id="connection"
+          class="pill"
+          type="button"
+          data-drawer="drawer-connection"
+          aria-haspopup="dialog"
+          aria-controls="drawer-connection"
+        >
+          <span class="pill-dot" aria-hidden="true"></span>
+          <span id="connection-text">管理空间</span>
+        </button>
+        <div class="topbar-actions">
+          <button
+            id="issues-bell"
+            class="icon-btn"
+            type="button"
+            data-drawer="drawer-issues"
+            aria-haspopup="dialog"
+            aria-controls="drawer-issues"
+            aria-label="待处理事项"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+              <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+            </svg>
+            <span id="issues-count" class="bell-badge" hidden></span>
+          </button>
+          <button id="logout" class="icon-btn" type="button" aria-label="退出登录">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+              <path d="m16 17 5-5-5-5" />
+              <path d="M21 12H9" />
+            </svg>
+          </button>
+        </div>
+      </header>
+
+      <nav id="nav" class="nav" role="tablist" aria-label="功能导航">
+        <button
+          class="nav-item selected"
+          id="tab-chat"
+          role="tab"
+          data-tab="chat"
+          aria-selected="true"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8z"
+            />
+          </svg>
+          <span>对话</span>
+        </button>
+        <button
+          class="nav-item"
+          id="tab-journal"
+          role="tab"
+          data-tab="journal"
+          aria-selected="false"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z" />
+            <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z" />
+          </svg>
+          <span>日记</span>
+        </button>
+        <button
+          class="nav-item"
+          id="tab-persona"
+          role="tab"
+          data-tab="persona"
+          aria-selected="false"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+            <circle cx="12" cy="7" r="4" />
+          </svg>
+          <span>人设</span>
+        </button>
+        <button
+          class="nav-item"
+          id="tab-stickers"
+          role="tab"
+          data-tab="stickers"
+          aria-selected="false"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="10" />
+            <path d="M8 14s1.5 2 4 2 4-2 4-2" />
+            <path d="M9 9h.01M15 9h.01" />
+          </svg>
+          <span>表情</span>
+        </button>
+        <button
+          class="nav-item"
+          id="tab-settings"
+          role="tab"
+          data-tab="settings"
+          aria-selected="false"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 21v-7m0-4V3m8 18v-9m0-4V3m8 18v-5m0-4V3" />
+            <path d="M1 14h6m2-6h6m2 8h6" />
+          </svg>
+          <span>设置</span>
+        </button>
+      </nav>
+
+      <main class="main">
+        <section
+          class="view chat-view"
+          data-panel="chat"
+          role="tabpanel"
+          aria-labelledby="tab-chat"
+        >
+          <aside class="chat-side">
+            <div class="side-title">联系人</div>
+            <div id="chat-peer-list" class="peer-list"></div>
+          </aside>
+          <section class="chat-main">
+            <header class="chat-head">
+              <div class="chat-head-name">
+                <strong id="chat-title">本地试聊</strong>
+                <span id="chat-sub" class="hint"></span>
+              </div>
+              <div id="chat-badges" class="badge-row"></div>
+            </header>
+            <div id="messages" class="messages"></div>
+            <div id="messages-live" class="sr-only" aria-live="polite" aria-atomic="true"></div>
+            <form id="chat-form" class="composer" hidden>
+              <textarea
+                id="chat-input"
+                rows="1"
+                maxlength="4000"
+                placeholder="说点什么……"
+              ></textarea>
+              <button class="btn primary send" type="submit" aria-label="发送">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M22 2 11 13" />
+                  <path d="M22 2 15 22l-4-9-9-4z" />
+                </svg>
+              </button>
+            </form>
+            <p id="chat-hint" class="hint chat-hint"></p>
+          </section>
+        </section>
+
+        <section class="view" data-panel="journal" role="tabpanel" aria-labelledby="tab-journal">
+          <div class="view-toolbar">
+            <label class="field inline">
+              <span>联系人</span>
+              <div id="journal-peer" class="dropdown-host"></div>
+            </label>
+            <button class="btn ghost" id="write-diary" type="button">整理今天的日记</button>
+          </div>
+          <div class="subtabs" role="tablist" aria-label="记录分类">
+            <button
+              class="subtab selected"
+              role="tab"
+              id="subtab-diaries"
+              aria-selected="true"
+              aria-controls="journal-diaries-wrap"
+              data-sub="diaries"
+            >
+              日记
+            </button>
+            <button
+              class="subtab"
+              role="tab"
+              id="subtab-memories"
+              aria-selected="false"
+              aria-controls="journal-memories-wrap"
+              data-sub="memories"
+            >
+              记忆
+            </button>
+            <button
+              class="subtab"
+              role="tab"
+              id="subtab-loops"
+              aria-selected="false"
+              aria-controls="journal-loops-wrap"
+              data-sub="loops"
+            >
+              惦记的事
+            </button>
+          </div>
+          <div
+            class="stack"
+            id="journal-diaries-wrap"
+            role="tabpanel"
+            aria-labelledby="subtab-diaries"
+          >
+            <div id="diaries" class="journal-list"></div>
+          </div>
+          <div
+            class="stack"
+            id="journal-memories-wrap"
+            role="tabpanel"
+            aria-labelledby="subtab-memories"
+            hidden
+          >
+            <div id="memories" class="journal-list"></div>
+          </div>
+          <div
+            class="stack"
+            id="journal-loops-wrap"
+            role="tabpanel"
+            aria-labelledby="subtab-loops"
+            hidden
+          >
+            <div id="loops" class="journal-list"></div>
+          </div>
+        </section>
+
+        <section class="view" data-panel="persona" role="tabpanel" aria-labelledby="tab-persona">
+          <div class="persona-layout">
+            <div class="persona-side">
+              <button class="btn primary persona-new" id="persona-new" type="button">
+                新建人格
+              </button>
+              <div id="persona-list" class="persona-list"></div>
+              <form id="persona-create" class="card inline-form" hidden>
+                <label class="field">
+                  <span>名字</span>
+                  <input
+                    id="persona-create-name"
+                    maxlength="40"
+                    required
+                    placeholder="例如：安静的学生"
+                  />
+                </label>
+                <label class="field">
+                  <span>从模板开始</span>
+                  <div class="dropdown-host" id="persona-preset-host"></div>
+                </label>
+                <div class="actions">
+                  <button class="btn primary" type="submit">创建</button>
+                  <button class="btn ghost" type="button" id="persona-create-cancel">取消</button>
+                </div>
+              </form>
+            </div>
+            <form id="persona-form" class="persona-editor card">
+              <h2 id="persona-edit-title">人物设定</h2>
+              <label class="field">
+                <span>名字</span>
+                <input id="persona-name" maxlength="40" required />
+              </label>
+              <label class="field grow">
+                <span>设定内容</span>
+                <textarea id="persona-content" rows="14" maxlength="12000" required></textarea>
+              </label>
+              <label class="field">
+                <span>开场白（首次批准联系人时主动发出的一句问候，留空则不发送）</span>
+                <textarea
+                  id="persona-greeting"
+                  rows="2"
+                  maxlength="200"
+                  placeholder="例如：嗨，我是亚托莉，以后请多指教啦"
+                ></textarea>
+              </label>
+              <div class="actions between">
+                <span id="persona-count" class="hint"></span>
+                <button class="btn primary" type="submit">保存设定</button>
+              </div>
+            </form>
+          </div>
+        </section>
+
+        <section class="view" data-panel="stickers" role="tabpanel" aria-labelledby="tab-stickers">
+          <form id="sticker-form" class="card sticker-form">
+            <h2>添加表情</h2>
+            <div class="grid-4">
+              <label class="field">
+                <span>标识 slug</span>
+                <input
+                  id="sticker-slug"
+                  required
+                  maxlength="40"
+                  pattern="[a-z0-9][a-z0-9_-]*"
+                  placeholder="happy"
+                />
+              </label>
+              <label class="field">
+                <span>描述（模型按此挑选）</span>
+                <input id="sticker-description" required maxlength="120" placeholder="开心大笑" />
+              </label>
+              <label class="field">
+                <span>标签（逗号分隔）</span>
+                <input id="sticker-tags" maxlength="120" placeholder="开心, 笑" />
+              </label>
+              <label class="field">
+                <span>图片（3 MB 内）</span>
+                <input id="sticker-file" type="file" accept="image/*" required />
+              </label>
+            </div>
+            <div class="actions">
+              <button class="btn primary" type="submit">加入目录</button>
+            </div>
+          </form>
+          <div id="sticker-list" class="sticker-grid"></div>
+        </section>
+
+        <section class="view" data-panel="settings" role="tabpanel" aria-labelledby="tab-settings">
+          <form id="settings-form" class="settings-columns">
+            <div class="settings-statusbar">
+              <span>设置</span>
+              <span id="settings-status-text" class="hint"></span>
+            </div>
+            <div class="settings-col">
+              <section class="card">
+                <h2>模型服务</h2>
+                <div class="grid-2">
+                  <div class="field">
+                    <span>接口格式</span>
+                    <div id="format" class="dropdown-host"></div>
+                  </div>
+                  <label class="field">
+                    <span>温度（留空用默认）</span>
+                    <input id="temperature" type="number" step="0.1" min="0" placeholder="默认" />
+                  </label>
+                </div>
+                <div class="field-with-action">
+                  <label class="field grow">
+                    <span>模型</span>
+                    <input id="model" required />
+                  </label>
+                  <button class="btn ghost" id="fetch-models" type="button">拉取模型列表</button>
+                </div>
+                <label class="field">
+                  <span>接口地址 Base URL</span>
+                  <input id="baseUrl" placeholder="留空用官方默认" />
+                </label>
+                <div class="field-with-action">
+                  <label class="field grow">
+                    <span>模型密钥</span>
+                    <input id="apiKey" type="password" autocomplete="off" />
+                  </label>
+                  <button class="btn ghost" id="clear-api-key" type="button">清除</button>
+                </div>
+                <div class="field-with-action">
+                  <label class="field grow">
+                    <span>搜索密钥（Tavily，可选）</span>
+                    <input id="tavilyKey" type="password" autocomplete="off" />
+                  </label>
+                  <button class="btn ghost" id="clear-tavily-key" type="button">清除</button>
+                </div>
+                <label class="check">
+                  <input id="vision" type="checkbox" />
+                  <span>允许她看懂图片消息</span>
+                </label>
+                <div class="actions">
+                  <button class="btn ghost" id="test-llm" type="button">测试模型连通</button>
+                </div>
+              </section>
+
+              <section class="card">
+                <h2>记忆与向量</h2>
+                <label class="check">
+                  <input id="embeddingEnabled" type="checkbox" />
+                  <span>启用向量记忆检索</span>
+                </label>
+                <p id="embedding-notice" class="hint alert-text" hidden></p>
+                <div class="grid-2">
+                  <label class="field">
+                    <span>向量模型</span>
+                    <input id="embeddingModel" placeholder="留空用默认" />
+                  </label>
+                  <label class="field">
+                    <span>向量接口地址</span>
+                    <input id="embeddingBaseUrl" placeholder="留空用官方默认" />
+                  </label>
+                </div>
+                <div class="field-with-action">
+                  <label class="field grow">
+                    <span>向量密钥（独立，不回退模型密钥）</span>
+                    <input id="embeddingApiKey" type="password" autocomplete="off" />
+                  </label>
+                  <button class="btn ghost" id="clear-embedding-key" type="button">清除</button>
+                </div>
+                <div class="actions">
+                  <button class="btn ghost" id="test-embedding" type="button">测试向量连通</button>
+                </div>
+              </section>
+
+              <section class="card">
+                <h2>沙箱</h2>
+                <label class="check">
+                  <input id="sandboxEnabled" type="checkbox" />
+                  <span>允许她在沙箱里运行命令和读写文件</span>
+                </label>
+                <label class="check">
+                  <input id="sandboxNetwork" type="checkbox" />
+                  <span>允许沙箱联网（装包、拉数据）</span>
+                </label>
+                <label class="field">
+                  <span>沙箱大小上限（MB，0 表示不限制）</span>
+                  <input id="sandboxSizeMb" type="number" min="0" max="102400" step="64" required />
+                </label>
+                <label class="field">
+                  <span>单条命令内存上限（MB，0 表示不限制）</span>
+                  <input
+                    id="sandboxMemoryMb"
+                    type="number"
+                    min="0"
+                    max="262144"
+                    step="128"
+                    required
+                  />
+                </label>
+                <div id="sandbox-status" class="chip-row" role="status"></div>
+                <div class="actions sandbox-actions">
+                  <button class="btn ghost" id="refresh-sandbox" type="button">刷新状态</button>
+                  <button class="btn ghost danger" id="clear-sandbox" type="button">
+                    清空沙箱目录
+                  </button>
+                </div>
+              </section>
+
+              <section class="card">
+                <h2>对话行为</h2>
+                <div class="grid-2">
+                  <label class="check">
+                    <input id="proactiveEnabled" type="checkbox" />
+                    <span>允许她主动开口</span>
+                  </label>
+                  <label class="field">
+                    <span>时区</span>
+                    <input id="timeZone" placeholder="Asia/Shanghai" />
+                  </label>
+                  <label class="field">
+                    <span>沉默多久后可主动（小时）</span>
+                    <input
+                      id="proactiveAfterHours"
+                      type="number"
+                      min="1"
+                      max="168"
+                      step="1"
+                      required
+                    />
+                  </label>
+                  <label class="field">
+                    <span>同时最多处理的联系人</span>
+                    <input
+                      id="maxConcurrentPeers"
+                      type="number"
+                      min="1"
+                      max="12"
+                      step="1"
+                      required
+                    />
+                  </label>
+                  <label class="field">
+                    <span>合并输入的等待（毫秒）</span>
+                    <input id="debounceMs" type="number" min="0" max="10000" step="100" required />
+                  </label>
+                  <label class="field">
+                    <span>写日记时刻（0–23 点）</span>
+                    <input id="diaryHour" type="number" min="0" max="23" step="1" required />
+                  </label>
+                  <label class="field">
+                    <span>安静时段开始（0–23 点）</span>
+                    <input id="quietStart" type="number" min="0" max="23" step="1" required />
+                  </label>
+                  <label class="field">
+                    <span>安静时段结束（0–23 点）</span>
+                    <input id="quietEnd" type="number" min="0" max="23" step="1" required />
+                  </label>
+                </div>
+              </section>
+
+              <section class="card">
+                <h2>上下文预算</h2>
+                <div class="grid-3">
+                  <label class="field">
+                    <span>上下文窗口（token）</span>
+                    <input id="contextWindowTokens" type="number" min="8192" required />
+                  </label>
+                  <label class="field">
+                    <span>输入预算（token）</span>
+                    <input id="inputBudgetTokens" type="number" min="4096" required />
+                  </label>
+                  <label class="field">
+                    <span>输出上限（token）</span>
+                    <input id="maxOutputTokens" type="number" min="256" required />
+                  </label>
+                </div>
+                <div class="budget-card">
+                  <div class="budget-nums">
+                    <span>输入 <strong id="budget-input">—</strong></span>
+                    <span>输出 <strong id="budget-output">—</strong></span>
+                    <span>余量 <strong id="budget-free">—</strong></span>
+                  </div>
+                  <progress id="context-meter" max="1" value="0"></progress>
+                  <p id="budget-note" class="hint"></p>
+                </div>
+                <div class="grid-2">
+                  <label class="field">
+                    <span>单次请求超时（秒）</span>
+                    <input
+                      id="requestTimeoutSeconds"
+                      type="number"
+                      min="10"
+                      max="300"
+                      step="1"
+                      required
+                    />
+                  </label>
+                  <label class="field">
+                    <span>整轮处理超时（秒）</span>
+                    <input
+                      id="turnTimeoutSeconds"
+                      type="number"
+                      min="10"
+                      max="600"
+                      step="1"
+                      required
+                    />
+                  </label>
+                </div>
+              </section>
+
+              <section class="card">
+                <h2>维护</h2>
+                <div class="maintenance-actions">
+                  <button class="btn ghost" id="backup" type="button">立即备份数据库</button>
+                  <button class="btn primary" type="submit">保存全部设置</button>
+                </div>
+                <p id="settings-saved" class="hint"></p>
+              </section>
+            </div>
+
+            <div class="settings-col">
+              <section class="card">
+                <h2>模型用量</h2>
+                <div id="usage" class="usage-grid"></div>
+                <h3>近期调用</h3>
+                <div id="recent-usage" class="recent-list"></div>
+              </section>
+            </div>
+          </form>
+        </section>
+      </main>
+
+      <div id="drawer-connection" class="drawer-backdrop" hidden>
+        <aside class="drawer" role="dialog" aria-modal="true" aria-label="连接与联系人">
+          <header class="drawer-head">
+            <h2>连接与联系人</h2>
+            <button class="icon-btn" type="button" data-close aria-label="关闭">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" /></svg>
+            </button>
+          </header>
+          <div class="drawer-body">
+            <section class="card">
+              <h3>微信连接</h3>
+              <p id="wechat-state" class="hint"></p>
+              <p id="wechat-error" class="hint alert-text"></p>
+              <img id="qr" class="qr" alt="微信登录二维码" hidden />
+              <div class="actions">
+                <button class="btn primary" id="wechat-login" type="button">扫码登录</button>
+                <button class="btn ghost" id="wechat-logout" type="button">断开微信</button>
+              </div>
+            </section>
+            <section class="card">
+              <h3>联系人</h3>
+              <div id="peers" class="stack-tight"></div>
+            </section>
+            <section class="card">
+              <h3>联系人状态</h3>
+              <div id="peer-states" class="stack-tight"></div>
+            </section>
+          </div>
+        </aside>
+      </div>
+
+      <div id="drawer-issues" class="drawer-backdrop" hidden>
+        <aside class="drawer" role="dialog" aria-modal="true" aria-label="待处理事项">
+          <header class="drawer-head">
+            <h2>待处理事项</h2>
+            <button class="icon-btn" type="button" data-close aria-label="关闭">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" /></svg>
+            </button>
+          </header>
+          <div class="drawer-body">
+            <div id="issues" class="stack"></div>
+          </div>
+        </aside>
+      </div>
+    </div>
+
+    <div id="notice" class="toast" role="alert" hidden></div>
+    <script src="/app.js"></script>
+  </body>
+</html>

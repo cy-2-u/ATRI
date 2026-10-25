@@ -1,0 +1,9 @@
+node_modules
+dist
+data
+data-local
+licenses
+package-lock.json
+public
+simulation-transcript.md
+simulation-month-transcript.md
