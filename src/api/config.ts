@@ -330,11 +330,7 @@ export class Settings {
     for (const key of ['diaryHour', 'quietStart', 'quietEnd', 'impulseIntervalMinutes'] as const)
       if (input[key] !== undefined) {
         const n = Number(input[key]);
-        if (
-          !Number.isInteger(n) ||
-          n < 0 ||
-          n > (key === 'impulseIntervalMinutes' ? 1440 : 23)
-        )
+        if (!Number.isInteger(n) || n < 0 || n > (key === 'impulseIntervalMinutes' ? 1440 : 23))
           throw new Error('时间设置无效');
         next[key] = n;
       }

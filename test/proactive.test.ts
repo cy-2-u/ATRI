@@ -22,11 +22,7 @@ test('安静时段、防连发与每日上限', (t) => {
   f.store.sql
     .prepare('UPDATE peers SET last_proactive_at=? WHERE id=?')
     .run(now - 3600000, 'wechat:p');
-  assert.equal(
-    f.runtime.proactiveAllowed(f.store.peer('wechat:p')!, now),
-    false,
-    '2 小时内不连发',
-  );
+  assert.equal(f.runtime.proactiveAllowed(f.store.peer('wechat:p')!, now), false, '2 小时内不连发');
 });
 
 test('刚聊完一小时也可能主动（不再有沉默小时门槛）', (t) => {
@@ -74,15 +70,9 @@ test('每日主动上限：三条之后当天不再探询', (t) => {
   f.store.sql
     .prepare('UPDATE peers SET last_proactive_at=? WHERE id=?')
     .run(now - 3600000, 'wechat:p');
-  assert.equal(
-    f.runtime.proactiveAllowed(f.store.peer('wechat:p')!, now),
-    false,
-    '每日上限用尽',
-  );
+  assert.equal(f.runtime.proactiveAllowed(f.store.peer('wechat:p')!, now), false, '每日上限用尽');
   // 昨天的主动不算今天。
-  f.store.sql
-    .prepare("UPDATE outbox SET created_at=? WHERE id LIKE 'm%'")
-    .run(now - 30 * 3600000);
+  f.store.sql.prepare("UPDATE outbox SET created_at=? WHERE id LIKE 'm%'").run(now - 30 * 3600000);
   f.store.sql
     .prepare("UPDATE messages SET created_at=? WHERE id LIKE 'm%'")
     .run(now - 30 * 3600000);
@@ -428,9 +418,7 @@ test('心搏探询：她说想就入队主动消息，由头带进任务', async
   f.runtime.schedule(now);
   await f.runtime.drain();
   await new Promise((r) => setTimeout(r, 50));
-  const probeCall = model.calls.find((c) =>
-    promptText(c.messages).includes('是否想主动联系对方'),
-  );
+  const probeCall = model.calls.find((c) => promptText(c.messages).includes('是否想主动联系对方'));
   assert.ok(probeCall, '探询调用发生过');
   assert.ok(promptText(probeCall!.messages).includes('距上一条消息'), '探询带时间语境');
   assert.equal(f.delivered.length, 1, '她说想 → 主动消息真的发出');

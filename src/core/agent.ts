@@ -598,12 +598,8 @@ export class Agent {
       dueLoops.length
         ? `到期的约定：\n${dueLoops.map((l) => `- ${l.content}（${l.due_text || ''}）`).join('\n')}`
         : '',
-      threads.length
-        ? `还没放下的事：\n${threads.map((t) => `- ${t.content}`).join('\n')}`
-        : '',
-      recentDiary.length
-        ? `你最近写下的日记片段：\n${recentDiary.join('\n')}`
-        : '',
+      threads.length ? `还没放下的事：\n${threads.map((t) => `- ${t.content}`).join('\n')}` : '',
+      recentDiary.length ? `你最近写下的日记片段：\n${recentDiary.join('\n')}` : '',
     ]
       .filter(Boolean)
       .join('\n\n');
@@ -742,8 +738,7 @@ export class Agent {
         const flashbacks = store.flashbackCandidates(peer.id, now);
         // 探询时她给出的由头：没有它，"想说什么"这个念头会丢在队列里，
         // 开场只能靠日记/闪回碰运气重找——主动消息会突然变得没头没尾。
-        const angle =
-          typeof task.payload.angle === 'string' ? (task.payload.angle as string) : '';
+        const angle = typeof task.payload.angle === 'string' ? (task.payload.angle as string) : '';
         messages.push({
           role: 'user',
           content: [

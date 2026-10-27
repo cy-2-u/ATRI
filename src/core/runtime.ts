@@ -687,17 +687,15 @@ export class Runtime {
   proactiveAllowed(peer: Peer, now: number): boolean {
     const c = this.options.config(),
       hour = hourAt(now, c.timeZone);
-    if (
-      !(
-        c.proactiveEnabled &&
-        !!peer.approved &&
-        !!peer.context_token &&
-        peer.channel === 'wechat' &&
-        peer.last_user_at > 0 &&
-        !inQuietHours(hour, c.quietStart, c.quietEnd) &&
-        now - peer.last_proactive_at >= 2 * 3600000
-      )
-    )
+    if (!(
+      c.proactiveEnabled &&
+      !!peer.approved &&
+      !!peer.context_token &&
+      peer.channel === 'wechat' &&
+      peer.last_user_at > 0 &&
+      !inQuietHours(hour, c.quietStart, c.quietEnd) &&
+      now - peer.last_proactive_at >= 2 * 3600000
+    ))
       return false;
     const streak = this.store.unansweredProactiveStreak(peer.id);
     if (streak >= PROACTIVE_IGNORE_LIMIT)
@@ -793,10 +791,7 @@ export class Runtime {
         // 去重键——被拒绝的这一拍不烧掉后面的拍子。
         if (!this.proactiveAllowed(peer, now)) continue;
         const lastProbe = this.store.getSetting<number>(`impulse_at:${peer.id}`, 0);
-        const intervalMinutes = Math.max(
-          1,
-          c.impulseIntervalMinutes || IMPULSE_INTERVAL_MINUTES,
-        );
+        const intervalMinutes = Math.max(1, c.impulseIntervalMinutes || IMPULSE_INTERVAL_MINUTES);
         if (now - lastProbe < intervalMinutes * 60000) continue;
         if (this.store.hasPendingTask(peer.id, 'proactive', `impulse:${dayAt(now, c.timeZone)}`))
           continue;
