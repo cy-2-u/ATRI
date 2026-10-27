@@ -618,7 +618,9 @@ export class Agent {
           { role: 'user', content: material || '（暂时没有任何语境材料）' },
         ],
         [],
-        { signal, maxTokens: 120 },
+        // 会话 ID 让上游按联系人对人格前缀做持久缓存：探询是调用最密的
+        // 路径，稳定的前缀命中直接决定它的实际成本。
+        { signal, maxTokens: 120, sessionId: `atri:${peerId}:impulse` },
       );
       this.o.store.recordUsage(
         peerId,
