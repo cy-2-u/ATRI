@@ -20,7 +20,8 @@ export interface SavedConfig {
   proactiveEnabled: boolean;
   quietStart: number;
   quietEnd: number;
-  proactiveAfterHours: number;
+  /** 心搏探询间隔（分钟）：多久问她一次"此刻想说话吗"。 */
+  impulseIntervalMinutes: number;
   contextWindowTokens: number;
   inputBudgetTokens: number;
   maxOutputTokens: number;
@@ -139,7 +140,7 @@ function builtinDefaults(env: NodeJS.ProcessEnv): SavedConfig {
     proactiveEnabled: false,
     quietStart: 23,
     quietEnd: 8,
-    proactiveAfterHours: 6,
+    impulseIntervalMinutes: 30,
     contextWindowTokens: 65536,
     inputBudgetTokens: 24000,
     maxOutputTokens: 3000,
@@ -326,10 +327,14 @@ export class Settings {
         if (typeof input[key] !== 'boolean') throw new Error('开关格式无效');
         next[key] = input[key];
       }
-    for (const key of ['diaryHour', 'quietStart', 'quietEnd', 'proactiveAfterHours'] as const)
+    for (const key of ['diaryHour', 'quietStart', 'quietEnd', 'impulseIntervalMinutes'] as const)
       if (input[key] !== undefined) {
         const n = Number(input[key]);
-        if (!Number.isInteger(n) || n < 0 || n > (key === 'proactiveAfterHours' ? 168 : 23))
+        if (
+          !Number.isInteger(n) ||
+          n < 0 ||
+          n > (key === 'impulseIntervalMinutes' ? 1440 : 23)
+        )
           throw new Error('时间设置无效');
         next[key] = n;
       }
@@ -470,7 +475,7 @@ export class Settings {
       proactiveEnabled: c.proactiveEnabled,
       quietStart: c.quietStart,
       quietEnd: c.quietEnd,
-      proactiveAfterHours: c.proactiveAfterHours,
+      impulseIntervalMinutes: c.impulseIntervalMinutes,
       debounceMs: c.debounceMs,
       maxConcurrentPeers: c.maxConcurrentPeers,
       turnTimeoutMs: c.turnTimeoutSeconds * 1000,

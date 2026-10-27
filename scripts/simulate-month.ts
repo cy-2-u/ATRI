@@ -20,11 +20,16 @@ const STICKERS = [
 /** 剧本阶段：由主流程随剧情推进切换。 */
 let phase = 'intro';
 const stickerSlugsSeen: string[] = [];
+/** 探询统计与"想他了"标记：由主流程在合适剧情点设置。 */
+let impulseProbes = 0;
+let impulseMood = '';
+let impulseDueHits = 0;
+let impulseMissHits = 0;
 
 const sim = startSim({
   start: '2026-10-01T09:00:00+08:00',
   stickers: STICKERS,
-  config: { quietStart: 0, quietEnd: 0, proactiveEnabled: true, proactiveAfterHours: 6 },
+  config: { quietStart: 0, quietEnd: 0, proactiveEnabled: true, impulseIntervalMinutes: 30 },
   transcript: 'simulation-month-transcript.md',
   reply: (ctx) => {
     const all = ctx.all;
@@ -48,6 +53,24 @@ const sim = startSim({
     }
     if (system.includes('整理成一份短的当前话题笔记'))
       return { notes: '他在准备毕业设计答辩，猫叫团子；约定过下次讲讲我的过去。' };
+    // ---- 心搏探询：模拟她"此刻想不想说话"的判断。探询材料在最后一条
+    //      user 消息里（system 是人格+探询规则，永远含"到期的约定"字样，
+    //      不能拿来做判定）；材料块以"到期的约定：\n"开头才算有到期约定。
+    //      其余时刻安静——探询被拒不烧键。 ----
+    if (system.includes('是否想主动联系对方')) {
+      impulseProbes++;
+      const due = /\n到期的约定：\n/.test(all);
+      if (due) {
+        impulseDueHits++;
+        return { want: true, angle: '该问问约定的事了' };
+      }
+      if (impulseMood === 'miss') {
+        impulseMood = '';
+        impulseMissHits++;
+        return { want: true, angle: '就是想他了' };
+      }
+      return { want: false };
+    }
     // ---- 主动联系（按注入指令特征句 + 约定行自身的到期标记判定） ----
     if (all.includes('现在是一次主动联系机会') || all.includes('第一次主动问候')) {
       const due = /- \[id:([^\]]+)\] ([^（]+)（[^）]*已到约定时间/.exec(all);
@@ -298,7 +321,13 @@ check(store.mood(PEER).valence < -0.2, '他的猫生病，她的愉悦掉下去'
 sim.snapshot('第 5 天：带情绪的记忆入库');
 
 // ---------- 第 6 天：日记 + 日常主动问候 ----------
+// 剧本心搏：他难过之后又沉默一天。深夜她"想他了"（探询说想 → 一条
+// 主动问候）。第二天上午再想一次 → 第二条。之后安静。
+impulseMood = 'miss';
 await sim.quietDays('沉默一天', 6, '10:00');
+impulseMood = 'miss';
+await sim.quietDays('再想他一次', 7, '10:00');
+impulseMood = '';
 {
   const diaries = store.diaries(PEER);
   check(diaries.length >= 2, `日记按天增量落库（已 ${diaries.length} 天）`);
@@ -313,8 +342,9 @@ await sim.quietDays('沉默一天', 6, '10:00');
   );
 }
 
-// ---------- 第 6–8 天：连续无回应 → 读空气刹车 ----------
-await sim.quietDays('继续沉默', 7, '10:00');
+// ---------- 第 8 天：连续无回应 → 读空气刹车 ----------
+// 之后的拍子她都安静（没有到期约定、不再标记"想他"）→ 前面两条主动
+// 消息构成连续无回应 streak=2 → 冷却生效。
 sim.flushDelivered();
 await sim.advanceTo(T(8, '10:00'));
 await sim.tick(21 * 60000);
@@ -461,6 +491,63 @@ sim.snapshot('第 30 天：月末总览');
   );
   const assistantCount = store.history(PEER, 500).filter((m) => m.role === 'assistant').length;
   check(assistantCount > 0 && assistantCount < 400, `一个月内的发言量合理（${assistantCount} 条）`);
+  // ---- 主动时机分析：这次模拟的核心观察点 ----
+  // 不能 JOIN tasks：pruneTasks 7 天就清终态任务行，月末统计会少算前三周。
+  // 主动消息的身份直接看 outbox→tasks 的历史不可靠，改为按
+  // saveReply 落库的消息 id 前缀（id=taskId:ordinal 不可行，同样被清）。
+  // 可靠口径：impulse/loop 的主动轮都在对方沉默期发出——把"投递时刻
+  // 之前最后一条是 assistant 自己"的消息算作主动消息。
+  const allMsgs = store.history(PEER, 500);
+  const proactiveMsgs: typeof allMsgs = [];
+  for (const m of allMsgs) {
+    if (m.role !== 'assistant') continue;
+    const prior = allMsgs.filter((x) => x.seq < m.seq);
+    const lastUser = [...prior].reverse().find((x) => x.role === 'user');
+    // 没有先行的用户消息（开场白），或最后一条用户消息早于她的上一条发言。
+    const lastAny = prior.filter((x) => x.role === 'assistant').at(-1);
+    if (!lastUser || (lastAny && lastUser.seq < lastAny.seq)) proactiveMsgs.push(m);
+  }
+  proactiveMsgs.shift(); // 首条是开场白问候，不算主动
+  const byHour = new Map<number, number>();
+  for (const m of proactiveMsgs) {
+    const h = Number(
+      new Intl.DateTimeFormat('en-GB', {
+        timeZone: 'Asia/Shanghai',
+        hour: '2-digit',
+        hourCycle: 'h23',
+      }).format(new Date(m.created_at)),
+    );
+    byHour.set(h, (byHour.get(h) ?? 0) + 1);
+  }
+  const hours = [...byHour.entries()].sort((a, b) => b[1] - a[1]);
+  sim.say(
+    `    [主动分析] 30 天主动消息 ${proactiveMsgs.length} 条（探询 ${impulseProbes} 次问过她：到期约定触发 ${impulseDueHits} 次、想他触发 ${impulseMissHits} 次）；按小时分布：${hours
+      .map(([h, n]) => `${h}点×${n}`)
+      .join('，')}`,
+  );
+  const dayCounts = new Map<string, number>();
+  for (const m of proactiveMsgs) {
+    const d = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Shanghai',
+      dateStyle: 'short',
+    }).format(new Date(m.created_at));
+    dayCounts.set(d, (dayCounts.get(d) ?? 0) + 1);
+  }
+  const perDay = [...dayCounts.values()];
+  sim.say(
+    `    [主动分析] 有主动消息的天数 ${dayCounts.size}/30，单日最多 ${Math.max(...perDay)} 条，平均 ${(proactiveMsgs.length / 30).toFixed(1)} 条/天`,
+  );
+  // 真人特征：间隔分布应该长尾（多数间隔 >4 小时，偶尔连发），不是固定节拍。
+  const times = proactiveMsgs.map((m) => m.created_at).sort((a, b) => a - b);
+  const gaps: number[] = [];
+  for (let i = 1; i < times.length; i++) gaps.push(times[i]! - times[i - 1]!);
+  if (gaps.length) {
+    const mean = gaps.reduce((a, b) => a + b, 0) / gaps.length;
+    const longGaps = gaps.filter((g) => g >= 6 * 3600000).length;
+    sim.say(
+      `    [主动分析] 相邻主动消息间隔：平均 ${(mean / 3600000).toFixed(1)}h，≥6h 的间隔占 ${Math.round((longGaps / gaps.length) * 100)}%`,
+    );
+  }
 }
 
 sim.finish();

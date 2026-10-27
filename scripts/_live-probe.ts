@@ -59,7 +59,7 @@ const runtime = new Runtime({
     proactiveEnabled: false,
     quietStart: 23,
     quietEnd: 8,
-    proactiveAfterHours: 6,
+    impulseIntervalMinutes: 30,
     debounceMs: 0,
     maxConcurrentPeers: 1,
     turnTimeoutMs: 120000,

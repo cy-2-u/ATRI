@@ -97,6 +97,14 @@ export const DIARY_GAP_MAX_TOKENS = 700;
 // ---------- 主动联系 ----------
 
 export const PROACTIVE_JITTER_MINUTES = 20;
+/** 心搏探询的默认间隔（分钟）：调度器每隔这么久问她一次"此刻想说话吗"。
+ *  想不想由她定，代码只管节拍与预算。 */
+export const IMPULSE_INTERVAL_MINUTES = 30;
+/** 每日真发的主动消息上限：护栏不是目标，多数日子自然落在 0–2。 */
+export const PROACTIVE_DAILY_LIMIT = 3;
+/** 探询结果的有效期（毫秒）：她说"想"但队列被抖动/打断弄丢后，
+ *  过了这个窗口就不再补发，下一拍重新探。 */
+export const IMPULSE_WINDOW_MS = 10 * 60000;
 export const OPEN_LOOP_PROMPT_MAX = 5;
 export const SOFT_THREAD_PROMPT_MAX = 3;
 /** 新记忆与既有记忆余弦超过该值时自动替代旧行。 */

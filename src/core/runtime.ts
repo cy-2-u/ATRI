@@ -1,10 +1,9 @@
 import type { Store, Peer, ReplyPart, Task, Media, MemoryUpdate } from '../db/index.js';
-import { hourFormatter } from '../db/index.js';
+import { hourFormatter, epochOfWallTime } from '../db/index.js';
 import { Agent, type AgentOptions } from './agent.js';
 import { renderMessage } from './prompt-blocks.js';
 import { estimateTextTokens, cosineSimilarity } from '../llm.js';
 import { residuePulse } from './memory-context.js';
-import { nextRhythmSlot } from './time.js';
 import {
   NOTES_MIN_MESSAGES,
   NOTES_WINDOW,
@@ -17,6 +16,8 @@ import {
   PROACTIVE_IGNORE_COOLDOWN_DAYS,
   SIMILARITY_SUPERSEDE,
   BEAT_RANGES_MS,
+  IMPULSE_INTERVAL_MINUTES,
+  PROACTIVE_DAILY_LIMIT,
 } from './constants.js';
 
 /** 调度主干：泵队列、投递气泡、排日记与主动联系、向量回填。 */
@@ -34,7 +35,8 @@ export interface RuntimeConfig {
   proactiveEnabled: boolean;
   quietStart: number;
   quietEnd: number;
-  proactiveAfterHours: number;
+  /** 心搏探询间隔（分钟）。 */
+  impulseIntervalMinutes: number;
   debounceMs: number;
   maxConcurrentPeers: number;
   turnTimeoutMs: number;
@@ -679,29 +681,47 @@ export class Runtime {
     return id;
   }
 
-  /** 日常闲聊的主动门槛。低能量/没耐心不再数值否决：状态就在提示词里、
-   *  模型可以自己决定跳过；防骚扰由安静时段、每日一次、12 小时间隔与
-   *  读空气刹车负责。 */
+  /** 主动消息的硬护栏（探询的前置条件）。想不想说由模型探询决定；代码
+   *  只负责：安静时段不吵、防连发、读空气刹车与每日上限。沉默多久不再
+   *  是门槛——刚聊完一小时她也可能有由头说一句，真人如此。 */
   proactiveAllowed(peer: Peer, now: number): boolean {
     const c = this.options.config(),
       hour = hourAt(now, c.timeZone);
-    if (!(
-      c.proactiveEnabled &&
-      !!peer.approved &&
-      !!peer.context_token &&
-      peer.channel === 'wechat' &&
-      peer.last_user_at > 0 &&
-      now - peer.last_user_at >= c.proactiveAfterHours * 3600000 &&
-      now - peer.last_proactive_at >= 12 * 3600000 &&
-      !inQuietHours(hour, c.quietStart, c.quietEnd) &&
-      (!peer.last_proactive_at ||
-        dayAt(peer.last_proactive_at, c.timeZone) !== dayAt(now, c.timeZone))
-    ))
+    if (
+      !(
+        c.proactiveEnabled &&
+        !!peer.approved &&
+        !!peer.context_token &&
+        peer.channel === 'wechat' &&
+        peer.last_user_at > 0 &&
+        !inQuietHours(hour, c.quietStart, c.quietEnd) &&
+        now - peer.last_proactive_at >= 2 * 3600000
+      )
+    )
       return false;
     const streak = this.store.unansweredProactiveStreak(peer.id);
     if (streak >= PROACTIVE_IGNORE_LIMIT)
       return now - peer.last_proactive_at >= silenceCooldownMs(streak);
-    return true;
+    return this.proactiveSentToday(peer, now) < PROACTIVE_DAILY_LIMIT;
+  }
+  /** 今天（本地日）已经主动发过几次：按成功投递的 proactive 任务计。
+   *  窗口是本地日的零点到次日零点（毫秒），不是字符串比较。 */
+  private proactiveSentToday(peer: Peer, now: number): number {
+    const timeZone = this.options.config().timeZone;
+    const [y, m, d] = dayAt(now, timeZone).split('-').map(Number) as [number, number, number];
+    const from = epochOfWallTime(y, m, d, 0, 0, timeZone);
+    return Number(
+      this.store.sql
+        .prepare(
+          `SELECT count(DISTINCT o.task_id) AS n FROM outbox o
+           JOIN tasks t ON t.id=o.task_id
+           JOIN messages m ON m.id=o.id
+           WHERE o.peer_id=? AND o.status='sent' AND t.kind='proactive'
+             AND t.dedupe_key NOT LIKE 'greeting:%'
+             AND ? <= m.created_at AND m.created_at < ?`,
+        )
+        .get(peer.id, from, from + 86400000)!.n,
+    );
   }
   /** 主动任务的门槛分流：带 payload.loop 的走开环独立配额，其余走日常配额。 */
   private proactiveGate(task: Task, peer: Peer, now: number): boolean {
@@ -709,8 +729,9 @@ export class Runtime {
     return this.proactiveAllowed(peer, now);
   }
   /** 到期开环的独立配额：承诺优先于日常闲聊与读空气刹车（对方明确托付的
-   *  约定不该被冷落饿死）；安静时段与沉默时钟仍然有效。与上次主动只隔
-   *  2 小时：早上八点的闲聊问候不该把"今天提醒我"拖到晚上。 */
+   *  约定不该被冷落饿死）；安静时段仍然有效。与上次主动只隔 2 小时：
+   *  早上八点的闲聊问候不该把"今天提醒我"拖到晚上。对方 2 小时内说过话
+   *  说明对话还热着：结果会自然汇报，插进去反而打断。 */
   loopPingAllowed(peer: Peer, now: number): boolean {
     const c = this.options.config(),
       hour = hourAt(now, c.timeZone);
@@ -720,7 +741,7 @@ export class Runtime {
       !!peer.context_token &&
       peer.channel === 'wechat' &&
       peer.last_user_at > 0 &&
-      now - peer.last_user_at >= c.proactiveAfterHours * 3600000 &&
+      now - peer.last_user_at >= 2 * 3600000 &&
       !inQuietHours(hour, c.quietStart, c.quietEnd) &&
       now - peer.last_proactive_at >= 2 * 3600000,
     );
@@ -754,35 +775,33 @@ export class Runtime {
                   ),
               )
             : undefined;
-        const casual = !loop && this.proactiveAllowed(peer, now);
-        if (loop || casual) {
+        if (loop) {
           const jitter = Math.floor(Math.random() * PROACTIVE_JITTER_MINUTES) * 60000;
-          // 到期的约定不挑时间——承诺不该等作息；日常闲聊优先落在对方
-          // 习惯活跃的时段，没有作息数据退回随机延迟。
-          let runAt = now + jitter;
-          let keyDay = dayAt(now, c.timeZone);
-          if (casual) {
-            const slot = nextRhythmSlot(
-              this.store.activityRhythm(peer.id, c.timeZone),
-              now,
-              c.timeZone,
-              PROACTIVE_JITTER_MINUTES,
-            );
-            if (slot) {
-              runAt = slot;
-              keyDay = dayAt(slot, c.timeZone);
-            }
-          }
+          // 到期的约定不挑时间——承诺不该等作息。
           this.store.enqueue(
             peer.id,
             'proactive',
-            // 到期日与天数都在 key 里：yearly 滚动与"模型跳过后当天不再
-            // 重试"都靠它区分。
-            loop ? `${this.store.loopTaskKey(loop)}:${dayAt(now, c.timeZone)}` : `casual:${keyDay}`,
-            loop ? { loop: loop.id } : {},
-            runAt,
+            // 到期日在 key 里：yearly 滚动靠它区分。
+            `${this.store.loopTaskKey(loop)}:${dayAt(now, c.timeZone)}`,
+            { loop: loop.id },
+            now + jitter,
           );
+          continue;
         }
+        // 日常闲聊：探询节拍。距上次探询满一个间隔才问一次"此刻想说吗"；
+        // 她说想就立刻入队（带由头），说不想就安静等下一拍。没有当日
+        // 去重键——被拒绝的这一拍不烧掉后面的拍子。
+        if (!this.proactiveAllowed(peer, now)) continue;
+        const lastProbe = this.store.getSetting<number>(`impulse_at:${peer.id}`, 0);
+        const intervalMinutes = Math.max(
+          1,
+          c.impulseIntervalMinutes || IMPULSE_INTERVAL_MINUTES,
+        );
+        if (now - lastProbe < intervalMinutes * 60000) continue;
+        if (this.store.hasPendingTask(peer.id, 'proactive', `impulse:${dayAt(now, c.timeZone)}`))
+          continue;
+        this.store.setSetting(`impulse_at:${peer.id}`, now);
+        void this.probe(peer.id);
       } catch (error) {
         this.options.log?.('联系人调度失败，本轮跳过', {
           peer: peer.id,
@@ -791,5 +810,35 @@ export class Runtime {
       }
     }
     this.pump();
+  }
+
+  /** 一次心搏探询：她说"想"且此刻仍然过门槛时，立刻排一条主动消息。
+   *  探询与入队之间隔着一次模型调用，期间来了用户消息或门槛变严（比如
+   *  恰好有新气泡在发）就放弃——下一拍再探，不抢话。由头只做小幅延迟
+   *  （抖动窗口），不挑作息时段：冲动是此刻的，压两小时就假了。 */
+  private async probe(peerId: string) {
+    try {
+      const signal = AbortSignal.timeout(Math.min(30000, this.options.config().turnTimeoutMs));
+      const impulse = await this.agent.impulse(peerId, signal);
+      if (!impulse.want || this.stopped) return;
+      const peer = this.store.peer(peerId);
+      const now = Date.now();
+      if (!peer || !this.proactiveAllowed(peer, now)) return;
+      // 探询期间对方说话了：主动让位，别在对方刚发消息时插入。
+      if (peer.last_user_at > now - 5 * 60000) return;
+      this.store.enqueue(
+        peerId,
+        'proactive',
+        `impulse:${dayAt(now, this.options.config().timeZone)}:${now}`,
+        { angle: impulse.angle ?? '' },
+        now + Math.floor(Math.random() * PROACTIVE_JITTER_MINUTES) * 60000,
+      );
+      this.pump();
+    } catch (error) {
+      this.options.log?.('主动探询失败，本轮跳过', {
+        peer: peerId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 }

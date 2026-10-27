@@ -10,7 +10,7 @@ const numberSettings = [
   'diaryHour',
   'quietStart',
   'quietEnd',
-  'proactiveAfterHours',
+  'impulseIntervalMinutes',
   'maxConcurrentPeers',
   'debounceMs',
   'sandboxSizeMb',
@@ -26,6 +26,7 @@ const purposeName = (value) =>
     diary_tool: '日记·工具查询',
     notes_tool: '话题整理·工具查询',
     proactive_tool: '主动联系·工具查询',
+    impulse: '想说话探询',
   })[value] || value;
 const formatNumber = (value) => (Number.isFinite(value) ? value.toLocaleString('zh-CN') : '—');
 

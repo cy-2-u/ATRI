@@ -5,7 +5,7 @@ import { inQuietHours, silenceCooldownMs } from '../src/core/index.js';
 
 /** 主动联系与分寸：门控、开环独立配额、挂念、读空气、askedLoops 契约。 */
 
-test('安静时段、静默时间与每日次数', (t) => {
+test('安静时段、防连发与每日上限', (t) => {
   assert.equal(inQuietHours(1, 23, 8), true);
   assert.equal(inQuietHours(8, 23, 8), false);
   assert.equal(inQuietHours(23, 23, 8), true);
@@ -25,29 +25,71 @@ test('安静时段、静默时间与每日次数', (t) => {
   assert.equal(
     f.runtime.proactiveAllowed(f.store.peer('wechat:p')!, now),
     false,
-    '12 小时内不连发',
+    '2 小时内不连发',
   );
 });
 
-test('同一天已主动过不再排队第二次', async (t) => {
+test('刚聊完一小时也可能主动（不再有沉默小时门槛）', (t) => {
+  const f = fixture(t, undefined, { proactiveEnabled: true });
   const now = Date.parse('2026-09-13T06:00:00Z');
-  t.mock.method(Date, 'now', () => now);
-  t.mock.method(Math, 'random', () => 0);
-  const model = new FakeModel(() => completion({ messages: [], memoryUpdates: [] }));
-  const f = fixture(t, model, {
-    proactiveEnabled: true,
-    diaryHour: 23,
-    quietStart: 0,
-    quietEnd: 0,
-  });
   f.store.ensurePeer('wechat:p', 'wechat', 'p', 'context', true);
-  f.store.ingest('wechat:p', 'old', '下周面试', [], now - 8 * 3600000);
-  f.runtime.schedule(now);
-  await f.runtime.drain();
-  f.runtime.schedule(now);
-  await f.runtime.drain();
-  assert.equal(model.calls.length, 1, '模型只被叫一次');
-  assert.equal(f.delivered.length, 0, '模型选择跳过则什么都不发');
+  // 上一条用户消息在 2 小时前、上次主动在 3 小时前：旧规则（沉默 6 小时）否决。
+  f.store.ingest('wechat:p', 'old', '在忙', [], now - 2 * 3600000);
+  f.store.sql
+    .prepare('UPDATE peers SET last_proactive_at=? WHERE id=?')
+    .run(now - 3 * 3600000, 'wechat:p');
+  assert.equal(
+    f.runtime.proactiveAllowed(f.store.peer('wechat:p')!, now),
+    true,
+    '沉默时长不再是硬门槛',
+  );
+});
+
+test('每日主动上限：三条之后当天不再探询', (t) => {
+  const f = fixture(t, undefined, { proactiveEnabled: true, quietStart: 0, quietEnd: 0 });
+  const now = Date.parse('2026-09-13T06:00:00Z');
+  f.store.ensurePeer('wechat:p', 'wechat', 'p', 'context', true);
+  // 4 小时前的用户消息：不在读空气冷却（它要求主动消息晚于最后一条用户消息）。
+  f.store.ingest('wechat:p', 'old', '在忙', [], now - 4 * 3600000);
+  // 注入三条今天已投递的主动消息（都晚于最后一条用户消息 → 凑成 streak=3，
+  // 但冷却起点是 last_proactive_at=最新一条，冷却 3 天未满 → 落到每日上限判断）。
+  for (let i = 0; i < 3; i++) {
+    const at = now - (3 - i) * 3600000;
+    f.store.sql
+      .prepare(
+        "INSERT INTO tasks(id,peer_id,kind,dedupe_key,state,payload,run_at,created_at) VALUES(?,?,'proactive',?,'done','{}',?,?)",
+      )
+      .run(`t${i}`, 'wechat:p', `impulse:day:${i}`, at, at);
+    f.store.sql
+      .prepare(
+        "INSERT INTO messages(id,peer_id,role,content,status,created_at) VALUES(?,?,'assistant','在吗','sent',?)",
+      )
+      .run(`m${i}`, 'wechat:p', at);
+    f.store.sql
+      .prepare(
+        "INSERT INTO outbox(id,task_id,peer_id,ordinal,part,status,created_at) VALUES(?,?,?,0,'{}','sent',?)",
+      )
+      .run(`m${i}`, `t${i}`, 'wechat:p', at);
+  }
+  f.store.sql
+    .prepare('UPDATE peers SET last_proactive_at=? WHERE id=?')
+    .run(now - 3600000, 'wechat:p');
+  assert.equal(
+    f.runtime.proactiveAllowed(f.store.peer('wechat:p')!, now),
+    false,
+    '每日上限用尽',
+  );
+  // 昨天的主动不算今天。
+  f.store.sql
+    .prepare("UPDATE outbox SET created_at=? WHERE id LIKE 'm%'")
+    .run(now - 30 * 3600000);
+  f.store.sql
+    .prepare("UPDATE messages SET created_at=? WHERE id LIKE 'm%'")
+    .run(now - 30 * 3600000);
+  f.store.sql
+    .prepare('UPDATE peers SET last_proactive_at=? WHERE id=?')
+    .run(now - 30 * 3600000, 'wechat:p');
+  assert.equal(f.runtime.proactiveAllowed(f.store.peer('wechat:p')!, now), true, '隔日恢复');
 });
 
 test('到期开环走独立配额：当天已主动过仍可问结果', async (t) => {
@@ -339,7 +381,12 @@ test('用户刚说过话时到期的开环不插入；跳过的开环次日再�
   const now = Date.parse('2026-09-13T06:00:00Z');
   t.mock.method(Date, 'now', () => now);
   t.mock.method(Math, 'random', () => 0);
-  const model = new FakeModel();
+  // 探询模型说"不想"：新机制下日常探询会问一次，热聊中被拒绝是常态。
+  const model = new FakeModel((messages) => {
+    const text = promptText(messages);
+    if (text.includes('是否想主动联系对方')) return completion({ want: false });
+    return completion({ messages: ['面试顺利吗'], memoryUpdates: [] });
+  });
   const f = fixture(t, model, {
     proactiveEnabled: true,
     quietStart: 0,
@@ -355,7 +402,76 @@ test('用户刚说过话时到期的开环不插入；跳过的开环次日再�
   );
   f.runtime.schedule(now);
   await f.runtime.drain();
-  assert.equal(f.delivered.length, 0, '刚聊过天不插入提醒');
-  assert.equal(model.calls.length, 0);
-  assert.equal(f.store.dueOpenLoops('wechat:p', now).length, 1, '开环保留等沉默期');
+  await new Promise((r) => setTimeout(r, 50)); // 探询异步完成
+  assert.equal(f.delivered.length, 0, '热聊中开环提醒不插入，探询也说不想');
+  assert.equal(f.store.dueOpenLoops('wechat:p', now).length, 1, '开环保留');
+});
+
+test('心搏探询：她说想就入队主动消息，由头带进任务', async (t) => {
+  const now = Date.parse('2026-09-13T06:00:00Z');
+  t.mock.method(Date, 'now', () => now);
+  t.mock.method(Math, 'random', () => 0);
+  const model = new FakeModel((messages) => {
+    const text = promptText(messages);
+    if (text.includes('是否想主动联系对方'))
+      return completion({ want: true, angle: '想起他说的桂花糕' });
+    return completion({ messages: ['路过糕点铺，想起你说桂花糕了。'], memoryUpdates: [] });
+  });
+  const f = fixture(t, model, {
+    proactiveEnabled: true,
+    quietStart: 0,
+    quietEnd: 0,
+    diaryHour: 23,
+  });
+  f.store.ensurePeer('wechat:p', 'wechat', 'p', 'context', true);
+  f.store.ingest('wechat:p', 'old', '老家有种桂花糕', [], now - 8 * 3600000);
+  f.runtime.schedule(now);
+  await f.runtime.drain();
+  await new Promise((r) => setTimeout(r, 50));
+  const probeCall = model.calls.find((c) =>
+    promptText(c.messages).includes('是否想主动联系对方'),
+  );
+  assert.ok(probeCall, '探询调用发生过');
+  assert.ok(promptText(probeCall!.messages).includes('距上一条消息'), '探询带时间语境');
+  assert.equal(f.delivered.length, 1, '她说想 → 主动消息真的发出');
+  const text = f.delivered[0]!.part.type === 'text' ? (f.delivered[0]!.part.text ?? '') : '';
+  assert.ok(/桂花糕/.test(text), '回复内容与探询的由头一致');
+});
+
+test('心搏探询节拍：一个间隔只探一次，说不想不烧掉后面的拍子', async (t) => {
+  let clock = Date.parse('2026-09-13T06:00:00Z');
+  const realNow = Date.now;
+  t.after(() => (Date.now = realNow));
+  Date.now = () => clock;
+  t.mock.method(Math, 'random', () => 0);
+  const model = new FakeModel((messages) =>
+    completion(
+      promptText(messages).includes('是否想主动联系对方')
+        ? { want: false }
+        : { messages: ['嗯'], memoryUpdates: [] },
+    ),
+  );
+  const f = fixture(t, model, {
+    proactiveEnabled: true,
+    quietStart: 0,
+    quietEnd: 0,
+    diaryHour: 23,
+    impulseIntervalMinutes: 30,
+  });
+  f.store.ensurePeer('wechat:p', 'wechat', 'p', 'context', true);
+  f.store.ingest('wechat:p', 'old', '在忙', [], clock - 8 * 3600000);
+  f.runtime.schedule(clock);
+  await f.runtime.drain();
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(model.calls.length, 1, '第一拍探询一次');
+  clock += 10 * 60000;
+  f.runtime.schedule(clock);
+  await f.runtime.drain();
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(model.calls.length, 1, '间隔内不重复探询');
+  clock += 31 * 60000;
+  f.runtime.schedule(clock);
+  await f.runtime.drain();
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(model.calls.length, 2, '拒绝之后下一拍照常再探');
 });
