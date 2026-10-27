@@ -392,7 +392,7 @@ export class Agent {
       this.o.prompt('chat'),
       `可用表情目录（slug：含义）：\n${stickerLines.join('\n')}`,
       '注意：历史消息里的 [表情：…] 只是过往发送的记录展示；本轮发送表情必须使用 JSON 的 {"type":"sticker","slug":"目录中的slug"} 对象，绝不能把 [表情：…] 写进文字。',
-      '回复长度参照对方：对方一句话，就别回一大段；对方认真长谈，才展开讲。',
+      '回复默认一条气泡、一两句话；对方发长消息时只接住分量最重的那一个点，不逐点回应。',
     ]
       .filter(Boolean)
       .join('\n\n');
