@@ -33,14 +33,10 @@ let affection = 0.2;
 let herMood = 0.2;
 /** 探询时她的心情：主流程在关键节点设置（"今天想他" / "低落不想说"）。 */
 let impulseWish = '';
-/** 男孩在冷战期的等待（他不知道她在想什么，只等她开口）。 */
-let boyWaiting = false;
 
 const pick = <T,>(arr: T[], seed: number) => arr[Math.abs(Math.floor(seed)) % arr.length]!;
 /** 回合计数：同幕次里每一拍换一个说法——真人不会复读同一句话。 */
 let turn = 0;
-/** 男孩最近一条原话：她的话题反应要贴着他的话说，而不是自说自话。 */
-let hisLast = '';
 
 const sim = startSim({
   start: '2026-11-01T09:00:00+08:00',
@@ -52,7 +48,6 @@ const sim = startSim({
     const system = ctx.system;
     const ids = ctx.lastId ? [ctx.lastId] : [];
     turn++;
-    if (ctx.body) hisLast = ctx.body;
     // ---- 离线整理（日记/笔记）：按 system 特征分派 ----
     if (system.includes('第一人称回看')) {
       const fight = act === 'fight2' || act === 'fight1';
@@ -246,19 +241,7 @@ const sim = startSim({
   },
 });
 
-const { store, runtime, PEER, T, check, say } = sim;
-const peerRow = () => store.peer(PEER)!;
-
-/** 男孩视角：读她实际发出的气泡（从落库消息，不读 mood/memory/impulse）。 */
-const herBubbles = (sinceSeq = 0) =>
-  store
-    .history(PEER, 100)
-    .filter((m) => m.role === 'assistant' && m.seq > sinceSeq)
-    .map((m) => m.content);
-const lastAssistantSeq = () => {
-  const rows = store.history(PEER, 100).filter((m) => m.role === 'assistant');
-  return rows.length ? rows.at(-1)!.seq : 0;
-};
+const { store, PEER, T, check, say } = sim;
 
 /** 男孩说话（只有他说的内容进她的世界——双盲的盲面之一）。 */
 async function boy(days: number, hm: string, key: string, text: string) {
@@ -355,12 +338,10 @@ sim.snapshot('第 30 天：月末总览');
 {
   const allMsgs = store.history(PEER, 500);
   const hers = allMsgs.filter((m) => m.role === 'assistant');
-  const his = allMsgs.filter((m) => m.role === 'user');
 
   // ---- 她的气泡长度分布 ----
   const lengths = hers.map((m) => [...m.content].length);
   const avgLen = lengths.length ? lengths.reduce((a, b) => a + b, 0) / lengths.length : 0;
-  const short = lengths.filter((l) => l <= 12).length;
   const long = lengths.filter((l) => l > 40).length;
   check(avgLen < 30, `她的气泡平均长度像聊天不像作文（均值 ${avgLen.toFixed(1)} 字）`);
   check(long / Math.max(1, lengths.length) < 0.15, `超长气泡占比低（${long}/${lengths.length}）`);
