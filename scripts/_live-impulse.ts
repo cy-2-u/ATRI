@@ -5,7 +5,7 @@
 import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Store, type Task } from '../src/db/index.js';
+import { Store } from '../src/db/index.js';
 import { HttpModel, type Completion } from '../src/llm.js';
 import { Agent, type Sticker } from '../src/core/index.js';
 

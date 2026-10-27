@@ -738,10 +738,17 @@ export class Agent {
           .slice(0, 6)
           .map((h) => h.slice(0, 40));
         const flashbacks = store.flashbackCandidates(peer.id, now);
+        // 探询时她给出的由头：没有它，"想说什么"这个念头会丢在队列里，
+        // 开场只能靠日记/闪回碰运气重找——主动消息会突然变得没头没尾。
+        const angle =
+          typeof task.payload.angle === 'string' ? (task.payload.angle as string) : '';
         messages.push({
           role: 'user',
           content: [
             '现在是一次主动联系机会。依据已有真实话题决定是否开场，没有合适理由就跳过；如果此刻自己的状态不适合开口（比如很累、不想应酬），也直接跳过，不用勉强。',
+            angle
+              ? `你刚才说想说话，想说的是：${angle}。就用这个由头自然开口；如果你自己觉得此刻已经不想说了，仍然可以直接跳过。`
+              : '',
             lastDiary.length
               ? `你最近日记里的真实感受（引用要自然，别朗读）：\n${lastDiary.join('\n---\n')}`
               : '',
