@@ -72,16 +72,8 @@ import {
   DIARY_MAX_SECTIONS,
   OPEN_LOOP_PROMPT_MAX,
   OPEN_LOOP_EXPIRE_DAYS,
-  SOFT_THREAD_PROMPT_MAX,
   HISTORY_LOAD_LIMIT,
 } from './constants.js';
-
-/** 探询结果：此刻想不想主动说话，以及想说什么。want=false 是完全合法的
- *  常态——真人大部分时间本来就没在想着找谁。 */
-export interface Impulse {
-  want: boolean;
-  angle?: string;
-}
 
 /** 对话内核：预算规划 → 有界工具循环 → 回复解析与来源校验；外加日记与
  *  话题笔记的离线整理（reflect）。 */
@@ -565,76 +557,6 @@ export class Agent {
       // 回复校验必须接受提示词展示的这个窗口，而不是目录的新切片。
       stickers,
     };
-  }
-
-  /** 心搏探询（保留给事件驱动的单想法决策场景）：一次小调用问
-   *  "此刻想不想主动找TA"。材料是时间语境、当前心情、到期的约定、
-   *  熟成的挂念与今天的日记片段——都是现成查询，无工具、无历史窗口，
-   *  前缀缓存命中人格，失败成本趋近于零。解析失败按"不想"处理：探询
-   *  永远不该变成一次报错。 */
-  async impulse(peerId: string, signal: AbortSignal): Promise<Impulse> {
-    const { store } = this.o;
-    const now = Date.now();
-    const peer = store.peer(peerId);
-    if (!peer) return { want: false };
-    const history = store.history(peerId, 40);
-    const basis = silenceBasis(history, true);
-    const timeLine = basis
-      ? renderTimeGap(now, basis, this.o.timeZone())
-      : `现在是${momentFormatter(this.o.timeZone()).format(new Date(now))}`;
-    const mood = store.mood(peerId);
-    const baseline = store.emotionalBaseline(peerId, now);
-    const dueLoops = store.dueOpenLoops(peerId, now).slice(0, OPEN_LOOP_PROMPT_MAX);
-    const threads = store.ripeSoftThreads(peerId, now).slice(0, SOFT_THREAD_PROMPT_MAX);
-    const recentDiary = store
-      .diaries(peerId)
-      .filter((d) => d.day >= dayKey(now - 2 * 86400000, this.o.timeZone()))
-      .slice(0, 3)
-      .map((d) => renderDiarySection(d, now));
-    const rhythm = store.activityRhythm(peerId, this.o.timeZone());
-    const hour = Number(hourFormatter(this.o.timeZone()).format(new Date(now)));
-    const material = [
-      timeLine,
-      renderMood(mood, now, baseline),
-      renderRhythm(rhythm, hour),
-      dueLoops.length
-        ? `到期的约定：\n${dueLoops.map((l) => `- ${l.content}（${l.due_text || ''}）`).join('\n')}`
-        : '',
-      threads.length ? `还没放下的事：\n${threads.map((t) => `- ${t.content}`).join('\n')}` : '',
-      recentDiary.length ? `你最近写下的日记片段：\n${recentDiary.join('\n')}` : '',
-    ]
-      .filter(Boolean)
-      .join('\n\n');
-    const system = [
-      this.o.personaFor?.(peerId) ?? this.o.prompt('persona'),
-      '系统在事件发生后问你是否想主动联系对方（不是定时打扰）。真人的冲动是稀疏的：绝大多数时候你并没有在想着找谁，安静是完全正常的选择。只有当你此刻确实有想说的——到期的约定该问了、惦记的事有了自然的由头、刚发生的事让你真的想分享、或者就是单纯想他了——才说想；情绪低落不想应酬、没有具体由头、或刚聊过没多久，都说不想。只输出 JSON：{"want":true/false,"angle":"一句话说你想说什么"}。want 为 false 时 angle 省略。',
-    ].join('\n\n');
-    try {
-      const completion = await this.o.model().complete(
-        [
-          { role: 'system', content: system },
-          { role: 'user', content: material || '（暂时没有任何语境材料）' },
-        ],
-        [],
-        // 会话 ID 让上游按联系人对人格前缀做持久缓存：探询是调用最密的
-        // 路径，稳定的前缀命中直接决定它的实际成本。
-        { signal, maxTokens: 120, sessionId: `atri:${peerId}:impulse` },
-      );
-      this.o.store.recordUsage(
-        peerId,
-        `impulse:${now}`,
-        'impulse',
-        completion.inputTokens,
-        completion.outputTokens,
-        /* duration */ 0,
-        completion.cachedTokens,
-      );
-      const raw = parseJson(completion.text);
-      const want = raw?.want === true && typeof raw.angle === 'string' && !!raw.angle.trim();
-      return want ? { want: true, angle: String(raw.angle).trim().slice(0, 200) } : { want: false };
-    } catch {
-      return { want: false };
-    }
   }
 
   /** 想法评估调用：一次裁决全部候选想法。与聊天同一主模型、无工具、

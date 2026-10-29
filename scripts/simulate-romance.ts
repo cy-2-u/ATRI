@@ -1,8 +1,8 @@
 /** 双盲网恋月度模拟：同时扮演男孩与女孩，双方互相看不到对方的内心——
  *
- *  女孩（ATRI）一侧：走完整生产 Runtime（心情、记忆、日记、探询、主动消息、
- *  读空气刹车），她的"回复"由剧本情绪状态机生成，剧本只能依据男孩刚说的话
- *  和这段关系走到哪一幕来反应。
+ *  女孩（ATRI）一侧：走完整生产 Runtime（心情、记忆、日记、想法评估、
+ *  空闲碎碎念、主动消息、读空气刹车），她的"回复"由剧本情绪状态机生成，
+ *  剧本只能依据男孩刚说的话和这段关系走到哪一幕来反应。
  *
  *  男孩一侧：由剧本扮演，只能读她**实际发出的气泡**（outbox 投递），绝不
  *  读取她的心情数值、记忆库、探询念头——他不知道她在想什么，只看得到她说
@@ -31,12 +31,14 @@ let act = 'meet';
 let affection = 0.2;
 /** 女孩此刻的情绪余温（-1 低落到 1 开心），影响每轮回复的语气。 */
 let herMood = 0.2;
-/** 探询时她的心情：主流程在关键节点设置（"今天想他" / "低落不想说"）。 */
-let impulseWish = '';
+/** 想法评估裁决时她的心情：主流程在关键节点设置（"今天想他" / "低落不想说"）。 */
+let considerWish = '';
 
 const pick = <T>(arr: T[], seed: number) => arr[Math.abs(Math.floor(seed)) % arr.length]!;
 /** 回合计数：同幕次里每一拍换一个说法——真人不会复读同一句话。 */
 let turn = 0;
+/** 坦白夜的台词组进度：每拍推进一组，不再依赖全局 turn 取模。 */
+let truthIndex = -1;
 
 const sim = startSim({
   start: '2026-11-01T09:00:00+08:00',
@@ -69,17 +71,21 @@ const sim = startSim({
     }
     if (system.includes('整理成一份短的当前话题笔记'))
       return { notes: '他叫沈屿，程序员。我们一起聊游戏和猫。关系有过一段很难的时期。' };
-    // ---- 心搏探询：她的"此刻想不想说话"由 impulseWish 驱动 ----
-    if (system.includes('是否想主动联系对方')) {
+    // ---- 想法评估（主动 v2）：裁决由当前幕次决定——热恋/和好期想他
+    //      就说，冷战期情绪压住冲动，分手期干脆放下。无来源的碎碎念
+    //      不管怎么裁决都退场，冷却后冷却线自然冒新念头。 ----
+    if (system.includes('decisions')) {
       const due = /\n到期的约定：\n/.test(all);
+      const sayId = /1\. \[([^\]]+)\]/.exec(all)?.[1] ?? '';
       if (due && act !== 'cold-war' && act !== 'breakup')
-        return { want: true, angle: '问问约定的事' };
-      if (impulseWish === 'miss') {
-        impulseWish = '';
-        return { want: true, angle: '就是想他了' };
+        return { decisions: [{ id: sayId, action: 'speak', reason: '问问约定的事' }] };
+      if (considerWish === 'miss' && act !== 'cold-war' && act !== 'breakup') {
+        considerWish = '';
+        return { decisions: [{ id: sayId, action: 'speak', reason: '就是想他了' }] };
       }
-      if (impulseWish === 'quiet') return { want: false };
-      return { want: false };
+      if (act === 'breakup')
+        return { decisions: [{ id: sayId, action: 'drop', reason: '都分开了' }] };
+      return { decisions: [{ id: sayId, action: 'fold', reason: '此刻不想说' }] };
     }
     // ---- 主动消息（她说想之后）：按当前幕次给由头 ----
     if (all.includes('现在是一次主动联系机会')) {
@@ -135,7 +141,8 @@ const sim = startSim({
         moodPulse: { valence: -0.5, energy: -0.4, patience: -0.2, reason: '说出来了' },
       };
     }
-    // 坦白夜：真诚、不卑不亢。
+    // 坦白夜：真诚、不卑不亢。三拍台词组按幕内轮次推进，超出的拍
+    // 复读最后一组（收尾日只有一句寒暄，撞组无妨）。
     if (act === 'truth') {
       const truthLines = [
         ['谢谢你今天说的这些话。', '我也不是没有难过过，只是不想让你觉得是我的错。'],
@@ -144,9 +151,11 @@ const sim = startSim({
           '但哭完就想通了，怪你没有用，是我们都只会用自己习惯的方式对对方好。',
         ],
         ['你说想好好聊聊，那就聊吧。', '先从那天你说"在忙"开始吧，那三天我是怎么过的，你想听吗。'],
+        ['嗯，该说的都说开了。', '以后好好吃饭，好好睡觉。'],
       ];
+      truthIndex = Math.min(truthLines.length - 1, truthIndex + 1);
       return {
-        messages: truthLines[Math.min(2, Math.floor(turn / 3))]!,
+        messages: truthLines[truthIndex]!,
         memoryUpdates: [],
         moodPulse: { valence: 0.3, energy: 0.1, patience: 0.2, reason: '说开了' },
       };
@@ -315,8 +324,8 @@ await boy(13, '07:45', 'r13-short', '到公司了，晚点说');
 // ---------- 第 14–16 天：冷战（他忙到几乎消失） ----------
 act = 'cold-war';
 await boy(14, '09:00', 'r14-cold', '在忙，先不说了');
-// 男孩沉默三天。她的话少且冷；探询被低落情绪压住。
-impulseWish = 'quiet';
+// 男孩沉默三天。她的话少且冷；碎碎念的冲动被低落情绪压住（评估裁决 fold）。
+considerWish = 'quiet';
 await boySilent(17, '22:00');
 
 // ---------- 第 18–19 天：吵架 ----------
@@ -402,7 +411,6 @@ sim.snapshot('第 30 天：月末总览');
     const lastAny = prior.filter((x) => x.role === 'assistant').at(-1);
     if (!lastUser || (lastAny && lastUser.seq < lastAny.seq)) proactiveMsgs.push(m);
   }
-  proactiveMsgs.shift(); // 首条是开场问候
   const daySet = new Set(
     proactiveMsgs.map((m) =>
       new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', dateStyle: 'short' }).format(

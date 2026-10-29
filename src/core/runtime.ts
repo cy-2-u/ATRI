@@ -126,8 +126,9 @@ export class Runtime {
   private embedTimer?: ReturnType<typeof setInterval>;
   private embedding = false;
   private stopped = false;
-  /** 有新用户事件待评估想法时置位；schedule() 消费后清零。 */
-  private pendingIdeaEvent = false;
+  /** 有新用户事件待评估想法的联系人；schedule() 消费后移除。按联系人
+   *  记账：A 的新消息不该触发 B 的想法评估，也不能被 B 的评估清掉。 */
+  private pendingIdeaEvents = new Set<string>();
   /** 想法评估进行中的联系人：评估是异步模型调用，护栏防止调度器
    *  在它完成前反复重新发起同一批评估。 */
   private considering = new Set<string>();
@@ -272,7 +273,7 @@ export class Runtime {
     // 主动 v2：对方的新消息是真实事件——正在 waiting 的想法可能因此
     // 释放（"忙完了"），也可能让 fold 的想法重新值得单独说。事件到达
     // 后交给调度器统一评估（不在消息路径里做模型调用）。
-    if (!result.duplicate) this.pendingIdeaEvent = true;
+    if (!result.duplicate) this.pendingIdeaEvents.add(peer);
     this.pump();
     return result;
   }
@@ -448,7 +449,7 @@ export class Runtime {
                   this.store.upsertInitiative(peerId, input, Date.now());
                 }
                 // 新想法是事件：schedule 的下一拍会评估它。
-                this.pendingIdeaEvent = true;
+                this.pendingIdeaEvents.add(peerId);
               }
               // 记忆写入后置，版本不匹配时整体放弃。
               await this.dedupeMemories(peerId, reply.memories, signal);
@@ -797,12 +798,12 @@ export class Runtime {
           this.pump();
           continue;
         }
-        this.seedIdleMuse(peer, now);
-        // 主动 v2：想法评估由事件驱动（新用户消息置 pendingIdeaEvent，
+        // 主动 v2：想法评估由事件驱动（新用户消息置 pendingIdeaEvents，
         // 或者存在尚未评估过的新想法）。没有事件与未处理变化时不调用
         // 模型——时间流逝本身不再制造聊天理由。
         if (!c.proactiveEnabled || !this.proactiveAllowed(peer, now)) continue;
-        const ideaEvent = this.pendingIdeaEvent;
+        this.seedIdleMuse(peer, now);
+        const ideaEvent = this.pendingIdeaEvents.has(peer.id);
         // "新鲜"= 值得再评一轮：从未评估过（origin 空）。hold 的想法不在
         // 此列：条件没满足时不该被反复重问。
         const hasFresh = this.store
@@ -834,7 +835,7 @@ export class Runtime {
    *  MUSE_COOLDOWN_DAYS 天，每天至多一条；安静时段与读空气刹车照常拦在
    *  评估与发送之前。 */
   private seedIdleMuse(peer: Peer, now: number): void {
-    if (this.pendingIdeaEvent) return;
+    if (this.pendingIdeaEvents.has(peer.id)) return;
     if (peer.last_user_at <= 0) return;
     const sinceUser = now - peer.last_user_at;
     if (sinceUser < MUSE_SILENCE_MIN_HOURS * 3600000) return;
@@ -850,7 +851,7 @@ export class Runtime {
     const meaning = `他安静了挺久了（约 ${hours} 小时没说话）。此刻就是有点想他/想找个话头，没有具体的事——要不要随口说一句`;
     this.store.upsertInitiative(peer.id, { topicKey, kind: 'muse', meaning, sources: [] }, now);
     this.store.setSetting(`muse_seeded_at:${peer.id}`, now);
-    this.pendingIdeaEvent = true;
+    this.pendingIdeaEvents.add(peer.id);
   }
 
   /** 把当前想法交给模型评估一轮。每个想法版本只评估一次（幂等键 =
@@ -859,7 +860,7 @@ export class Runtime {
   private evaluateInitiatives(peerId: string, now: number): void {
     if (this.considering.has(peerId)) return;
     const initiatives = this.store.activeInitiatives(peerId);
-    this.pendingIdeaEvent = false;
+    this.pendingIdeaEvents.delete(peerId);
     if (!initiatives.length) return;
     // 清理来源已失效的想法（消息被删、记忆被替代）。
     this.store.expireInitiatives(peerId, (id) => !!this.sourceExists(peerId, id), now);

@@ -108,16 +108,23 @@ export async function considerInitiatives(options: ConsiderOptions): Promise<Con
     } else if (action === 'fold') {
       // fold 的想法保留在 idle：用户来聊时 chat 提示词仍能看到它，
       // 由模型自然带出；本轮不给它单独的机会。标记 origin 供调试。
-      store.sql
-        .prepare("UPDATE initiatives SET origin=? WHERE id=? AND state='idle'")
-        .run(reason || '并入聊天', id);
+      // 无来源的碎碎念没有"并入聊天"的载体——放下就是退场，冷却之后
+      // 自然会有新的念头，别让它永远占着碎碎念通道。
+      if (!idea.sources.length) {
+        store.dropInitiative(peerId, id, now);
+      } else {
+        store.sql
+          .prepare("UPDATE initiatives SET origin=? WHERE id=? AND state='idle'")
+          .run(reason || '并入聊天', id);
+      }
     } else if (action === 'drop') {
       store.dropInitiative(peerId, id, now);
     }
   }
   // 没被点名的想法是"这轮先放放"：留下已评估的痕迹，调度器不再把
   // origin 为空的它们当作"从没评过"而反复重问；下一个真实事件
-  // （新消息、新进展抬版本）仍会带来新一轮评估。
+  // （新消息、新进展抬版本）仍会带来新一轮评估。无来源的碎碎念
+  // 没有"放放"的载体，安静裁决就是退场——冷却后自然冒新念头。
   const decidedIds = new Set(
     decisions.flatMap((d) =>
       d && typeof d === 'object' && typeof d.id === 'string' ? [d.id] : [],
@@ -127,8 +134,11 @@ export async function considerInitiatives(options: ConsiderOptions): Promise<Con
     if (decidedIds.has(idea.id)) continue;
     const current = store.initiativeById(peerId, idea.id);
     if (!current || current.version !== idea.version || current.state !== idea.state) continue;
-    if (current.origin === '')
-      store.sql.prepare("UPDATE initiatives SET origin='本轮评估：暂缓' WHERE id=?").run(idea.id);
+    if (current.origin === '') {
+      if (!current.sources.length) store.dropInitiative(peerId, idea.id, now);
+      else
+        store.sql.prepare("UPDATE initiatives SET origin='本轮评估：暂缓' WHERE id=?").run(idea.id);
+    }
   }
   return { enqueued };
 }

@@ -1,7 +1,7 @@
 /** 一个月模拟：剧本同时扮演双方，机制全部走生产代码。
  *  覆盖核对点：记忆产生与淡忘、上下文压缩（话题笔记）、情绪（自评脉冲/
- *  残留泛化/深夜能耗/基线）、惦记（挂念浮现与了结）、主动消息（日常问候
- *  与到期开环、读空气刹车）、表情调用格式、多气泡分开投递。
+ *  残留泛化/深夜能耗/基线）、惦记（挂念浮现与了结）、主动消息（想法评估、
+ *  空闲碎碎念、到期开环、读空气刹车）、表情调用格式、多气泡分开投递。
  *  运行：npx tsx scripts/simulate-month.ts（在仓库根目录下）。 */
 
 import { startSim, sourceIds } from './sim-lib.js';
@@ -20,11 +20,13 @@ const STICKERS = [
 /** 剧本阶段：由主流程随剧情推进切换。 */
 let phase = 'intro';
 const stickerSlugsSeen: string[] = [];
-/** 探询统计与"想他了"标记：由主流程在合适剧情点设置。 */
-let impulseProbes = 0;
-let impulseMood = '';
-let impulseDueHits = 0;
-let impulseMissHits = 0;
+/** 想法评估统计与"想他了"标记：由主流程在合适剧情点设置。 */
+let considerCount = 0;
+let considerMood = '';
+let considerMissHits = 0;
+/** 回合计数：同场景每一拍换一个说法——真人不会复读同一句话。 */
+let turn = 0;
+const pick = <T>(arr: T[], seed: number) => arr[Math.abs(Math.floor(seed)) % arr.length]!;
 
 const sim = startSim({
   start: '2026-10-01T09:00:00+08:00',
@@ -35,6 +37,7 @@ const sim = startSim({
     const all = ctx.all;
     const system = ctx.system;
     const ids = sourceIds(all);
+    turn++;
     // ---- 离线整理任务（按 system 提示词特征分派，不猜正文关键词） ----
     if (system.includes('第一人称回看')) {
       const sad = all.includes('猫');
@@ -53,26 +56,30 @@ const sim = startSim({
     }
     if (system.includes('整理成一份短的当前话题笔记'))
       return { notes: '他在准备毕业设计答辩，猫叫团子；约定过下次讲讲我的过去。' };
-    // ---- 心搏探询：模拟她"此刻想不想说话"的判断。探询材料在最后一条
-    //      user 消息里（system 是人格+探询规则，永远含"到期的约定"字样，
-    //      不能拿来做判定）；材料块以"到期的约定：\n"开头才算有到期约定。
-    //      其余时刻安静——探询被拒不烧键。 ----
-    if (system.includes('是否想主动联系对方')) {
-      impulseProbes++;
-      const due = /\n到期的约定：\n/.test(all);
-      if (due) {
-        impulseDueHits++;
-        return { want: true, angle: '该问问约定的事了' };
+    // ---- 想法评估（主动 v2）：模拟她"此刻要不要说"的裁决。decisions
+    //      契约见 src/core/initiative.ts；到期开环的提醒走独立通道，不
+    //      经过评估；评估对象是聊天中立项的想法与空闲碎碎念。安静是
+    //      常态，无来源的碎碎念安静即退场。 ----
+    if (system.includes('decisions')) {
+      considerCount++;
+      if (considerMood === 'miss') {
+        considerMood = '';
+        considerMissHits++;
+        return {
+          decisions: [
+            {
+              id: /1\. \[([^\]]+)\]/.exec(all)?.[1] ?? '',
+              action: 'speak',
+              reason: '就是想他了',
+            },
+          ],
+        };
       }
-      if (impulseMood === 'miss') {
-        impulseMood = '';
-        impulseMissHits++;
-        return { want: true, angle: '就是想他了' };
-      }
-      return { want: false };
+      // 没点名 = "再放放"：有来源的想法留存，碎碎念退场。
+      return { decisions: [] };
     }
     // ---- 主动联系（按注入指令特征句 + 约定行自身的到期标记判定） ----
-    if (all.includes('现在是一次主动联系机会') || all.includes('第一次主动问候')) {
+    if (all.includes('现在是一次主动联系机会')) {
       const due = /- \[id:([^\]]+)\] ([^（]+)（[^）]*已到约定时间/.exec(all);
       if (due && /面试/.test(due[2]!))
         return {
@@ -83,6 +90,12 @@ const sim = startSim({
       if (due && /聚餐/.test(due[2]!))
         return {
           messages: ['昨天聚餐吃了什么好东西！'],
+          memoryUpdates: [],
+          askedLoops: [due[1]!],
+        };
+      if (due && /团子/.test(due[2]!))
+        return {
+          messages: [pick(['团子出院了吗？好点没', '团子今天怎么样啦？'], turn)],
           memoryUpdates: [],
           askedLoops: [due[1]!],
         };
@@ -176,6 +189,16 @@ const sim = startSim({
             emotionReason: '他很难受',
           },
         ],
+        // 她答应过问出院情况：记成开环，约 4 天后到期（落在沉默期内，
+        // 承诺通道发问构成第二条未回应的主动消息）。
+        openLoops: [
+          {
+            content: '问团子出院情况',
+            dueAt: Date.now() + 4 * 86400000 + 60000,
+            dueText: '几天后',
+            sources: [ctx.lastId],
+          },
+        ],
         moodPulse: { valence: -0.6, energy: -0.2, reason: '他的猫生病了' },
       };
     }
@@ -219,7 +242,9 @@ const sim = startSim({
         ],
       };
     }
-    if (phase === 'filler')
+    if (phase === 'filler') {
+      // 团子出院的报告由她了结开环（约定已在场展示过才有 id 可引）。
+      const loop = /\[id:([^\]]+)\] [^（]*团子/.exec(all);
       return {
         messages: ['记下来啦。'],
         memoryUpdates: [
@@ -230,7 +255,9 @@ const sim = startSim({
             importance: 0.55,
           },
         ],
+        ...(loop ? { resolveLoops: [loop[1]!] } : {}),
       };
+    }
     return { messages: ['嗯嗯，我在听。'], memoryUpdates: [] };
   },
 });
@@ -314,20 +341,22 @@ check(store.mood(PEER).valence > 0.2, '被逗笑后愉悦回升');
 await sim.userSay(3, '01:30', 'd3-night', '睡不着，再聊会儿');
 check(store.mood(PEER).energy < 0, '凌晨一点半还在聊，她自己的能量流失');
 
-// ---------- 第 5 天：难过的一天 ----------
+// ---------- 第 4 天：难过的一天 ----------
+// （第 3 天凌晨 → 此刻间隔 31.5 小时，刻意压在 36 小时以内，
+//  让碎碎念的首个立项落在这条消息之后的沉默期里。）
 phase = 'sad-day';
-await sim.userSay(5, '21:30', 'd5-cat', '团子今天突然不吃东西，送医院了，医生说要在住院观察……');
+await sim.userSay(4, '09:00', 'd4-cat', '团子今天突然不吃东西，送医院了，医生说要在住院观察……');
 check(store.mood(PEER).valence < -0.2, '他的猫生病，她的愉悦掉下去');
-sim.snapshot('第 5 天：带情绪的记忆入库');
+sim.snapshot('第 4 天：带情绪的记忆入库');
 
-// ---------- 第 6 天：日记 + 日常主动问候 ----------
-// 剧本心搏：他难过之后又沉默一天。深夜她"想他了"（探询说想 → 一条
-// 主动问候）。第二天上午再想一次 → 第二条。之后安静。
-impulseMood = 'miss';
+// ---------- 第 5–8 天：碎碎念 + 到期承诺 + 读空气刹车 ----------
+// 他难过之后沉默三天。36 小时后碎碎念立项，她"想他了"（评估裁决说 →
+// 一条主动问候）；第三天"问团子出院"的约定到期，承诺通道不受读空气
+// 限制照样发问。两条主动都没得到回应 → streak=2 → 冷却生效。
+considerMood = 'miss';
 await sim.quietDays('沉默一天', 6, '10:00');
-impulseMood = 'miss';
-await sim.quietDays('再想他一次', 7, '10:00');
-impulseMood = '';
+await sim.quietDays('还没出现', 7, '10:00');
+considerMood = '';
 {
   const diaries = store.diaries(PEER);
   check(diaries.length >= 2, `日记按天增量落库（已 ${diaries.length} 天）`);
@@ -342,9 +371,8 @@ impulseMood = '';
   );
 }
 
-// ---------- 第 8 天：连续无回应 → 读空气刹车 ----------
-// 之后的拍子她都安静（没有到期约定、不再标记"想他"）→ 前面两条主动
-// 消息构成连续无回应 streak=2 → 冷却生效。
+// ---------- 第 8 天：读空气刹车核对 ----------
+// （第 6–8 天的沉默里碎碎念问候 + 两次到期追问都没得到回应，冷却已生效。）
 sim.flushDelivered();
 await sim.advanceTo(T(8, '10:00'));
 await sim.tick(21 * 60000);
@@ -493,21 +521,18 @@ sim.snapshot('第 30 天：月末总览');
   check(assistantCount > 0 && assistantCount < 400, `一个月内的发言量合理（${assistantCount} 条）`);
   // ---- 主动时机分析：这次模拟的核心观察点 ----
   // 不能 JOIN tasks：pruneTasks 7 天就清终态任务行，月末统计会少算前三周。
-  // 主动消息的身份直接看 outbox→tasks 的历史不可靠，改为按
-  // saveReply 落库的消息 id 前缀（id=taskId:ordinal 不可行，同样被清）。
-  // 可靠口径：impulse/loop 的主动轮都在对方沉默期发出——把"投递时刻
-  // 之前最后一条是 assistant 自己"的消息算作主动消息。
+  // 可靠口径：想法/开环的主动轮都在对方沉默期发出——把"投递时刻之前
+  // 最后一条是 assistant 自己"的消息算作主动消息。
   const allMsgs = store.history(PEER, 500);
   const proactiveMsgs: typeof allMsgs = [];
   for (const m of allMsgs) {
     if (m.role !== 'assistant') continue;
     const prior = allMsgs.filter((x) => x.seq < m.seq);
     const lastUser = [...prior].reverse().find((x) => x.role === 'user');
-    // 没有先行的用户消息（开场白），或最后一条用户消息早于她的上一条发言。
+    // 没有先行的用户消息，或最后一条用户消息早于她的上一条发言。
     const lastAny = prior.filter((x) => x.role === 'assistant').at(-1);
     if (!lastUser || (lastAny && lastUser.seq < lastAny.seq)) proactiveMsgs.push(m);
   }
-  proactiveMsgs.shift(); // 首条是开场白问候，不算主动
   const byHour = new Map<number, number>();
   for (const m of proactiveMsgs) {
     const h = Number(
@@ -521,7 +546,7 @@ sim.snapshot('第 30 天：月末总览');
   }
   const hours = [...byHour.entries()].sort((a, b) => b[1] - a[1]);
   sim.say(
-    `    [主动分析] 30 天主动消息 ${proactiveMsgs.length} 条（探询 ${impulseProbes} 次问过她：到期约定触发 ${impulseDueHits} 次、想他触发 ${impulseMissHits} 次）；按小时分布：${hours
+    `    [主动分析] 30 天主动消息 ${proactiveMsgs.length} 条（想法评估 ${considerCount} 次问过她：想他触发 ${considerMissHits} 次）；按小时分布：${hours
       .map(([h, n]) => `${h}点×${n}`)
       .join('，')}`,
   );
