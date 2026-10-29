@@ -8,4 +8,7 @@ public
 simulation-transcript.md
 simulation-month-transcript.md
 simulation-romance-transcript.md
+# 生成的模拟转写（docs/ 是它现存的家）：每次重跑都重新生成，
+# prettier 对它的空行口味和生成器不一致，别让 CI 再卡在生成物上。
+docs/simulation-life-transcript.md
 sim-life-run
