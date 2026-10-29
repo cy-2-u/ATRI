@@ -772,7 +772,7 @@ export class Store {
         .get(peer, kind, key)!.id,
     );
   }
-  /** 等价任务是否已排队：调度器用它在抖动窗口内不重复选同一个开环。 */
+  /** 等价任务是否已排队：调度器用它在评估进行中不重复选同一个开环。 */
   hasPendingTask(peer: string, kind: TaskKind, key: string): boolean {
     return Boolean(
       this.sql

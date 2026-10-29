@@ -1,6 +1,6 @@
 # ATRI 主动框架重设计
 
-状态：研究与架构设计，尚未实施。
+状态：已实施。本文是设计时的调研与架构记录，"现状与错误证据"一节引用的旧代码行号是重写前的快照，现已失效；当前实现见 `src/core/runtime.ts`（想法评估调度）与 `src/core/initiative.ts`（considerInitiatives 裁决）。
 
 ## 1. 结论
 

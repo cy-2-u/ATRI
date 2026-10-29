@@ -239,7 +239,8 @@ export function startSim(opts: SimOptions) {
   }
   async function quietDays(label: string, days: number, hm: string) {
     await advanceTo(T(days, hm));
-    // 越过主动消息的随机延迟窗口（0–20 分钟），让排定的问候真正发出来。
+    // 主动评估是异步模型调用（后台完成，不被 drain 等待），多推一段
+    // 模拟时间让排定的问候/想法评估真正跑完并发出来。
     await tick(21 * 60000);
     say();
     say(`「……${label}（至 ${stamp(simNow)}）」`);

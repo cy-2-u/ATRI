@@ -416,9 +416,8 @@ export class Runtime {
             !isGreeting &&
             !this.proactiveGate(task, peer, Date.now())
           ) {
-            // superseded 而不是 done：否决的常见原因是抖动把 run_at 推进
-            // 了安静时段（或竞速的提醒吃掉了当日配额），done 会把去重键
-            // 烧掉一整天。
+            // superseded 而不是 done：否决的常见原因是到期点落进安静时段
+            // （或竞速的提醒吃掉了当日配额），done 会把去重键烧掉一整天。
             this.store.finish(task.id, 'superseded');
             continue;
           }

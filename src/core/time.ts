@@ -1,4 +1,4 @@
-import { hourFormatter, epochOfWallTime } from '../db/index.js';
+import { hourFormatter } from '../db/index.js';
 import {
   SILENCE_NOTIFY_MINUTES,
   SILENCE_HOURS_THRESHOLD,
@@ -154,44 +154,4 @@ export function renderRhythm(buckets: number[], hour: number): string {
       ? '现在正处于活跃时段。'
       : `现在（${hour} 点）不是对方常聊的时间，主动联系时可以提一句"这个点还没休息？"之类。`
   }`;
-}
-
-/** 某本地日期零点的时间戳：两次探测覆盖 DST 边界。 */
-export function localMidnight(at: number, timeZone: string): number {
-  const key = dayKey(at, timeZone);
-  const [y, m, d] = key.split('-').map(Number) as [number, number, number];
-  return epochOfWallTime(y, m, d, 0, 0, timeZone);
-}
-
-/** 下一个适合主动联系的时刻：优先落在对方习惯活跃的时段里。没有作息
- *  数据返回 undefined（调用方退回随机延迟）。视野 30 小时，覆盖"今天
- *  已过、排到明天最活跃时段"。 */
-export function nextRhythmSlot(
-  buckets: number[],
-  now: number,
-  timeZone: string,
-  jitterMinutes: number,
-  maxHorizonHours = 30,
-): number | undefined {
-  const total = buckets.reduce((n, v) => n + v, 0);
-  if (!total) return undefined;
-  const peak = Math.max(RHYTHM_MIN_BUCKET, Math.ceil(total / 24 / 2));
-  const good = buckets
-    .map((n, h) => ({ n, h }))
-    .filter((b) => b.n >= Math.min(peak, RHYTHM_MIN_BUCKET * 2))
-    .map((b) => b.h);
-  if (!good.length) return undefined;
-  const hourNow = Number(hourFormatter(timeZone).format(new Date(now)));
-  const horizon = now + maxHorizonHours * 3600000;
-  const jitter = () => Math.floor(Math.random() * jitterMinutes) * 60000;
-  // 今天剩余的合适时段按活跃度挑一个；都过了排到明天最活跃的时段。
-  const remaining = good.filter((h) => h > hourNow).sort((a, b) => buckets[b]! - buckets[a]!);
-  if (remaining.length) {
-    const picked = remaining[Math.floor(Math.random() * Math.min(2, remaining.length))]!;
-    const at = localMidnight(now, timeZone) + picked * 3600000 + jitter();
-    return at > now && at <= horizon ? at : undefined;
-  }
-  const best = [...good].sort((a, b) => buckets[b]! - buckets[a]!)[0]!;
-  const at = localMidnight(now + 86400000, timeZone) + best * 3600000 + jitter();
-  return at <= horizon ? at : undefined;
 }

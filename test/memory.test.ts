@@ -19,7 +19,6 @@ import {
   diaryResidues,
   renderTimeGap,
   residuePulse,
-  nextRhythmSlot,
 } from '../src/core/index.js';
 import type { SearchHit } from '../src/db/index.js';
 
@@ -389,31 +388,6 @@ test('久别带时段锚点，连续聊天不带', () => {
   // 两天以内仍是精确数（体感准的量级），一周以上落进档位。
   assert.match(renderTimeGap(now, now - 2 * DAY - 3600000, 'Asia/Shanghai'), /已有2 天/);
   assert.match(renderTimeGap(now, now - 7 * DAY, 'Asia/Shanghai'), /已有一周左右/);
-});
-
-test('作息择时：主动闲聊落在对方活跃时段', () => {
-  const buckets = new Array(24).fill(0) as number[];
-  buckets[21] = 10;
-  buckets[22] = 8;
-  const now = Date.parse('2026-10-25T10:00:00+08:00');
-  const slot = nextRhythmSlot(buckets, now, 'Asia/Shanghai', 20);
-  assert.ok(slot);
-  const hour = Number(
-    new Intl.DateTimeFormat('en-GB', {
-      timeZone: 'Asia/Shanghai',
-      hour: '2-digit',
-      hourCycle: 'h23',
-    }).format(new Date(slot!)),
-  );
-  assert.ok(hour === 21 || hour === 22, `落在活跃时段，实际 ${hour} 点`);
-  const late = Date.parse('2026-10-25T23:30:00+08:00');
-  const tomorrow = nextRhythmSlot(buckets, late, 'Asia/Shanghai', 20);
-  assert.ok(tomorrow && tomorrow > late + 12 * 3600000, '已过活跃时段排到明天');
-  assert.equal(
-    nextRhythmSlot(new Array(24).fill(0) as number[], now, 'Asia/Shanghai', 20),
-    undefined,
-    '没有作息数据退回随机延迟',
-  );
 });
 
 // ---------- 六变量纯函数快检 ----------
