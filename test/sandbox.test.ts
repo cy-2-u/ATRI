@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { TestContext } from 'node:test';
@@ -65,4 +65,30 @@ test('delete_file：未启用时一切文件工具拒绝', async () => {
   });
   sandbox.dispose();
   await assert.rejects(sandbox.delete('any.txt'), /沙箱未启用/);
+});
+
+test('clear：清空内容但保留根目录——挂载点删不得（EACCES 回归）', async (t) => {
+  const host = mkdtempSync(join(tmpdir(), 'atri-sbx-host-'));
+  const root = join(host, 'sandbox');
+  const sandbox = new Sandbox(root, {
+    enabled: () => true,
+    network: () => false,
+    sizeLimitBytes: () => 0,
+  });
+  cleanup(t, () => sandbox.dispose());
+  await sandbox.write('work/out.txt', '产物');
+  mkdirSync(join(root, 'sub'));
+  writeFileSync(join(root, 'sub', 'deep.txt'), 'x');
+  // 模拟 Docker 部署：/sandbox 是挂载点，容器内对它的父目录（/）没有
+  // 写权限——老实现 rmdir /sandbox 在这一步抛 EACCES。CI 是 root 时
+  // chmod 拦不住，该环境没有此回归形态，跳过即可。
+  const isRoot = process.getuid?.() === 0;
+  if (!isRoot) chmodSync(host, 0o555);
+  try {
+    sandbox.clear();
+  } finally {
+    if (!isRoot) chmodSync(host, 0o755);
+  }
+  assert.deepEqual(await sandbox.list('.'), { path: '.', entries: [] }, '内容已清空');
+  assert.ok(await sandbox.write('next.txt', '还能写'), '根目录仍在且可写');
 });

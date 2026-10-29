@@ -157,9 +157,16 @@ export class Sandbox {
     return { files, bytes };
   }
 
+  /** 清空沙箱内容但保留根目录本身：Docker 部署里 /sandbox 是挂载点，
+   *  删挂载点要么 EACCES（容器以 node 用户跑、/ 属 root）要么 EBUSY；
+   *  根目录必须活着，清它的子项即可。 */
   clear(): void {
-    if (existsSync(this.root)) rmSync(this.root, { recursive: true, force: true });
-    mkdirSync(this.root, { recursive: true });
+    if (!existsSync(this.root)) {
+      mkdirSync(this.root, { recursive: true });
+      return;
+    }
+    for (const entry of readdirSync(this.root, { withFileTypes: true }))
+      rmSync(join(this.root, entry.name), { recursive: true, force: true });
   }
   /** 释放暂存目录；不调用的话每次重启都在系统临时目录留一个孤儿。 */
   dispose(): void {
