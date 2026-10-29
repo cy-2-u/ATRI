@@ -600,6 +600,7 @@ export class Store {
       this.sql.prepare('DELETE FROM memories WHERE peer_id=?').run(id);
       this.sql.prepare('DELETE FROM open_loops WHERE peer_id=?').run(id);
       this.sql.prepare('DELETE FROM soft_threads WHERE peer_id=?').run(id);
+      this.sql.prepare('DELETE FROM initiatives WHERE peer_id=?').run(id);
       this.sql.prepare('DELETE FROM messages WHERE peer_id=?').run(id);
       this.sql
         .prepare(

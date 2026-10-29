@@ -496,3 +496,18 @@ test('空闲碎碎念：评估说安静就安静，想法留存', async (t) => {
     .filter((i) => i.kind === 'muse' && i.origin === '');
   assert.equal(muses.length, 0, 'fold 的想法带 origin 留痕，不会被"从没评过"反复重问');
 });
+
+test('删除联系人连带清掉想法表：否则外键约束让删除永远失败', (t) => {
+  const f = fixture(t);
+  const now = Date.now();
+  const source = f.store.ingest('p1', 's1', '我下周去海边', [], now - 3600000).message;
+  f.store.upsertInitiative(
+    'p1',
+    { topicKey: '海边旅行', kind: 'share', meaning: '想问他海边的事', sources: [source.id] },
+    now,
+  );
+  const removed = f.store.deletePeer('p1');
+  assert.ok(removed, '删除成功');
+  assert.equal(f.store.peer('p1'), undefined);
+  assert.equal(f.store.activeInitiatives('p1').length, 0, '想法随联系人一起清空');
+});
