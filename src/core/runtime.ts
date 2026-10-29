@@ -1,5 +1,5 @@
 import type { Store, Peer, ReplyPart, Task, Media, MemoryUpdate } from '../db/index.js';
-import { hourFormatter, epochOfWallTime } from '../db/index.js';
+import { hourFormatter } from '../db/index.js';
 import { Agent, type AgentOptions } from './agent.js';
 import { renderMessage } from './prompt-blocks.js';
 import { estimateTextTokens, cosineSimilarity } from '../llm.js';
@@ -10,15 +10,13 @@ import {
   NOTES_BUDGET_SHARE,
   NOTES_TAIL_EXEMPT,
   DIARY_MAX_CHARS,
-  PROACTIVE_JITTER_MINUTES,
   EMBED_BACKFILL_BATCH,
-  PROACTIVE_IGNORE_LIMIT,
-  PROACTIVE_IGNORE_COOLDOWN_DAYS,
   SIMILARITY_SUPERSEDE,
   BEAT_RANGES_MS,
-  IMPULSE_INTERVAL_MINUTES,
-  PROACTIVE_DAILY_LIMIT,
+  MUSE_SILENCE_MIN_HOURS,
+  MUSE_COOLDOWN_DAYS,
 } from './constants.js';
+import { considerInitiatives } from './initiative.js';
 
 /** 调度主干：泵队列、投递气泡、排日记与主动联系、向量回填。 */
 
@@ -35,8 +33,6 @@ export interface RuntimeConfig {
   proactiveEnabled: boolean;
   quietStart: number;
   quietEnd: number;
-  /** 心搏探询间隔（分钟）。 */
-  impulseIntervalMinutes: number;
   debounceMs: number;
   maxConcurrentPeers: number;
   turnTimeoutMs: number;
@@ -86,10 +82,10 @@ export function taskBackoffMs(attempts: number): number {
 }
 /** 单联系人单泵周期的工作预算（含投递轮）。 */
 const MAX_WORK_ITERATIONS = 12;
-/** 读空气刹车：连续被冷落时指数拉长（3→6→12→14 天封顶）。 */
+/** 读空气刹车：连续无回应时按 3→6→12→14 天封顶拉长——这是打扰保护，
+ *  不是性格；对方一开口立即解除。 */
 export function silenceCooldownMs(streak: number): number {
-  const over = Math.max(0, streak - PROACTIVE_IGNORE_LIMIT);
-  const days = Math.min(14, PROACTIVE_IGNORE_COOLDOWN_DAYS * 2 ** over);
+  const days = Math.min(14, 3 * 2 ** Math.max(0, streak - 2));
   return days * 86400000;
 }
 export function inQuietHours(hour: number, start: number, end: number) {
@@ -130,6 +126,11 @@ export class Runtime {
   private embedTimer?: ReturnType<typeof setInterval>;
   private embedding = false;
   private stopped = false;
+  /** 有新用户事件待评估想法时置位；schedule() 消费后清零。 */
+  private pendingIdeaEvent = false;
+  /** 想法评估进行中的联系人：评估是异步模型调用，护栏防止调度器
+   *  在它完成前反复重新发起同一批评估。 */
+  private considering = new Set<string>();
   /** 全部进行中的回填（不止启动那次）：停机关库前要等它们全部落地。 */
   private readonly backfills = new Set<Promise<void>>();
   private backfillController = new AbortController();
@@ -268,6 +269,10 @@ export class Runtime {
     // 消息）；日记/笔记是后台写入，取消只会让它们永远重启。
     if (!result.duplicate && active && (active.kind === 'chat' || active.kind === 'proactive'))
       active.controller.abort();
+    // 主动 v2：对方的新消息是真实事件——正在 waiting 的想法可能因此
+    // 释放（"忙完了"），也可能让 fold 的想法重新值得单独说。事件到达
+    // 后交给调度器统一评估（不在消息路径里做模型调用）。
+    if (!result.duplicate) this.pendingIdeaEvent = true;
     this.pump();
     return result;
   }
@@ -430,9 +435,36 @@ export class Runtime {
                 // 必须随行，否则提醒可能发两次。
                 this.store.setSetting(`pending_effects:${task.id}`, { loops, threads });
               }
+              // 主动 v2：聊天中形成的想法落库（"这个改天想跟他说"）。
+              // 来源校验用对话可见的 ID 集（最近消息 + 记忆），模型引用
+              // 没见过的来源直接淘汰。
+              if (reply.initiatives.length) {
+                const available = new Set([
+                  ...this.store.history(peerId, 40).map((m) => m.id),
+                  ...(reply.pickedMemoryIds ?? []),
+                ]);
+                for (const input of reply.initiatives) {
+                  if (!input.sources.every((s) => available.has(s))) continue;
+                  this.store.upsertInitiative(peerId, input, Date.now());
+                }
+                // 新想法是事件：schedule 的下一拍会评估它。
+                this.pendingIdeaEvent = true;
+              }
               // 记忆写入后置，版本不匹配时整体放弃。
               await this.dedupeMemories(peerId, reply.memories, signal);
               this.store.applyMemoryUpdates(peerId, task.version, reply.memories);
+              // 主动 v2：这次主动真的说出了那个想法——说完即退场，同一
+              // 由头不会被同一句话反复消费。模型选择跳过（无气泡）时
+              // 释放但标记已表达过：同一版本不再自动重评，防止没完没了
+              // 地拿同一个念头打扰；新事件仍会带来新版本。
+              if (task.kind === 'proactive' && typeof task.payload.initiative === 'string') {
+                const initiativeId = task.payload.initiative as string;
+                this.store.releaseInitiative(peerId, initiativeId, Date.now());
+                if (!reply.parts.length)
+                  this.store.sql
+                    .prepare("UPDATE initiatives SET origin='生成时选择跳过' WHERE id=?")
+                    .run(initiativeId);
+              }
               // 每次进提示词都是一次演练：巩固按间隔增长、细节时钟重置；
               // 带情绪残留的记忆被想起时泛化成此刻的心情。被跳过的主动
               // 联系（没产出气泡）不算演练。
@@ -681,9 +713,10 @@ export class Runtime {
     return id;
   }
 
-  /** 主动消息的硬护栏（探询的前置条件）。想不想说由模型探询决定；代码
-   *  只负责：安静时段不吵、防连发、读空气刹车与每日上限。沉默多久不再
-   *  是门槛——刚聊完一小时她也可能有由头说一句，真人如此。 */
+  /** 主动消息的硬护栏（发送前的最后闸门）。想不想说、说什么由想法与
+   *  模型决定；代码只负责：安静时段不吵、读空气刹车、渠道许可。没有
+   *  每日上限、没有两小时间隔——那些是配额，不是性格；防重复靠想法
+   *  的生命周期（同源不重发、说过即退场），防打扰靠这一道闸门。 */
   proactiveAllowed(peer: Peer, now: number): boolean {
     const c = this.options.config(),
       hour = hourAt(now, c.timeZone);
@@ -693,43 +726,22 @@ export class Runtime {
       !!peer.context_token &&
       peer.channel === 'wechat' &&
       peer.last_user_at > 0 &&
-      !inQuietHours(hour, c.quietStart, c.quietEnd) &&
-      now - peer.last_proactive_at >= 2 * 3600000
+      !inQuietHours(hour, c.quietStart, c.quietEnd)
     ))
       return false;
     const streak = this.store.unansweredProactiveStreak(peer.id);
-    if (streak >= PROACTIVE_IGNORE_LIMIT)
-      return now - peer.last_proactive_at >= silenceCooldownMs(streak);
-    return this.proactiveSentToday(peer, now) < PROACTIVE_DAILY_LIMIT;
+    if (streak >= 2) return now - peer.last_proactive_at >= silenceCooldownMs(streak);
+    return true;
   }
-  /** 今天（本地日）已经主动发过几次：按成功投递的 proactive 任务计。
-   *  窗口是本地日的零点到次日零点（毫秒），不是字符串比较。 */
-  private proactiveSentToday(peer: Peer, now: number): number {
-    const timeZone = this.options.config().timeZone;
-    const [y, m, d] = dayAt(now, timeZone).split('-').map(Number) as [number, number, number];
-    const from = epochOfWallTime(y, m, d, 0, 0, timeZone);
-    return Number(
-      this.store.sql
-        .prepare(
-          `SELECT count(DISTINCT o.task_id) AS n FROM outbox o
-           JOIN tasks t ON t.id=o.task_id
-           JOIN messages m ON m.id=o.id
-           WHERE o.peer_id=? AND o.status='sent' AND t.kind='proactive'
-             AND t.dedupe_key NOT LIKE 'greeting:%'
-             AND ? <= m.created_at AND m.created_at < ?`,
-        )
-        .get(peer.id, from, from + 86400000)!.n,
-    );
-  }
-  /** 主动任务的门槛分流：带 payload.loop 的走开环独立配额，其余走日常配额。 */
+  /** 主动任务的门槛分流：带 payload.loop 的走开环独立通道（承诺优先于
+   *  读空气与日常分享），其余走日常闸门。 */
   private proactiveGate(task: Task, peer: Peer, now: number): boolean {
     if (typeof task.payload?.loop === 'string') return this.loopPingAllowed(peer, now);
     return this.proactiveAllowed(peer, now);
   }
-  /** 到期开环的独立配额：承诺优先于日常闲聊与读空气刹车（对方明确托付的
-   *  约定不该被冷落饿死）；安静时段仍然有效。与上次主动只隔 2 小时：
-   *  早上八点的闲聊问候不该把"今天提醒我"拖到晚上。对方 2 小时内说过话
-   *  说明对话还热着：结果会自然汇报，插进去反而打断。 */
+  /** 到期开环的独立通道：承诺优先于日常闲聊与读空气刹车（对方明确托付的
+   *  约定不该被冷落饿死）；安静时段仍然有效。不受"上次主动两小时内"
+   *  限制：早上八点的闲聊问候不该把"今天提醒我"拖到晚上。 */
   loopPingAllowed(peer: Peer, now: number): boolean {
     const c = this.options.config(),
       hour = hourAt(now, c.timeZone);
@@ -739,9 +751,7 @@ export class Runtime {
       !!peer.context_token &&
       peer.channel === 'wechat' &&
       peer.last_user_at > 0 &&
-      now - peer.last_user_at >= 2 * 3600000 &&
-      !inQuietHours(hour, c.quietStart, c.quietEnd) &&
-      now - peer.last_proactive_at >= 2 * 3600000,
+      !inQuietHours(hour, c.quietStart, c.quietEnd),
     );
   }
 
@@ -752,6 +762,7 @@ export class Runtime {
     // 例行清理搭每分钟调度 tick 的便车；单个坏联系人不能让后面的全部饿死。
     try {
       this.store.pruneTasks(now);
+      this.store.pruneInitiatives(now);
     } catch (error) {
       this.options.log?.('清理旧任务失败，本轮跳过', {
         error: error instanceof Error ? error.message : String(error),
@@ -774,29 +785,36 @@ export class Runtime {
               )
             : undefined;
         if (loop) {
-          const jitter = Math.floor(Math.random() * PROACTIVE_JITTER_MINUTES) * 60000;
-          // 到期的约定不挑时间——承诺不该等作息。
+          // 到期的约定不挑时间——承诺不该等作息，也不做行为抖动。
           this.store.enqueue(
             peer.id,
             'proactive',
             // 到期日在 key 里：yearly 滚动靠它区分。
             `${this.store.loopTaskKey(loop)}:${dayAt(now, c.timeZone)}`,
             { loop: loop.id },
-            now + jitter,
+            now,
           );
+          this.pump();
           continue;
         }
-        // 日常闲聊：探询节拍。距上次探询满一个间隔才问一次"此刻想说吗"；
-        // 她说想就立刻入队（带由头），说不想就安静等下一拍。没有当日
-        // 去重键——被拒绝的这一拍不烧掉后面的拍子。
-        if (!this.proactiveAllowed(peer, now)) continue;
-        const lastProbe = this.store.getSetting<number>(`impulse_at:${peer.id}`, 0);
-        const intervalMinutes = Math.max(1, c.impulseIntervalMinutes || IMPULSE_INTERVAL_MINUTES);
-        if (now - lastProbe < intervalMinutes * 60000) continue;
-        if (this.store.hasPendingTask(peer.id, 'proactive', `impulse:${dayAt(now, c.timeZone)}`))
-          continue;
-        this.store.setSetting(`impulse_at:${peer.id}`, now);
-        void this.probe(peer.id);
+        this.seedIdleMuse(peer, now);
+        // 主动 v2：想法评估由事件驱动（新用户消息置 pendingIdeaEvent，
+        // 或者存在尚未评估过的新想法）。没有事件与未处理变化时不调用
+        // 模型——时间流逝本身不再制造聊天理由。
+        if (!c.proactiveEnabled || !this.proactiveAllowed(peer, now)) continue;
+        const ideaEvent = this.pendingIdeaEvent;
+        // "新鲜"= 值得再评一轮：从未评估过（origin 空）。hold 的想法不在
+        // 此列：条件没满足时不该被反复重问。
+        const hasFresh = this.store
+          .activeInitiatives(peer.id)
+          .some(
+            (idea) =>
+              !this.store.hasPendingTask(peer.id, 'proactive', `idea:${idea.id}:${idea.version}`) &&
+              idea.origin === '',
+          );
+        if (!ideaEvent && !hasFresh) continue;
+        if (this.considering.has(peer.id)) continue;
+        this.evaluateInitiatives(peer.id, now);
       } catch (error) {
         this.options.log?.('联系人调度失败，本轮跳过', {
           peer: peer.id,
@@ -807,33 +825,81 @@ export class Runtime {
     this.pump();
   }
 
-  /** 一次心搏探询：她说"想"且此刻仍然过门槛时，立刻排一条主动消息。
-   *  探询与入队之间隔着一次模型调用，期间来了用户消息或门槛变严（比如
-   *  恰好有新气泡在发）就放弃——下一拍再探，不抢话。由头只做小幅延迟
-   *  （抖动窗口），不挑作息时段：冲动是此刻的，压两小时就假了。 */
-  private async probe(peerId: string) {
-    try {
-      const signal = AbortSignal.timeout(Math.min(30000, this.options.config().turnTimeoutMs));
-      const impulse = await this.agent.impulse(peerId, signal);
-      if (!impulse.want || this.stopped) return;
-      const peer = this.store.peer(peerId);
-      const now = Date.now();
-      if (!peer || !this.proactiveAllowed(peer, now)) return;
-      // 探询期间对方说话了：主动让位，别在对方刚发消息时插入。
-      if (peer.last_user_at > now - 5 * 60000) return;
-      this.store.enqueue(
-        peerId,
-        'proactive',
-        `impulse:${dayAt(now, this.options.config().timeZone)}:${now}`,
-        { angle: impulse.angle ?? '' },
-        now + Math.floor(Math.random() * PROACTIVE_JITTER_MINUTES) * 60000,
+  /** 空闲碎碎念（图灵审查修复 #1）：事件驱动的想法评估在"对方一直不说话"
+   *  时是死的——真人一个月里总有几次手痒（想起一个梗、看到海、单纯想他了），
+   *  一个永远等对方先开口的人比任何口癖都像机器人。这里按低频时间通道给
+   *  沉默注入一条 muse 想法（无来源，meaning 只是"想说一句"的冲动），
+   *  立项后仍走完整评估链路：模型在评估时说"安静"就安静，说"说"才说。
+   *  频率：距对方上次消息 ≥ MUSE_SILENCE_MIN_HOURS 且距上次立项 ≥
+   *  MUSE_COOLDOWN_DAYS 天，每天至多一条；安静时段与读空气刹车照常拦在
+   *  评估与发送之前。 */
+  private seedIdleMuse(peer: Peer, now: number): void {
+    if (this.pendingIdeaEvent) return;
+    if (peer.last_user_at <= 0) return;
+    const sinceUser = now - peer.last_user_at;
+    if (sinceUser < MUSE_SILENCE_MIN_HOURS * 3600000) return;
+    const lastSeeded = this.store.getSetting<number>(`muse_seeded_at:${peer.id}`, 0);
+    if (now - lastSeeded < MUSE_COOLDOWN_DAYS * 86400000) return;
+    // 已经有活跃的 muse 轮在等评估时不再叠一条。
+    if (this.store.activeInitiatives(peer.id).some((idea) => idea.kind === 'muse')) return;
+    const day = dayAt(now, this.options.config().timeZone);
+    const topicKey = `idle-muse:${day}`;
+    if (this.store.activeInitiativeByTopic(peer.id, topicKey)) return;
+    // 冲动措辞带一点当下感，模型评估时只当"想说一句"的素材，不保证说。
+    const hours = Math.floor(sinceUser / 3600000);
+    const meaning = `他安静了挺久了（约 ${hours} 小时没说话）。此刻就是有点想他/想找个话头，没有具体的事——要不要随口说一句`;
+    this.store.upsertInitiative(peer.id, { topicKey, kind: 'muse', meaning, sources: [] }, now);
+    this.store.setSetting(`muse_seeded_at:${peer.id}`, now);
+    this.pendingIdeaEvent = true;
+  }
+
+  /** 把当前想法交给模型评估一轮。每个想法版本只评估一次（幂等键 =
+   *  ideaId:version），评估结束清事件标记；评估在后台异步完成，期间
+   *  用 considering 护栏挡住调度器的重复发起。 */
+  private evaluateInitiatives(peerId: string, now: number): void {
+    if (this.considering.has(peerId)) return;
+    const initiatives = this.store.activeInitiatives(peerId);
+    this.pendingIdeaEvent = false;
+    if (!initiatives.length) return;
+    // 清理来源已失效的想法（消息被删、记忆被替代）。
+    this.store.expireInitiatives(peerId, (id) => !!this.sourceExists(peerId, id), now);
+    const pending = this.store
+      .activeInitiatives(peerId)
+      .filter(
+        (idea) =>
+          !this.store.hasPendingTask(peerId, 'proactive', `idea:${idea.id}:${idea.version}`),
       );
-      this.pump();
-    } catch (error) {
-      this.options.log?.('主动探询失败，本轮跳过', {
-        peer: peerId,
-        error: error instanceof Error ? error.message : String(error),
+    if (!pending.length) return;
+    this.considering.add(peerId);
+    const consider = considerInitiatives({
+      store: this.store,
+      agent: this.agent,
+      peerId,
+      initiatives: pending,
+      log: this.options.log,
+    })
+      .catch((error) => {
+        this.options.log?.('想法评估异常', {
+          peer: peerId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      })
+      .finally(() => {
+        this.considering.delete(peerId);
+        this.pump();
       });
-    }
+    // 评估是异步模型调用：完成后若入队了主动消息，泵会把它消费掉。
+    void consider;
+  }
+  /** 想法来源是否仍然有效：消息在历史里、记忆活跃、或约定/挂念开着。 */
+  private sourceExists(peerId: string, sourceId: string): boolean {
+    if (this.store.getMessage(peerId, sourceId)) return true;
+    if (this.store.memories(peerId).some((m) => m.id === sourceId && m.status === 'active'))
+      return true;
+    if (this.store.openLoops(peerId).some((l) => l.id === sourceId && l.status === 'open'))
+      return true;
+    if (this.store.softThreads(peerId).some((t) => t.id === sourceId && t.status === 'open'))
+      return true;
+    return false;
   }
 }

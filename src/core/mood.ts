@@ -69,3 +69,15 @@ export function renderMood(
   }
   return parts.length ? `你当前的状态：${parts.join('；')}。这影响语气，但不要主动报数值。` : '';
 }
+
+/** 她自己此刻的身体状态（图灵审查修复 #2）：深夜与清晨人本来就困，电量
+ *  不足时回复自然变短变糙。这不是对对方状态的判断（那是 renderRhythm），
+ *  是给她自己的一个可以表演"没电"的合法通道——回复质量有方差才是人。 */
+export function renderSelfHour(hour: number): string {
+  if (hour >= 1 && hour < 7)
+    return '现在是你的深夜，人很困：回复可以短、可以糊、可以只打几个字，也允许明早再回的语气。不必完整接住对方每个话题。';
+  if (hour >= 23)
+    return '已经很晚了，你有点困了：话可以少一点，收尾自然一点（“我先睡了”是合法回复）。';
+  if (hour >= 12 && hour < 14) return '是中午，你可能正吃饭或想歇一会儿：忙的话回短一点没关系。';
+  return '';
+}

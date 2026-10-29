@@ -129,6 +129,34 @@ export interface SoftThreadInput {
   revisitAfter?: number;
   sources: string[];
 }
+/** 主动 v2：一个尚未表达的想法。kind 是动机类别（share 分享、care 关心、
+ *  ask 履约追问、muse 单纯想说），meaning 是"想传达什么"，不是消息草稿。 */
+export type InitiativeKind = 'share' | 'care' | 'ask' | 'muse';
+export interface Initiative {
+  id: string;
+  peer_id: string;
+  topic_key: string;
+  kind: InitiativeKind;
+  meaning: string;
+  sources: string[];
+  source_hash: string;
+  expect_reply: number;
+  /** idle 可以表达；waiting 等一个条件；expressed/dropped 已退场。 */
+  state: 'idle' | 'waiting' | 'expressed' | 'dropped';
+  origin: string;
+  version: number;
+  created_at: number;
+  updated_at: number;
+  released_at: number;
+  dropped_at: number;
+}
+export interface InitiativeInput {
+  topicKey: string;
+  kind: InitiativeKind;
+  meaning: string;
+  sources: string[];
+  expectReply?: boolean;
+}
 /** 跨对话的轻量心情，以体感文字注入提示词而非数值。patience 单独一轴：
  *  累但温暖与烦透了读起来完全不同，只有后者该少说少问。 */
 export interface MoodState {
@@ -208,6 +236,10 @@ export interface EmbeddingVector {
 }
 
 type Row = Record<string, unknown>;
+
+function initiative(row: Row): Initiative {
+  return { ...row, sources: parse(row.sources, []) } as unknown as Initiative;
+}
 const parse = <T>(value: unknown, fallback: T): T => {
   try {
     return JSON.parse(String(value)) as T;
@@ -231,9 +263,6 @@ export const SOFT_THREAD_EXPIRE_DAYS = 14;
 export const SOFT_THREAD_MAX = 3;
 export const SOFT_THREAD_REVISIT_DAYS = 2;
 export const SOFT_THREAD_REVISIT_MAX_DAYS = 7;
-/** 读空气：连续无回应次数达到该值后冷却拉长到天级。 */
-export const PROACTIVE_IGNORE_LIMIT = 2;
-export const PROACTIVE_IGNORE_COOLDOWN_DAYS = 3;
 export const MOOD_VALENCE_HALFLIFE_HOURS = 12;
 export const MOOD_ENERGY_HALFLIFE_HOURS = 4;
 export const MOOD_PATIENCE_HALFLIFE_HOURS = 10;
@@ -271,7 +300,7 @@ export class Store {
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
     this.sql = new DatabaseSync(path);
     const openedAt = Number(this.sql.prepare('PRAGMA user_version').get()?.user_version ?? 0);
-    if (openedAt > 9) {
+    if (openedAt > 10) {
       this.sql.close();
       throw new Error('数据库来自更新版本，不能用当前程序打开');
     }
@@ -342,6 +371,21 @@ export class Store {
         resolved_at INTEGER NOT NULL DEFAULT 0
       );
       CREATE INDEX IF NOT EXISTS soft_threads_peer ON soft_threads(peer_id,status);
+      -- 想法（initiative v2）：由真实来源形成、会保留/变化/消退的"还没说
+      -- 出口的话"。topicKey 防同一件事换句话重复立项；sourceHash 幂等同
+      -- 一次判断（同一来源+同一进展不会因再次评估变成新想法）。
+      CREATE TABLE IF NOT EXISTS initiatives (
+        id TEXT PRIMARY KEY, peer_id TEXT NOT NULL REFERENCES peers(id),
+        topic_key TEXT NOT NULL, kind TEXT NOT NULL, meaning TEXT NOT NULL,
+        sources TEXT NOT NULL, source_hash TEXT NOT NULL,
+        expect_reply INTEGER NOT NULL DEFAULT 0,
+        state TEXT NOT NULL DEFAULT 'idle', origin TEXT NOT NULL DEFAULT '',
+        version INTEGER NOT NULL DEFAULT 1,
+        created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+        released_at INTEGER NOT NULL DEFAULT 0, dropped_at INTEGER NOT NULL DEFAULT 0,
+        UNIQUE(peer_id, topic_key)
+      );
+      CREATE INDEX IF NOT EXISTS initiatives_peer_state ON initiatives(peer_id,state,updated_at DESC);
     `);
     // 每个版本一个事务（PRAGMA 会自动提交，分开写会留下版本与结构不一致的库）。
     if (openedAt < 2) {
@@ -426,6 +470,28 @@ export class Store {
             'ALTER TABLE usage_daily ADD COLUMN cached_tokens INTEGER NOT NULL DEFAULT 0;',
           );
         this.sql.exec('PRAGMA user_version=9;');
+      });
+    }
+    if (openedAt < 10) {
+      // 主动 v2：想法表（持久动机对象）。旧 impulse 探询与读空气冷却的
+      // 设置键在启动时清掉，由新调度接管。
+      this.transaction(() => {
+        this.sql.exec(
+          `CREATE TABLE IF NOT EXISTS initiatives (
+            id TEXT PRIMARY KEY, peer_id TEXT NOT NULL REFERENCES peers(id),
+            topic_key TEXT NOT NULL, kind TEXT NOT NULL, meaning TEXT NOT NULL,
+            sources TEXT NOT NULL, source_hash TEXT NOT NULL,
+            expect_reply INTEGER NOT NULL DEFAULT 0,
+            state TEXT NOT NULL DEFAULT 'idle', origin TEXT NOT NULL DEFAULT '',
+            version INTEGER NOT NULL DEFAULT 1,
+            created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+            released_at INTEGER NOT NULL DEFAULT 0, dropped_at INTEGER NOT NULL DEFAULT 0,
+            UNIQUE(peer_id, topic_key)
+          );
+          CREATE INDEX IF NOT EXISTS initiatives_peer_state ON initiatives(peer_id,state,updated_at DESC);
+          DELETE FROM settings WHERE key LIKE 'impulse_at:%';`,
+        );
+        this.sql.exec('PRAGMA user_version=10;');
       });
     }
   }
@@ -2082,6 +2148,135 @@ export class Store {
       .run(peer, now - SOFT_THREAD_EXPIRE_DAYS * 86400000);
   }
 
+  // ---------- 想法（主动 v2） ----------
+
+  /** 尚未说出口的想法：持久、有来源、有生命周期。它不是消息草稿——
+   *  meaning 是想传达的核心，真正的话在生成时才说。 */
+  initiativeById(peer: string, id: string): Initiative | undefined {
+    const row = this.sql
+      .prepare('SELECT * FROM initiatives WHERE peer_id=? AND id=?')
+      .get(peer, id);
+    return row ? initiative(row) : undefined;
+  }
+  /** 当前活跃（idle 或 waiting）的想法；waiting 在前（等条件成熟的更急）。 */
+  activeInitiatives(peer: string): Initiative[] {
+    return this.sql
+      .prepare(
+        `SELECT * FROM initiatives WHERE peer_id=? AND state IN ('idle','waiting')
+         ORDER BY CASE state WHEN 'waiting' THEN 0 ELSE 1 END, updated_at DESC LIMIT 20`,
+      )
+      .all(peer)
+      .map((r) => initiative(r));
+  }
+  /** 同主题的活跃想法（去重：换句话重提不重复立项）。 */
+  activeInitiativeByTopic(peer: string, topicKey: string): Initiative | undefined {
+    const row = this.sql
+      .prepare(
+        "SELECT * FROM initiatives WHERE peer_id=? AND topic_key=? AND state IN ('idle','waiting') LIMIT 1",
+      )
+      .get(peer, topicKey);
+    return row ? initiative(row) : undefined;
+  }
+  /** 新想法或合并进旧想法。sourceHash 相同的同主题评估是幂等重放，不动
+   *  旧行；相同主题的新进展（hash 变了）更新含义与来源、抬升版本。 */
+  upsertInitiative(
+    peer: string,
+    input: InitiativeInput,
+    now = Date.now(),
+  ): { initiative: Initiative; created: boolean } {
+    const sources = [...new Set(input.sources)].slice(0, 10);
+    const sourceHash = createHash('sha256')
+      .update(input.sources.join('\u0000'))
+      .digest('hex')
+      .slice(0, 32);
+    return this.transaction(() => {
+      const existing = this.activeInitiativeByTopic(peer, input.topicKey);
+      if (existing) {
+        if (existing.source_hash === sourceHash) return { initiative: existing, created: false };
+        this.sql
+          .prepare(
+            `UPDATE initiatives SET kind=?,meaning=?,sources=?,source_hash=?,expect_reply=?,
+             state='idle',origin='',version=version+1,updated_at=?,released_at=0,dropped_at=0
+             WHERE id=?`,
+          )
+          .run(
+            input.kind,
+            input.meaning.slice(0, 300),
+            JSON.stringify(sources),
+            sourceHash,
+            input.expectReply ? 1 : 0,
+            now,
+            existing.id,
+          );
+        return {
+          initiative: this.initiativeById(peer, existing.id)!,
+          created: false,
+        };
+      }
+      const id = randomUUID();
+      this.sql
+        .prepare(
+          `INSERT INTO initiatives(id,peer_id,topic_key,kind,meaning,sources,source_hash,expect_reply,state,origin,created_at,updated_at)
+           VALUES(?,?,?,?,?,?,?,?, 'idle','',?,?)`,
+        )
+        .run(
+          id,
+          peer,
+          input.topicKey.slice(0, 120),
+          input.kind,
+          input.meaning.slice(0, 300),
+          JSON.stringify(sources),
+          sourceHash,
+          input.expectReply ? 1 : 0,
+          now,
+          now,
+        );
+      return { initiative: this.initiativeById(peer, id)!, created: true };
+    });
+  }
+  /** 想法被这次主动真的说了：表达过即退场（被说的内容已进对话史）。 */
+  releaseInitiative(peer: string, id: string, now = Date.now()) {
+    this.sql
+      .prepare(
+        "UPDATE initiatives SET state='expressed',released_at=?,updated_at=? WHERE peer_id=? AND id=?",
+      )
+      .run(now, now, peer, id);
+  }
+  dropInitiative(peer: string, id: string, now = Date.now()) {
+    this.sql
+      .prepare(
+        "UPDATE initiatives SET state='dropped',dropped_at=?,updated_at=? WHERE peer_id=? AND id=?",
+      )
+      .run(now, now, peer, id);
+  }
+  holdInitiative(peer: string, id: string, now = Date.now()) {
+    this.sql
+      .prepare("UPDATE initiatives SET state='waiting',updated_at=? WHERE peer_id=? AND id=?")
+      .run(now, peer, id);
+  }
+  /** 来源已不存在（消息被删/记忆被替代）的想法自动退场。无来源的想法
+   *  （空闲碎碎念，muse:seeded）没有可失效的锚点，原样保留。 */
+  expireInitiatives(peer: string, isValidSource: (id: string) => boolean, now = Date.now()) {
+    const rows = this.sql
+      .prepare("SELECT id,sources FROM initiatives WHERE peer_id=? AND state IN ('idle','waiting')")
+      .all(peer) as Row[];
+    for (const row of rows) {
+      const sources = parse<string[]>(row.sources, []);
+      if (sources.length && sources.every((s) => !isValidSource(s)))
+        this.sql
+          .prepare("UPDATE initiatives SET state='dropped',dropped_at=?,updated_at=? WHERE id=?")
+          .run(now, now, String(row.id));
+    }
+  }
+  /** 已结束的想法保留 7 天供调试回看，之后清掉。 */
+  pruneInitiatives(now = Date.now()): number {
+    const cutoff = now - 7 * 86400000;
+    const gone = this.sql
+      .prepare("DELETE FROM initiatives WHERE state IN ('expressed','dropped') AND updated_at < ?")
+      .run(cutoff);
+    return Number(gone.changes);
+  }
+
   // ---------- 心情 ----------
 
   private moodState(raw: Partial<MoodState> | undefined): MoodState {
@@ -2198,7 +2393,9 @@ export class Store {
       .map((r) => String(r.content).replace(/\s+/g, ' ').trim())
       .filter(Boolean);
   }
-  /** 读空气：最后一条用户消息之后发出的主动消息（按任务去重）。 */
+  /** 读空气：最后一条用户消息之后发出的主动消息（按任务去重）。计数没有
+   *  人工上限：冷却时长由 runtime 的 silenceCooldownMs 按 streak 指数拉长
+   *  并封顶，这里若再 LIMIT 会让"三次以上"永远测不到。 */
   unansweredProactiveStreak(peer: string): number {
     const lastUser = this.sql
       .prepare(
@@ -2211,9 +2408,9 @@ export class Store {
       .prepare(
         `SELECT MAX(m.created_at) AS created_at FROM outbox o JOIN messages m ON m.id=o.id
          WHERE o.peer_id=? AND o.status='sent' AND o.task_id IN (SELECT id FROM tasks WHERE kind='proactive')
-         GROUP BY o.task_id ORDER BY created_at DESC LIMIT ?`,
+         GROUP BY o.task_id ORDER BY created_at DESC LIMIT 12`,
       )
-      .all(peer, PROACTIVE_IGNORE_LIMIT) as Row[];
+      .all(peer) as Row[];
     let streak = 0;
     for (const row of rows) {
       if (Number(row.created_at) < lastUserAt) break;

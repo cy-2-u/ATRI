@@ -1,4 +1,11 @@
-import type { MemoryUpdate, OpenLoopInput, ReplyPart, SoftThreadInput } from '../db/index.js';
+import type {
+  MemoryUpdate,
+  OpenLoopInput,
+  ReplyPart,
+  SoftThreadInput,
+  InitiativeInput,
+  InitiativeKind,
+} from '../db/index.js';
 import { epochOfWallTime } from '../db/index.js';
 import {
   MAX_REPLY_PARTS,
@@ -31,6 +38,9 @@ export interface ParsedReply {
   threads: SoftThreadInput[];
   resolveThreads: string[];
   askedThreads: string[];
+  /** 主动 v2：聊天中形成的新想法（"这个改天想跟他说"）。来源必须是
+   *  本轮可见 ID；由 runtime 落库为持久想法，事件到达时再评估表达。 */
+  initiatives: InitiativeInput[];
   moodPulse?: { valence: number; energy: number; patience?: number; reason?: string };
   /** 本轮进入提示词的记忆 id，运行时据此记演练。 */
   pickedMemoryIds?: string[];
@@ -310,6 +320,33 @@ export function resolveDue(
     if (named || sameDay > now) return sameDay;
     return localWallTime(now, offset + 1, hour, minute, timeZone);
   }
+  // "周六 20:00" / "星期日"：未来 7 天内的下一个该星期几（今天恰是该
+  // 星期几且时间已过则滚到下周）。
+  const weekdayMatch = /^(?:周|星期)([一二三四五六日天])\s*(?:(\d{1,2})(?::(\d{2}))?)?$/.exec(text);
+  if (weekdayMatch) {
+    const map: Record<string, number> = { 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 日: 0, 天: 0 };
+    const target = map[weekdayMatch[1]!];
+    const hour = Number(weekdayMatch[2] ?? 9),
+      minute = Number(weekdayMatch[3] ?? 0);
+    if (target === undefined || hour > 23 || minute > 59) return undefined;
+    const todayParts = new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      weekday: 'short',
+    }).formatToParts(new Date(now));
+    const shortToNumber: Record<string, number> = {
+      Sun: 0,
+      Mon: 1,
+      Tue: 2,
+      Wed: 3,
+      Thu: 4,
+      Fri: 5,
+      Sat: 6,
+    };
+    const current = shortToNumber[todayParts.find((p) => p.type === 'weekday')!.value] ?? 0;
+    let offset = (target - current + 7) % 7;
+    if (offset === 0 && localWallTime(now, 0, hour, minute, timeZone) <= now) offset = 7;
+    return localWallTime(now, offset, hour, minute, timeZone);
+  }
   // "09-20 10:00"：今年已过则排到明年。
   const md = /^(\d{1,2})-(\d{1,2})(?:\s+(\d{1,2})(?::(\d{2}))?)?$/.exec(text);
   if (md) {
@@ -390,6 +427,34 @@ export function parseMoodPulse(
   };
 }
 
+/** 模型声明的新想法：topicKey 必填（同一主题换说法不重复立项），
+ *  meaning 是"想传达什么"，来源必须本轮可见。 */
+export function parseInitiatives(value: unknown, available?: Set<string>): InitiativeInput[] {
+  if (!Array.isArray(value)) return [];
+  const kinds: InitiativeKind[] = ['share', 'care', 'ask', 'muse'];
+  return value.slice(0, 3).flatMap((v) => {
+    if (!v || typeof v !== 'object') return [];
+    const item = v as Record<string, unknown>;
+    if (typeof item.topicKey !== 'string' || !item.topicKey.trim()) return [];
+    if (typeof item.meaning !== 'string' || !item.meaning.trim()) return [];
+    if (typeof item.kind !== 'string' || !kinds.includes(item.kind as InitiativeKind)) return [];
+    const sources = Array.isArray(item.sources)
+      ? item.sources.filter((s: unknown): s is string => typeof s === 'string')
+      : [];
+    if (!sources.length) return [];
+    if (available && !sources.every((id: string) => available.has(id))) return [];
+    return [
+      {
+        topicKey: item.topicKey.trim().slice(0, 120),
+        kind: item.kind as InitiativeKind,
+        meaning: item.meaning.trim().slice(0, 300),
+        sources: sources.slice(0, 10),
+        expectReply: item.expectReply === true,
+      },
+    ];
+  });
+}
+
 export function parseReply(
   text: string,
   stickers: Sticker[],
@@ -426,6 +491,7 @@ export function parseReply(
         threads: [],
         resolveThreads: [],
         askedThreads: [],
+        initiatives: [],
       };
     }
     throw new Error('回复格式无效');
@@ -473,6 +539,7 @@ export function parseReply(
     threads: parseSoftThreads(raw.threads),
     resolveThreads,
     askedThreads,
+    initiatives: parseInitiatives(raw.initiatives),
     ...(askedLoops ? { askedLoops } : {}),
     ...(moodPulse ? { moodPulse } : {}),
   };

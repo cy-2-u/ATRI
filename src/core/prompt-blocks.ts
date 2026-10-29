@@ -1,5 +1,5 @@
 import type { Message, OpenLoop, SoftThread } from '../db/index.js';
-import { sourceFormatter } from './time.js';
+import { sourceFormatter, vagueDays } from './time.js';
 import { STICKER_RECENT_SHOWN, PROMPT_STICKERS } from './constants.js';
 import type { Sticker } from './reply.js';
 
@@ -76,7 +76,7 @@ export function renderSoftThreads(threads: SoftThread[], now: number): string {
     .map((t) => {
       const label = t.kind === 'promise' ? '你答应过' : '对方提过';
       const asked = t.asked ? '，已经问过一次，别再追问，只有对方主动提起时才了结' : '';
-      return `- [id:${t.id}] ${label}：${t.content}（${age(t.created_at)} 天前记下的${asked}）`;
+      return `- [id:${t.id}] ${label}：${t.content}（${vagueDays(age(t.created_at))}前记下的${asked}）`;
     })
     .join('\n')}\nthreads/resolveThreads/askedThreads 的字段用法见上方对话规则。`;
 }

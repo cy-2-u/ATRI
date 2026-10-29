@@ -96,12 +96,10 @@ export const DIARY_GAP_MAX_TOKENS = 700;
 
 // ---------- 主动联系 ----------
 
-export const PROACTIVE_JITTER_MINUTES = 20;
-/** 心搏探询的默认间隔（分钟）：调度器每隔这么久问她一次"此刻想说话吗"。
- *  想不想由她定，代码只管节拍与预算。 */
-export const IMPULSE_INTERVAL_MINUTES = 30;
-/** 每日真发的主动消息上限：护栏不是目标，多数日子自然落在 0–2。 */
-export const PROACTIVE_DAILY_LIMIT = 3;
+/** 空闲碎碎念（muse）：对方沉默多久后才允许立项一次，以及两次立项的
+ *  最小间隔。低频是性格——真人也不会天天主动找人。 */
+export const MUSE_SILENCE_MIN_HOURS = 36;
+export const MUSE_COOLDOWN_DAYS = 4;
 export const OPEN_LOOP_PROMPT_MAX = 5;
 export const SOFT_THREAD_PROMPT_MAX = 3;
 /** 新记忆与既有记忆余弦超过该值时自动替代旧行。 */
@@ -119,8 +117,6 @@ export const HISTORY_LOAD_LIMIT = 160;
 export {
   MEMORY_HIT_COOLDOWN_MINUTES,
   OPEN_LOOP_EXPIRE_DAYS,
-  PROACTIVE_IGNORE_LIMIT,
-  PROACTIVE_IGNORE_COOLDOWN_DAYS,
   SOFT_THREAD_EXPIRE_DAYS,
   SOFT_THREAD_MAX,
   SOFT_THREAD_REVISIT_DAYS,

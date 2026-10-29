@@ -381,11 +381,14 @@ test('久别带时段锚点，连续聊天不带', () => {
     weekday: 'long',
   }).format(new Date(lastAt));
   const text = renderTimeGap(now, lastAt, 'Asia/Shanghai');
-  assert.match(text, /已有 3 天/);
+  assert.match(text, /已有\s*约三天/, '3 天起日级计数模糊化（人不会精确数日）');
   assert.match(text, new RegExp(`上次聊天是${weekday}晚上`));
   const recent = renderTimeGap(now, now - 5 * 60000, 'Asia/Shanghai');
   assert.match(recent, /是连续聊天/);
   assert.doesNotMatch(recent, /上次聊天/);
+  // 两天以内仍是精确数（体感准的量级），一周以上落进档位。
+  assert.match(renderTimeGap(now, now - 2 * DAY - 3600000, 'Asia/Shanghai'), /已有2 天/);
+  assert.match(renderTimeGap(now, now - 7 * DAY, 'Asia/Shanghai'), /已有一周左右/);
 });
 
 test('作息择时：主动闲聊落在对方活跃时段', () => {

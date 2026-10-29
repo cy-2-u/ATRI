@@ -36,7 +36,7 @@ import {
   renderTimeGap,
   renderRhythm,
 } from './time.js';
-import { renderMood } from './mood.js';
+import { renderMood, renderSelfHour } from './mood.js';
 import {
   RECALL_QUERY_MESSAGES,
   RECALL_QUERY_MAX_CHARS,
@@ -408,6 +408,7 @@ export class Agent {
       timeLine,
       `本次模式：${task.kind === 'proactive' ? '主动联系，可跳过' : '回应用户消息'}`,
       renderMood(mood, now, baseline),
+      renderSelfHour(currentHour),
       renderRhythm(rhythm, currentHour),
       renderOpenLoops(openLoops, now, this.o.timeZone()),
       renderSoftThreads(softThreads, now),
@@ -566,10 +567,11 @@ export class Agent {
     };
   }
 
-  /** 心搏探询：一次极小的调用问"此刻想不想主动找TA"。材料是时间语境、
-   *  当前心情、到期的约定、熟成的挂念与今天的日记片段——都是现成查询，
-   *  无工具、无历史窗口，前缀缓存命中人格，失败成本趋近于零。
-   *  解析失败按"不想"处理：探询永远不该变成一次报错。 */
+  /** 心搏探询（保留给事件驱动的单想法决策场景）：一次小调用问
+   *  "此刻想不想主动找TA"。材料是时间语境、当前心情、到期的约定、
+   *  熟成的挂念与今天的日记片段——都是现成查询，无工具、无历史窗口，
+   *  前缀缓存命中人格，失败成本趋近于零。解析失败按"不想"处理：探询
+   *  永远不该变成一次报错。 */
   async impulse(peerId: string, signal: AbortSignal): Promise<Impulse> {
     const { store } = this.o;
     const now = Date.now();
@@ -605,7 +607,7 @@ export class Agent {
       .join('\n\n');
     const system = [
       this.o.personaFor?.(peerId) ?? this.o.prompt('persona'),
-      '系统每隔一段时间会问你是否想主动联系对方。真人的冲动是稀疏的：绝大多数时候你并没有在想着找谁，安静是完全正常的选择。只有当你此刻确实有想说的——到期的约定该问了、惦记的事有了自然的由头、今天发生的事让你真的想分享、或者就是单纯想他了——才说想；情绪低落不想应酬、没有具体由头、或刚聊过没多久，都说不想。只输出 JSON：{"want":true/false,"angle":"一句话说你想说什么"}。want 为 false 时 angle 省略。',
+      '系统在事件发生后问你是否想主动联系对方（不是定时打扰）。真人的冲动是稀疏的：绝大多数时候你并没有在想着找谁，安静是完全正常的选择。只有当你此刻确实有想说的——到期的约定该问了、惦记的事有了自然的由头、刚发生的事让你真的想分享、或者就是单纯想他了——才说想；情绪低落不想应酬、没有具体由头、或刚聊过没多久，都说不想。只输出 JSON：{"want":true/false,"angle":"一句话说你想说什么"}。want 为 false 时 angle 省略。',
     ].join('\n\n');
     try {
       const completion = await this.o.model().complete(
@@ -633,6 +635,37 @@ export class Agent {
     } catch {
       return { want: false };
     }
+  }
+
+  /** 想法评估调用：一次裁决全部候选想法。与聊天同一主模型、无工具、
+   *  独立 sessionId（人格前缀进供应商缓存）；解析失败抛给调用方——
+   *  评估失败不是"不想说"，想法保留到下个事件。 */
+  async consider(
+    system: string,
+    material: string,
+    peerId: string,
+    signal: AbortSignal,
+  ): Promise<Completion> {
+    const messages: ModelMessage[] = [
+      { role: 'system', content: system },
+      { role: 'user', content: material },
+    ];
+    const completion = await this.o.model().complete(messages, [], {
+      signal,
+      maxTokens: 1024,
+      sessionId: `atri:${peerId}:consider`,
+    });
+    const now = Date.now();
+    this.o.store.recordUsage(
+      peerId,
+      `consider:${now}`,
+      'consider',
+      completion.inputTokens,
+      completion.outputTokens,
+      /* duration */ 0,
+      completion.cachedTokens,
+    );
+    return completion;
   }
 
   async reply(task: Task, parentSignal?: AbortSignal): Promise<ParsedReply> {
@@ -738,14 +771,19 @@ export class Agent {
         const flashbacks = store.flashbackCandidates(peer.id, now);
         // 探询时她给出的由头：没有它，"想说什么"这个念头会丢在队列里，
         // 开场只能靠日记/闪回碰运气重找——主动消息会突然变得没头没尾。
+        // 想法评估链路（payload.initiative）的由头同源：meaning + 评估
+        // 时模型的补充理由。
         const angle = typeof task.payload.angle === 'string' ? (task.payload.angle as string) : '';
+        const decisionReason =
+          typeof task.payload.reason === 'string' ? (task.payload.reason as string) : '';
         messages.push({
           role: 'user',
           content: [
             '现在是一次主动联系机会。依据已有真实话题决定是否开场，没有合适理由就跳过；如果此刻自己的状态不适合开口（比如很累、不想应酬），也直接跳过，不用勉强。',
             angle
-              ? `你刚才说想说话，想说的是：${angle}。就用这个由头自然开口；如果你自己觉得此刻已经不想说了，仍然可以直接跳过。`
+              ? `你想说的由头：${angle}。就用这个由头自然开口；如果你自己觉得此刻已经不想说了，仍然可以直接跳过。`
               : '',
+            decisionReason ? `当时决定现在说的理由：${decisionReason}。情境变了就不说。` : '',
             lastDiary.length
               ? `你最近日记里的真实感受（引用要自然，别朗读）：\n${lastDiary.join('\n---\n')}`
               : '',

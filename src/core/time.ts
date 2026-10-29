@@ -68,6 +68,19 @@ export function daypart(at: number, timeZone: string): string {
 
 /** 同一 burst（连发）内的消息间隔上限。 */
 export const BURST_WINDOW_MS = 5 * 60000;
+/** 日级天数的口语模糊化（图灵审查修复 #8）：人报"隔了几天"是估的，
+ *  "第三天""整整八天"这种分毫不差的计数是系统读表。数字 >=3 天时按
+ *  邻近天数渲染为"约 N 天"或"好几天"，让模型的措辞带上容差；小时与
+ *  分钟是体感更准的量级，保持精确。 */
+export function vagueDays(days: number): string {
+  if (days < 3) return `${days} 天`;
+  if (days === 3) return '约三天';
+  if (days <= 5) return '好几天';
+  if (days <= 9) return '一周左右';
+  if (days <= 13) return '十来天';
+  if (days <= 20) return '两周多';
+  return '快一个月';
+}
 /** 本轮打断的静默真正开始的时刻：与最新一条比永远是 ~0（它就是触发者），
  *  要回溯过整段连发，找到连发开始之前的那一条。主动消息的间隔从对方
  *  最后一条算起；聊天轮同理——若连发之前只有她自己发过的主动消息
@@ -104,7 +117,7 @@ export function renderTimeGap(now: number, lastAt: number, timeZone: string): st
   }
   const days = Math.max(1, calendarDays(lastAt, now, timeZone));
   const anchor = `${weekdayFormatter(timeZone).format(new Date(lastAt))}${daypart(lastAt, timeZone)}`;
-  return `${moment}（距上一条消息已有 ${days} 天，上次聊天是${anchor}，中间没有聊过天）`;
+  return `${moment}（距上一条消息已有${vagueDays(days)}，上次聊天是${anchor}，中间没有聊过天）`;
 }
 
 /** 对方的习惯活跃时段（近 14 天 24 桶）。 */

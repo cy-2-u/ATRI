@@ -92,7 +92,6 @@ export function fixture(
     proactiveEnabled: false,
     quietStart: 23,
     quietEnd: 8,
-    impulseIntervalMinutes: 30,
     debounceMs: 0,
     maxConcurrentPeers: 2,
     turnTimeoutMs: 5000,

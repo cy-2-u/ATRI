@@ -29,7 +29,7 @@ let impulseMissHits = 0;
 const sim = startSim({
   start: '2026-10-01T09:00:00+08:00',
   stickers: STICKERS,
-  config: { quietStart: 0, quietEnd: 0, proactiveEnabled: true, impulseIntervalMinutes: 30 },
+  config: { quietStart: 0, quietEnd: 0, proactiveEnabled: true },
   transcript: 'simulation-month-transcript.md',
   reply: (ctx) => {
     const all = ctx.all;

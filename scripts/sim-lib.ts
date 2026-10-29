@@ -118,7 +118,6 @@ export function startSim(opts: SimOptions) {
     proactiveEnabled: true,
     quietStart: 0,
     quietEnd: 0,
-    impulseIntervalMinutes: 30,
     debounceMs: 0,
     maxConcurrentPeers: 2,
     turnTimeoutMs: 5000,
