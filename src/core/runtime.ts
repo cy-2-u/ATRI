@@ -899,7 +899,10 @@ export class Runtime {
         // nextBeatAt 只在拍真的排下去（入队）时才写；未排时不能把"下一
         // 拍"推到未来——否则 now < next 永远成立，第一拍永远来不了
         // （v4 上线后心跳从未入队就是这行）。
-        if (this.store.hasPendingTask(peer.id, 'pulse', 'beat')) continue;
+        // beat 键是一次性的（beat:时间戳）：固定键会撞唯一索引——拍完成
+        // 后 done 行仍占着键，INSERT OR IGNORE 静默失败、复活语句又不救
+        // done，心跳就变成 7 天一拍（等 pruneTasks 清行）。
+        if (this.store.hasPendingBeat(peer.id)) continue;
         const next = this.nextBeatAt.get(peer.id);
         if (next !== undefined && now < next) continue;
         const self = this.store.self();
@@ -921,7 +924,7 @@ export class Runtime {
           sinceLastExchangeMs: peer.last_user_at ? now - peer.last_user_at : Infinity,
         });
         this.nextBeatAt.set(peer.id, now + delay);
-        this.store.enqueue(peer.id, 'pulse', 'beat', { beat: true }, now);
+        this.store.enqueue(peer.id, 'pulse', `beat:${now}`, { beat: true }, now);
         this.pump();
       } catch (error) {
         this.options.log?.('联系人调度失败，跳过', {

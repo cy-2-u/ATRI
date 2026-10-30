@@ -100,15 +100,35 @@ test('心跳调度：醒着时 schedule 必须排拍，已排拍的间隔被尊�
   // nextBeatAt 缺省时取 now+30s 再判 now<next，第一拍永远排不上。
   const f = fixture(t, model, { proactiveEnabled: true, sleepStart: 0, sleepEnd: 0 });
   f.runtime.schedule();
-  assert.equal(f.store.hasPendingTask('p1', 'pulse', 'beat'), true, '首次 schedule 就要排第一拍');
+  assert.equal(f.store.hasPendingBeat('p1'), true, '首次 schedule 就要排第一拍');
   // 已有 pending beat 时不得重复入队。
   f.runtime.schedule();
   const rows = f.store.sql
     .prepare(
-      "SELECT count(*) AS n FROM tasks WHERE peer_id='p1' AND kind='pulse' AND dedupe_key='beat'",
+      "SELECT count(*) AS n FROM tasks WHERE peer_id='p1' AND kind='pulse' AND dedupe_key LIKE 'beat:%'",
     )
     .get() as { n: number };
   assert.equal(rows.n, 1, '同一拍去重');
+});
+
+test('心跳调度：一拍完成后必须能排下一拍（done 行不得锁死固定键）', async (t) => {
+  const model = new FakeModel(() => completion({ action: 'nothing' }));
+  const f = fixture(t, model, { proactiveEnabled: true, sleepStart: 0, sleepEnd: 0 });
+  const t0 = Date.now();
+  // 造一条已完成的旧固定键心跳（等价生产现场：上一拍真实跑完，done 行
+  // 留在表里）。旧代码下：固定键 'beat' 被 done 行占住 UNIQUE，
+  // INSERT OR IGNORE 静默失败、复活语句不救 done——下一拍永远排不上，
+  // 心跳退化成 7 天一拍（等 pruneTasks 清行）。
+  const firstId = f.store.enqueue('p1', 'pulse', 'beat', { beat: true }, t0);
+  f.store.finish(firstId, 'done');
+  // 节拍门把下一拍推到未来（≤4 小时上限），用更晚的时钟越过它。
+  f.runtime.schedule(t0 + 5 * 3600000);
+  const beats = f.store.sql
+    .prepare(
+      "SELECT count(*) AS n FROM tasks WHERE peer_id='p1' AND kind='pulse' AND dedupe_key LIKE 'beat:%' AND state IN ('queued','running')",
+    )
+    .get() as { n: number };
+  assert.equal(beats.n, 1, '拍完成后下一拍必须入队');
 });
 
 test('心跳端到端：beat 任务按契约三分，speak 进投递、muse 进想法池', async (t) => {

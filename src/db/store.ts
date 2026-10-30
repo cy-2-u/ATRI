@@ -428,6 +428,18 @@ export class Store {
         .get(peer, kind, key),
     );
   }
+  /** 心跳拍是否有在途任务：beat 键是一次性的（beat:时间戳），同键精确
+   *  匹配防不了"上拍已完成、新拍要排"——done 行不算 pending，但它的键
+   *  仍占着唯一索引。前缀匹配挡住拍与拍的连发。 */
+  hasPendingBeat(peer: string): boolean {
+    return Boolean(
+      this.sql
+        .prepare(
+          "SELECT 1 FROM tasks WHERE peer_id=? AND kind='pulse' AND dedupe_key LIKE 'beat:%' AND state IN ('queued','running') LIMIT 1",
+        )
+        .get(peer),
+    );
+  }
   /** 连发合并：同一联系人已有排队中的 chat 就延后其 run_at 并推进 through。 */
   enqueueChat(peer: string, seq: number, debounceMs: number) {
     const existing = this.sql
