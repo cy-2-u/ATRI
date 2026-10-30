@@ -92,7 +92,10 @@ export class WeChatBridge implements Transport {
   }
   login() {
     if (this.loginController && !this.loginController.signal.aborted) return this.status();
-    this.logout();
+    // 已连接时重新扫码是危险操作：不能先 logout——用户点了登录又没扫码，
+    // 现有会话就白丢了，她直接断线。旧会话留到新会话真正拿到手才覆盖，
+    // 取消/超时/失败都原封不动继续用旧会话。
+    const previous = this.session;
     const controller = new AbortController();
     this.loginController = controller;
     this.state = { status: '正在获取二维码' };
@@ -126,8 +129,12 @@ export class WeChatBridge implements Transport {
       })
       .catch((error) => {
         if (!controller.signal.aborted) {
+          // 旧会话还在（没被这次失败的登录抹掉）就恢复它：连接照旧，
+          // 只在状态里说明登录没成。
+          if (previous) this.useSession(previous);
           this.state = {
-            status: '登录失败',
+            ...this.state,
+            status: previous ? this.state.status : '登录失败',
             error: error instanceof Error ? error.message : '登录失败',
           };
           this.loginController = undefined;

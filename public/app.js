@@ -509,16 +509,25 @@ async function loadStatus() {
   const online = state.wechat.status === '已连接';
   $('connection-text').textContent = online ? '微信已连接' : '微信未连接';
   $('connection').classList.toggle('online', online);
-  // Primary action follows state: while connected, logout is the destructive
-  // primary and re-login recedes; disconnected, login is the way forward.
-  $('wechat-login').classList.toggle('primary', !online);
-  $('wechat-login').classList.toggle('ghost', online);
-  $('wechat-logout').classList.toggle('primary', online);
-  $('wechat-logout').classList.toggle('ghost', !online);
-  $('wechat-state').textContent = state.wechat.status;
+  // 她只属于一个人：联系人还在时，登录/断开根本不该出现——误触扫码会把
+  // 现有会话抹掉，她直接断线。删除联系人（全部数据随人而去）之后，这块
+  // 才重新出现，供下一个人扫码。
+  const hasPeer = peers.some((p) => p.channel === 'wechat');
+  const loginActions = $('wechat-actions');
+  loginActions.hidden = hasPeer;
+  $('qr').hidden = hasPeer || !state.wechat.qrData;
+  if (!hasPeer) {
+    // Primary action follows state: while connected, logout is the destructive
+    // primary and re-login recedes; disconnected, login is the way forward.
+    $('wechat-login').classList.toggle('primary', !online);
+    $('wechat-login').classList.toggle('ghost', online);
+    $('wechat-logout').classList.toggle('primary', online);
+    $('wechat-logout').classList.toggle('ghost', !online);
+  }
+  $('wechat-state').textContent = hasPeer ? '已连接（联系人在线）' : state.wechat.status;
   $('wechat-error').textContent =
     state.wechat.error || (!state.config.hasApiKey ? '请先在「设置」里配置模型密钥。' : '');
-  if (state.wechat.qrData) {
+  if (state.wechat.qrData && !hasPeer) {
     if (lastQr !== state.wechat.qrData) {
       $('qr').src = state.wechat.qrData;
       lastQr = state.wechat.qrData;
@@ -677,7 +686,7 @@ async function loadPeers() {
   personaSelects.clear();
   const hadFocus = target.contains(document.activeElement);
   target.replaceChildren();
-  if (!wechatPeers.length) empty(target, '扫码登录后，让朋友发来第一条微信消息。');
+  if (!wechatPeers.length) empty(target, '扫码登录后，让想和她说话的人发来第一条微信消息。');
   for (const peer of wechatPeers) {
     const row = el('div', undefined, 'row peer-row'),
       // ID on its own line (it wraps), status badge + toggle below: mixing a
