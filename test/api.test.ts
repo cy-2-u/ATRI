@@ -85,7 +85,7 @@ function apiFixture(t: TestContext) {
     }
     return { status: response.statusCode, body: json };
   };
-  return { store, settings, runtime, app, call, directory };
+  return { store, settings, runtime, app, call, directory, model };
 }
 
 test('鉴权：未登录 401，登录后放行', async (t) => {
@@ -176,34 +176,56 @@ test('她的状态：/api/self 返回 self、生活流水与想法', async (t) =
   assert.equal(body.thoughts[0]!.meaning, '想随口说一句');
 });
 
-test('试聊接口：入队返回 202，任务可查询', async (t) => {
+test('联系人与记录：history/memories/diary 端点走真实联系人', async (t) => {
   const f = apiFixture(t);
+  const now = Date.now();
+  f.store.ensurePeer('p1', 'wechat', '同学', 'tok', true, now);
+  f.store.ingest('p1', 'api-test-msg-1', '我喜欢喝茶', [], now);
+  // 日记契约要求 sections.sources 指向真实消息 id：模型替身从收到的
+  // 提示词里抽出 [来源 id | …]，回一份带有效来源的日记。
+  f.model.handle = async (messages) => {
+    const all = messages.map((m) => m.content).join('\n');
+    const sourceId = /\[来源 ([^\s|]+) \|/.exec(all)?.[1] ?? '';
+    return completion({
+      sections: sourceId
+        ? [{ content: '今天听他说起喜欢的茶，我认真记住了。', sources: [sourceId] }]
+        : [],
+      memoryUpdates: [],
+    });
+  };
   const login = await f.app.inject({
     method: 'POST',
     url: '/api/login',
     payload: { password: 'test-admin-password-123' },
   });
   const token = cookieOf(login.headers);
-  const sent = await f.app.inject({
-    method: 'POST',
-    url: '/api/chat',
-    headers: { cookie: `atri_session=${token}` },
-    payload: { content: '在吗', eventId: 'api-test-1' },
-  });
-  assert.equal(sent.statusCode, 202);
-  const { taskId } = sent.json() as { taskId: string };
-  assert.ok(taskId);
+  const asAdmin = async (path: string, method = 'GET') =>
+    f.app.inject({
+      method: method as 'GET',
+      url: path,
+      headers: { cookie: `atri_session=${token}` },
+    });
+  const history = (await (await asAdmin('/api/peers/p1/history')).json()) as {
+    role: string;
+    content: string;
+  }[];
+  assert.equal(history.length, 1);
+  assert.equal(history[0]!.content, '我喜欢喝茶');
+  const diary = (await (await asAdmin('/api/peers/p1/diary', 'POST')).json()) as {
+    taskId: string;
+  };
+  assert.ok(diary.taskId);
   const deadline = Date.now() + 10000;
   let state = '';
   while (Date.now() < deadline) {
-    const check = await f.app.inject({
-      method: 'GET',
-      url: `/api/tasks/${taskId}`,
-      headers: { cookie: `atri_session=${token}` },
-    });
-    state = (check.json() as { state: string }).state;
+    const check = (await (
+      await asAdmin(`/api/tasks/${encodeURIComponent(diary.taskId)}`)
+    ).json()) as { state: string };
+    state = check.state;
     if (state === 'done' || state === 'ready') break;
     await new Promise((r) => setTimeout(r, 100));
   }
-  assert.ok(['done', 'ready'].includes(state), `任务完成，实际 ${state}`);
+  assert.ok(['done', 'ready'].includes(state), `日记任务完成，实际 ${state}`);
+  const diaries = (await (await asAdmin('/api/peers/p1/diaries')).json()) as unknown[];
+  assert.equal(diaries.length, 1);
 });

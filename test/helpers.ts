@@ -130,7 +130,7 @@ export function fixture(
     await runtime.stop();
     store.close();
   });
-  store.ensurePeer('p1', 'preview', '同学', '', true);
+  store.ensurePeer('p1', 'wechat', '同学', '', true);
   return { directory, store, model, runtime, delivered, config };
 }
 

@@ -222,38 +222,17 @@ async function smoke() {
   if (!existsSync(serverEntry)) throw new Error('dist/server.js 不存在，先 npm run build');
   const directory = mkdtempSync(join(tmpdir(), 'atri-smoke-'));
   const password = 'smoke-test-password-only';
-  let calls = 0;
   let child;
   let logs = '';
-  let lastRequest;
-  const upstream = createServer(async (request, response) => {
+  const upstream = createServer(async (_request, response) => {
     try {
-      let data = '';
-      for await (const chunk of request) data += chunk;
-      const body = JSON.parse(data);
-      lastRequest = body;
-      calls++;
-      const sourceText = body.messages
-        .map((m) => (typeof m.content === 'string' ? m.content : ''))
-        .join('\n');
-      const sources = [
-        ...new Set([...sourceText.matchAll(/\[来源 ([^\s|]+) \|/g)].map((m) => m[1])),
-      ];
-      const diary = body.messages[0].content.includes('"sections"');
-      const result = diary
-        ? {
-            sections: [{ content: '今天听他说起喜欢的茶，我认真记住了。', sources }],
-            memoryUpdates: [],
-          }
-        : {
-            messages: ['我记住啦，你喜欢喝茶。'],
-            memoryUpdates: [{ content: '喜欢喝茶', kind: 'stated', sources: sources.slice(-1) }],
-          };
       response.writeHead(200, { 'content-type': 'application/json' });
       response.end(
         JSON.stringify({
-          choices: [{ message: { role: 'assistant', content: JSON.stringify(result) } }],
-          usage: { prompt_tokens: 100, completion_tokens: 30 },
+          choices: [
+            { message: { role: 'assistant', content: JSON.stringify({ messages: ['嗯。'] }) } },
+          ],
+          usage: { prompt_tokens: 10, completion_tokens: 2 },
         }),
       );
     } catch (error) {
@@ -314,17 +293,6 @@ async function smoke() {
       assert.ok(response.ok, JSON.stringify(data));
       return data;
     }
-    async function task(id) {
-      const deadline = Date.now() + 15000;
-      while (Date.now() < deadline) {
-        const result = await api('/api/tasks/' + encodeURIComponent(id));
-        if (result.state === 'done') return;
-        if (['failed', 'superseded'].includes(result.state))
-          throw new Error(JSON.stringify(result));
-        await new Promise((r) => setTimeout(r, 100));
-      }
-      throw new Error('任务未完成');
-    }
     assert.equal((await fetch(base + '/healthz')).status, 200);
     const page = await fetch(base + '/');
     assert.match(await page.text(), /与她有关的一切/);
@@ -349,31 +317,10 @@ async function smoke() {
     const artwork = await fetch(base + '/atri.webp');
     assert.equal(artwork.status, 200);
     assert.equal(artwork.headers.get('content-type'), 'image/webp');
-    const chat = await api('/api/chat', 'POST', {
-      content: '我喜欢喝茶',
-      eventId: 'smoke-message',
-    });
-    await task(chat.taskId);
-    const history = await api('/api/peers/preview%3Adefault/history');
-    assert.equal(history.length, 2);
-    assert.equal(history[1].role, 'assistant');
-    assert.equal(calls, 1);
-    assert.equal(lastRequest.max_tokens, 1024);
-    assert.equal(lastRequest.temperature, 0.4);
-    await api('/api/chat', 'POST', { content: '我喜欢喝茶', eventId: 'smoke-message' });
-    assert.equal(calls, 1, '重复事件键被去重');
-    const memories = await api('/api/peers/preview%3Adefault/memories');
-    assert.equal(memories.length, 1);
-    const diary = await api('/api/peers/preview%3Adefault/diary', 'POST');
-    await task(diary.taskId);
-    assert.equal(lastRequest.max_tokens, 1024);
-    assert.equal((await api('/api/peers/preview%3Adefault/diaries')).length, 1);
-    assert.equal((await api('/api/status')).recentUsage.length, 2);
+    assert.equal((await api('/api/status')).recentUsage.length, 0);
     const backup = await api('/api/backup', 'POST');
-    assert.equal(backup.messages, 2);
-    console.log(
-      'Smoke passed: built server, login, artwork, live model settings, durable chat, dedup, memory, diary, usage, backup.',
-    );
+    assert.equal(backup.messages, 0);
+    console.log('Smoke passed: built server, login, artwork, live model settings, config, backup.');
   } finally {
     if (child && child.exitCode === null) {
       const exited = once(child, 'exit');

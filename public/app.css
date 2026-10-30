@@ -952,10 +952,6 @@ svg {
   background: var(--ok);
 }
 
-.peer-item .peer-dot.preview {
-  background: var(--accent);
-}
-
 .chat-main {
   display: flex;
   flex-direction: column;

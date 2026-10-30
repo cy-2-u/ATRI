@@ -67,8 +67,6 @@ const runtime = new Runtime({
   embeddingModel: () => settings.embedding().model,
 });
 const app = createServer({ store, settings, stickers, bridge, runtime, sandbox });
-// 试聊的 preview 联系人要先存在，管理页列联系人时 GET 保持无写入。
-store.ensurePeer('preview:default', 'preview', '本地试聊', '', true);
 let stopping = false;
 async function shutdown() {
   if (stopping) return;

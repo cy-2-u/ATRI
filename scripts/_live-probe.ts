@@ -79,8 +79,8 @@ const runtime = new Runtime({
   },
   log: (m, d) => console.warn('[runtime]', m, d ?? ''),
 });
-const PEER = 'preview:probe';
-store.ensurePeer(PEER, 'preview', '探针', '', true);
+const PEER = 'wechat:probe:user';
+store.ensurePeer(PEER, 'wechat', '探针', '', true);
 
 const lines = process.argv.slice(2);
 const turns = lines.length

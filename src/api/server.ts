@@ -1,6 +1,6 @@
 import Fastify from 'fastify';
 import QRCode from 'qrcode';
-import { createHash, randomBytes, timingSafeEqual, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Store } from '../db/index.js';
@@ -388,11 +388,7 @@ export function createServer(o: ServerOptions) {
 
   // ---------- 联系人 ----------
 
-  app.get('/api/peers', () =>
-    // 试聊联系人在启动时 ensurePeer：读接口逐次写入还会给 DNS 重绑探测
-    // 白送一次数据库写。
-    o.store.peers().map(({ context_token, ...peer }) => peer),
-  );
+  app.get('/api/peers', () => o.store.peers().map(({ context_token, ...peer }) => peer));
   app.put<{ Params: { id: string }; Body: { approved: boolean } }>('/api/peers/:id', (request) => {
     const input = request.body ?? {};
     if (typeof input.approved !== 'boolean' || !o.store.peer(request.params.id))
@@ -416,9 +412,9 @@ export function createServer(o: ServerOptions) {
     return { ok: true };
   });
   // 删除联系人与其全部记录。不静默幂等：行已不在时该报错，让运维知道
-  // 删的是已经不存在的东西。
+  // 删的是已经不存在的东西。她只属于一个人：删掉唯一联系人 = 全部数据
+  // 随人而去（她的全局生活流水与心情保留，那是她自己的）。
   app.delete<{ Params: { id: string } }>('/api/peers/:id', (request) => {
-    if (request.params.id.startsWith('preview:')) throw new Error('本地试聊是内置联系人，不能删除');
     const removed = o.store.deletePeer(request.params.id);
     if (!removed) throw new Error('联系人不存在');
     o.runtime.pump();
@@ -501,20 +497,8 @@ export function createServer(o: ServerOptions) {
     },
   );
 
-  // ---------- 试聊与任务 ----------
+  // ---------- 任务 ----------
 
-  // 试聊用 preview 联系人：启动时建好，GET /api/peers 无需写入。
-  app.post<{ Body: { content: string; eventId?: string } }>('/api/chat', (request, reply) => {
-    const peer = o.store.ensurePeer('preview:default', 'preview', '本地试聊', '', true);
-    const input = request.body ?? {};
-    const event = o.runtime.accept(
-      peer.id,
-      input.eventId ? text(input.eventId, 100) : randomUUID(),
-      text(input.content),
-    );
-    reply.code(202);
-    return { peerId: peer.id, messageId: event.message.id, taskId: event.taskId ?? null };
-  });
   app.get<{ Params: { id: string } }>('/api/tasks/:id', (request) => {
     const task = o.store.taskById(request.params.id);
     if (!task) throw new Error('任务不存在');

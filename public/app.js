@@ -31,7 +31,7 @@ const formatNumber = (value) => (Number.isFinite(value) ? value.toLocaleString('
 
 let authenticated = false,
   currentTab = 'chat',
-  currentPeer = 'preview:default',
+  currentPeer = '',
   peers = [],
   personaState = { list: [], defaultId: '', bindings: {} },
   personaSelected = '',
@@ -72,19 +72,6 @@ function el(tag, text, className) {
   if (text !== undefined) node.textContent = text;
   if (className) node.className = className;
   return node;
-}
-
-/** Stable random id that also works outside a secure context.
- *  `crypto.randomUUID` only exists on HTTPS or localhost, so opening the admin
- *  page over a LAN address (ATRI_BIND=0.0.0.0, phone on the same network) made
- *  "send" throw an unhelpful TypeError and the trial chat unusable. */
-function uuid() {
-  if (crypto.randomUUID) return crypto.randomUUID();
-  const bytes = crypto.getRandomValues(new Uint8Array(16));
-  bytes[6] = (bytes[6] & 0x0f) | 0x40;
-  bytes[8] = (bytes[8] & 0x3f) | 0x80;
-  const hex = [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 function button(label, handler, classes = 'ghost small') {
@@ -637,7 +624,7 @@ async function loadStatus() {
       return row;
     }),
   );
-  if (!state.recentUsage.length) empty($('recent-usage'), '试聊一次后，这里会显示实际用量。');
+  if (!state.recentUsage.length) empty($('recent-usage'), '聊过之后，这里会显示实际用量。');
   return state;
 }
 
@@ -676,13 +663,12 @@ async function loadPeers() {
   if (seq !== peersRequestSeq || !authenticated) return;
   peers = loaded;
   const wechatPeers = peers.filter((p) => p.channel === 'wechat');
-  const previewPeer = peers.find((p) => p.id === 'preview:default');
   const signature = peers
     .map((p) => [p.id, p.address, p.approved, p.persona_id ?? ''].join(':'))
     .join('|');
   const changed = signature !== peersSnapshot;
   peersSnapshot = signature;
-  if (changed) renderChatPeerList(previewPeer);
+  if (changed) renderChatPeerList();
   const target = $('peers');
   if (!changed && target.childNodes.length) {
     refreshJournalPeerSelect(wechatPeers);
@@ -728,7 +714,7 @@ async function loadPeers() {
           // The chat panel polls by peer id, so pointing it elsewhere is what
           // stops the next tick from requesting history for a deleted peer.
           if (currentPeer === peer.id) {
-            currentPeer = 'preview:default';
+            currentPeer = '';
             chatSnapshot = '';
             await loadChat();
           }
@@ -747,13 +733,6 @@ async function loadPeers() {
     );
     target.append(row);
   }
-  if (previewPeer) {
-    const row = el('div', undefined, 'row peer-row'),
-      heading = el('div', undefined, 'row-title');
-    heading.append(el('span', '本地试聊'));
-    row.append(heading, buildPersonaSelect(previewPeer));
-    target.append(row);
-  }
   if (hadFocus) target.querySelector('button, [aria-haspopup], input')?.focus();
   refreshJournalPeerSelect(wechatPeers);
 }
@@ -769,46 +748,42 @@ function shortAddress(address) {
 }
 
 function refreshJournalPeerSelect(wechatPeers) {
-  const options = [
-    { value: 'preview:default', label: '本地试聊' },
-    ...wechatPeers.map((p) => ({
-      value: p.id,
-      label: shortAddress(p.address),
-      title: p.address,
-    })),
-  ];
+  const options = wechatPeers.map((p) => ({
+    value: p.id,
+    label: shortAddress(p.address),
+    title: p.address,
+  }));
   const current = journalDropdown.value;
-  journalDropdown.setOptions(
-    options,
-    options.some((o) => o.value === current) ? current : 'preview:default',
-  );
+  const fallback = options[0]?.value ?? '';
+  journalDropdown.setOptions(options, options.some((o) => o.value === current) ? current : fallback);
 }
 
-function renderChatPeerList(previewPeer) {
+function renderChatPeerList() {
   const list = $('chat-peer-list');
   list.replaceChildren();
-  const items = [];
-  if (previewPeer) items.push({ id: 'preview:default', address: '本地试聊', dot: 'preview' });
-  for (const peer of peers.filter((p) => p.channel === 'wechat'))
-    items.push({ id: peer.id, address: peer.address, dot: peer.approved ? 'ok' : '' });
-  for (const item of items) {
+  if (!peers.some((p) => p.channel === 'wechat'))
+    empty(list, '扫码登录后，让她的朋友（就是你）发来第一条微信消息。');
+  for (const peer of peers.filter((p) => p.channel === 'wechat')) {
     const node = el(
       'button',
       undefined,
-      'peer-item' + (item.id === currentPeer ? ' selected' : ''),
+      'peer-item' + (peer.id === currentPeer ? ' selected' : ''),
     );
     node.type = 'button';
-    node.append(el('span', undefined, 'peer-dot ' + item.dot), el('span', item.address));
+    node.append(
+      el('span', undefined, 'peer-dot ' + (peer.approved ? 'ok' : '')),
+      el('span', peer.address),
+    );
     node.onclick = () => {
-      if (currentPeer === item.id) return;
-      currentPeer = item.id;
+      if (currentPeer === peer.id) return;
+      currentPeer = peer.id;
       chatSnapshot = '';
       // Reset the announce cursor too: carrying the previous contact's ids over
       // would announce a slice of the wrong conversation.
       chatAnnouncedIds = null;
       waitingReply = false;
       waitingSince = 0;
-      renderChatPeerList(previewPeer);
+      renderChatPeerList();
       perform(loadChat);
     };
     list.append(node);
@@ -825,11 +800,7 @@ function buildPersonaSelect(peer) {
       perform(async () => {
         await api('/api/peers/' + enc(peer.id) + '/persona', 'PUT', { personaId: value });
         personaState.bindings[peer.id] = value;
-        show(
-          peer.id === 'preview:default'
-            ? '试聊人格已更新，下一次对话生效。'
-            : '该联系人的人格已更新。',
-        );
+        show('该联系人的人格已更新。');
       }),
   });
   personaSelects.set(peer.id, dropdown);
@@ -982,57 +953,28 @@ async function loadChat() {
       .map((m) => m.content)
       .join(' ');
   }
-  const isPreview = peer === 'preview:default';
-  $('chat-form').hidden = !isPreview;
   $('chat-title').textContent =
-    peers.find((p) => p.id === peer)?.address || (isPreview ? '本地试聊' : peer);
-  $('chat-sub').textContent = isPreview ? '本地试聊 · 人格生效中' : '微信联系人';
-  $('chat-hint').textContent = isPreview
-    ? '这里的对话不会发送到微信，用来试试她的反应。'
-    : '这里查看微信记录；要交谈，直接在微信里发消息即可。';
-  $('chat-input').placeholder = isPreview ? '说点什么……' : '在微信里与她交谈';
+    peers.find((p) => p.id === peer)?.address || '联系人';
+  $('chat-sub').textContent = peer ? '微信联系人' : '';
+  $('chat-hint').textContent = '这里查看微信记录；要交谈，直接在微信里发消息即可。';
 }
 
-const chatInput = $('chat-input');
-chatInput.addEventListener('input', () => {
-  chatInput.style.height = 'auto';
-  chatInput.style.height = Math.min(chatInput.scrollHeight, 160) + 'px';
-});
-chatInput.addEventListener('keydown', (event) => {
-  if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
-    event.preventDefault();
-    $('chat-form').requestSubmit();
-  }
-});
-$('chat-form').onsubmit = (event) => {
-  event.preventDefault();
-  const content = chatInput.value.trim();
-  if (!content) return;
-  perform(async () => {
-    const result = await api('/api/chat', 'POST', {
-      content,
-      eventId: uuid(),
-    });
-    lastTask = result.taskId;
-    waitingReply = true;
-    waitingSince = Date.now();
-    chatInput.value = '';
-    chatInput.style.height = 'auto';
-    chatSnapshot = '';
-    await loadChat();
-    chatInput.focus();
-  }, $('chat-form').querySelector('button[type="submit"]'));
-};
-
 async function loadJournal() {
-  const peer = journalDropdown.value || 'preview:default';
+  const peer = journalDropdown.value;
   const seq = ++journalRequestSeq;
+  if (!peer) {
+    journalSnapshot = '';
+    const journal = $('diaries');
+    journal.replaceChildren();
+    empty(journal, '扫码登录后，这里会出现她的日记、记忆和惦记的事。');
+    return;
+  }
   const [diaries, memories, loops] = await Promise.all([
     api('/api/peers/' + enc(peer) + '/diaries'),
     api('/api/peers/' + enc(peer) + '/memories'),
     api('/api/peers/' + enc(peer) + '/loops'),
   ]);
-  if (seq !== journalRequestSeq || peer !== (journalDropdown.value || 'preview:default')) return;
+  if (seq !== journalRequestSeq || peer !== journalDropdown.value) return;
   const snapshot = JSON.stringify([peer, diaries, memories, loops]);
   if (snapshot === journalSnapshot) return;
   journalSnapshot = snapshot;
@@ -1799,7 +1741,7 @@ function teardownSession() {
   peersSnapshot = '';
   issuesSnapshot = '';
   personaSelects.clear();
-  currentPeer = 'preview:default';
+  currentPeer = '';
   settingsDirtyFlag = false;
   personaDirty = false;
   waitingReply = false;
@@ -1900,8 +1842,8 @@ formatDropdown = createDropdown({
 });
 $('format').append(formatDropdown.root);
 journalDropdown = createDropdown({
-  options: [{ value: 'preview:default', label: '本地试聊' }],
-  value: 'preview:default',
+  options: [],
+  value: '',
   ariaLabel: '选择联系人',
   onChange: () => {
     journalSnapshot = '';

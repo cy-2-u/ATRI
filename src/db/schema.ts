@@ -286,7 +286,7 @@ export const parse = <T>(value: unknown, fallback: T): T => {
   }
 };
 
-export const SCHEMA_VERSION = 11;
+export const SCHEMA_VERSION = 12;
 
 /** 建表 + 迁移链。每个版本一个事务（PRAGMA 会自动提交，分开写会留下
  *  版本与结构不一致的库）。生产库从 v1 一路升上来，新库一次建到最新。 */
@@ -503,6 +503,28 @@ export function migrate(sql: import('node:sqlite').DatabaseSync): void {
       DELETE FROM settings WHERE key LIKE 'silence_cooldown:%' OR key LIKE 'muse_seeded_at:%';`,
     );
     sql.exec('PRAGMA user_version=11;');
+    sql.exec('COMMIT');
+  }
+  if (openedAt < 12) {
+    // 她只属于一个人：本地试聊（preview 渠道）整体退场，心跳/日记不再漏进
+    // 无人渠道。子表按 deletePeer 的同一依赖序删（outbox 引用 messages 与
+    // tasks，必须最先；search_index 按 search_docs 的 rowid 删）。
+    sql.exec('BEGIN IMMEDIATE');
+    sql.exec(
+      `DELETE FROM outbox WHERE peer_id IN (SELECT id FROM peers WHERE channel='preview');
+      DELETE FROM diary_sections WHERE peer_id IN (SELECT id FROM peers WHERE channel='preview');
+      DELETE FROM tasks WHERE peer_id IN (SELECT id FROM peers WHERE channel='preview');
+      DELETE FROM memory_embeddings WHERE peer_id IN (SELECT id FROM peers WHERE channel='preview');
+      DELETE FROM memories WHERE peer_id IN (SELECT id FROM peers WHERE channel='preview');
+      DELETE FROM open_loops WHERE peer_id IN (SELECT id FROM peers WHERE channel='preview');
+      DELETE FROM soft_threads WHERE peer_id IN (SELECT id FROM peers WHERE channel='preview');
+      DELETE FROM initiatives WHERE peer_id IN (SELECT id FROM peers WHERE channel='preview');
+      DELETE FROM messages WHERE peer_id IN (SELECT id FROM peers WHERE channel='preview');
+      DELETE FROM search_index WHERE rowid IN (SELECT rowid FROM search_docs WHERE peer_id IN (SELECT id FROM peers WHERE channel='preview'));
+      DELETE FROM search_docs WHERE peer_id IN (SELECT id FROM peers WHERE channel='preview');
+      DELETE FROM peers WHERE channel='preview';`,
+    );
+    sql.exec('PRAGMA user_version=12;');
     sql.exec('COMMIT');
   }
 }

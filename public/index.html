@@ -149,27 +149,13 @@
           <section class="chat-main">
             <header class="chat-head">
               <div class="chat-head-name">
-                <strong id="chat-title">本地试聊</strong>
+                <strong id="chat-title">联系人</strong>
                 <span id="chat-sub" class="hint"></span>
               </div>
               <div id="chat-badges" class="badge-row"></div>
             </header>
             <div id="messages" class="messages"></div>
             <div id="messages-live" class="sr-only" aria-live="polite" aria-atomic="true"></div>
-            <form id="chat-form" class="composer" hidden>
-              <textarea
-                id="chat-input"
-                rows="1"
-                maxlength="4000"
-                placeholder="说点什么……"
-              ></textarea>
-              <button class="btn primary send" type="submit" aria-label="发送">
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M22 2 11 13" />
-                  <path d="M22 2 15 22l-4-9-9-4z" />
-                </svg>
-              </button>
-            </form>
             <p id="chat-hint" class="hint chat-hint"></p>
           </section>
         </section>

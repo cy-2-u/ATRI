@@ -198,6 +198,12 @@ export class WeChatBridge implements Transport {
     if (!isUserInbound(message) || message.group_id || !message.from_user_id) return;
     const address = message.from_user_id,
       peerId = `wechat:${accountId}:${address}`;
+    // 她只属于一个人：已有其他微信联系人时，后来者的消息直接忽略——
+    // 不入库、不建行、不回复。同一联系人的重复消息照常（token 会更新）。
+    const other = this.store
+      .peers()
+      .some((p) => p.channel === 'wechat' && p.id !== peerId && p.approved);
+    if (other) return;
     this.store.ensurePeer(
       peerId,
       'wechat',
@@ -247,7 +253,6 @@ export class WeChatBridge implements Transport {
   }
 
   async send(peer: Peer, part: ReplyPart, clientId: string) {
-    if (peer.channel === 'preview') return;
     if (!this.client || !this.session || !peer.id.startsWith(`wechat:${this.session.accountId}:`))
       throw new DeliveryError('微信账号未连接或与会话不匹配', true);
     if (!peer.context_token)
