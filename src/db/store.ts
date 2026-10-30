@@ -271,6 +271,65 @@ export class Store {
     this.removeMediaFiles(mediaFiles);
     return before;
   }
+  /** 重新扫码后 bot 自己的 accountId 会变，而联系人 id 里编着它
+   *  （wechat:<accountId>:<address>）——不改名，send 的会话前缀校验
+   *  就永远拒发。把联系人与全部子表搬到新账号 id 下（外键无级联，
+   *  子表逐个 UPDATE；全部在一个事务里）。 */
+  migratePeerAccount(oldId: string, newId: string): boolean {
+    if (oldId === newId || this.peer(newId)) return false;
+    if (!this.peer(oldId)) return false;
+    this.sql.exec('BEGIN IMMEDIATE');
+    // 互引用的搬家家（父键先改子表就悬空，子表先搬父键还没有）：
+    // defer 到 COMMIT 才查外键，中间怎么搬都合法。
+    this.sql.exec('PRAGMA defer_foreign_keys=ON');
+    try {
+      for (const table of [
+        'outbox',
+        'diary_sections',
+        'tasks',
+        'memory_embeddings',
+        'memories',
+        'open_loops',
+        'soft_threads',
+        'initiatives',
+        'messages',
+        'search_docs',
+      ])
+        this.sql.prepare(`UPDATE ${table} SET peer_id=? WHERE peer_id=?`).run(newId, oldId);
+      // FTS 行不能 UPDATE，同 rowid 重插也会撞：先删旧行再按搬好的
+      // search_docs 重建（rowid 两边同步）。
+      this.sql
+        .prepare('DELETE FROM search_index WHERE rowid IN (SELECT rowid FROM search_docs)')
+        .run();
+      this.sql
+        .prepare(
+          `INSERT INTO search_index(rowid,id,peer_id,kind,content,created_at)
+           SELECT rowid,id,peer_id,kind,content,created_at FROM search_docs`,
+        )
+        .run();
+      this.sql.prepare('UPDATE peers SET id=? WHERE id=?').run(newId, oldId);
+      this.sql.exec('COMMIT');
+    } catch (error) {
+      this.sql.exec('ROLLBACK');
+      throw error;
+    }
+    // 旧账号名下的游标/心情设置键跟着搬家（真实数据，不是缓存）。
+    for (const suffix of ['diary_cursor', 'mood']) {
+      const row = this.sql
+        .prepare('SELECT value FROM settings WHERE key=?')
+        .get(`${suffix}:${oldId}`) as { value: string } | undefined;
+      if (row) {
+        this.setSetting(`${suffix}:${newId}`, row.value);
+        this.removeSetting(`${suffix}:${oldId}`);
+      }
+    }
+    // 旧账号名下的缓存作废（重建按需再来）。
+    this.dfCache.delete(oldId);
+    this.rhythmCache.delete(oldId);
+    this.memoryCache.delete(oldId);
+    this.usageCache = undefined;
+    return true;
+  }
   /** 删除刚被清空的行所引用的媒体文件（隐私与磁盘都要）。 */
   private removeMediaFiles(paths: string[]): void {
     if (this.path === ':memory:') return;

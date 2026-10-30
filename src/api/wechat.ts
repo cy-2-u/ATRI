@@ -123,6 +123,15 @@ export class WeChatBridge implements Transport {
           baseUrl: result.baseUrl || this.settings.ilinkBase(),
           accountId,
         };
+        // bot 自己的标识每次登录都可能变，而联系人 id 里编着它——不搬家，
+        // send 的会话前缀校验会拒发所有旧联系人（她的记忆看起来"失联"）。
+        if (previous && previous.accountId !== accountId)
+          for (const peer of this.store.peers())
+            if (peer.id.startsWith(`wechat:${previous.accountId}:`))
+              this.store.migratePeerAccount(
+                peer.id,
+                peer.id.replace(`wechat:${previous.accountId}:`, `wechat:${accountId}:`),
+              );
         this.store.setSetting('wechat:session', session);
         this.useSession(session);
         this.loginController = undefined;

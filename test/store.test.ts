@@ -100,6 +100,25 @@ test('删除联系人：子表全部连带（含想法外键回归）', (t) => {
   assert.equal(f.store.deletePeer('p1'), undefined, '重复删除返回 undefined');
 });
 
+test('账号迁移：bot 标识变化时联系人及全部数据搬到新 id', (t) => {
+  const f = fixture(t);
+  const now = Date.now();
+  const { message } = f.store.ingest('p1', 'e1', '我下周去海边', [], now - HOUR);
+  f.store.addOpenLoop(
+    'p1',
+    { content: '提醒他防晒', dueAt: now + DAY, sources: [message.id] },
+    now,
+  );
+  const ok = f.store.migratePeerAccount('p1', 'p2');
+  assert.ok(ok, '迁移应成功');
+  assert.equal(f.store.peer('p1'), undefined);
+  assert.ok(f.store.peer('p2'), '联系人已在新 id');
+  assert.equal(f.store.history('p2').length, 1, '消息随行');
+  assert.equal(f.store.openLoops('p2').length, 1, '开环随行');
+  assert.equal(f.store.migratePeerAccount('p2', 'p2'), false, '同名不迁移');
+  assert.equal(f.store.migratePeerAccount('ghost', 'p3'), false, '源不存在不迁移');
+});
+
 test('开环：合并、到期窗口、yearly 滚动、过期退场', (t) => {
   const f = fixture(t);
   const now = Date.now();
