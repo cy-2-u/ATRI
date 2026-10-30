@@ -965,6 +965,9 @@ svg {
 
 .chat-head {
   display: flex;
+  /* 窄屏（手机）装不下"长 ID 标题 + 心情徽章"同一行：徽章整行换到标题
+     下方，而不是让标题文字溢出盒子压到徽章底下。 */
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
@@ -977,10 +980,15 @@ svg {
   display: grid;
   line-height: 1.35;
   min-width: 0;
+  flex: 1 1 auto;
 }
 
 .chat-head-name strong {
   font-size: 15px;
+  /* 微信 ID 是 40+ 字符的无空格长串：min-width:0 压缩后必须在盒内断行，
+     否则溢出绘制会与右侧徽章重合（桌面宽、不触发；手机必现）。 */
+  overflow-wrap: anywhere;
+  word-break: break-all;
 }
 
 .messages {
