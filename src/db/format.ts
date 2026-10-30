@@ -47,21 +47,11 @@ export function addYear(at: number, timeZone = 'Asia/Shanghai'): number {
   const daysInTargetMonth = (y: number, m: number) => new Date(Date.UTC(y, m, 0)).getUTCDate();
   const targetDay = Math.min(day, daysInTargetMonth(year + 1, month));
   const asUtc = Date.UTC(year + 1, month - 1, targetDay, hour, minute, second);
-  let result = asUtc;
-  for (let i = 0; i < 2; i++) {
-    const offsetName = new Intl.DateTimeFormat('en-GB', { timeZone, timeZoneName: 'longOffset' })
-      .formatToParts(new Date(result))
-      .find((x) => x.type === 'timeZoneName')!.value;
-    const match = /GMT([+-])(\d{2}):?(\d{2})?/.exec(offsetName);
-    const sign = match?.[1] === '-' ? -1 : 1;
-    const oh = Number(match?.[2] ?? 0),
-      om = Number(match?.[3] ?? 0);
-    result = asUtc - sign * (oh * 3600000 + om * 60000);
-  }
-  return result;
+  return resolveOffset(asUtc, timeZone);
 }
 
-/** 供 DST 探测复用的偏移解析：epoch = 墙钟 UTC 值 − 该时区偏移。 */
+/** 供 DST 探测复用的偏移解析：epoch = 墙钟 UTC 值 − 该时区偏移。
+ *  两次探测：第一次格式化的偏移可能恰好跨过 DST 切换点。 */
 export function epochOfWallTime(
   year: number,
   month: number,
@@ -73,14 +63,20 @@ export function epochOfWallTime(
   const utc = Date.parse(
     `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00Z`,
   );
-  let result = utc;
+  return resolveOffset(utc, timeZone);
+}
+
+function resolveOffset(asUtc: number, timeZone: string): number {
+  let result = asUtc;
   for (let i = 0; i < 2; i++) {
-    const name = new Intl.DateTimeFormat('en-GB', { timeZone, timeZoneName: 'longOffset' })
+    const offsetName = new Intl.DateTimeFormat('en-GB', { timeZone, timeZoneName: 'longOffset' })
       .formatToParts(new Date(result))
-      .find((p) => p.type === 'timeZoneName')!.value;
-    const match = /GMT([+-])(\d{2}):?(\d{2})?/.exec(name);
+      .find((x) => x.type === 'timeZoneName')!.value;
+    const match = /GMT([+-])(\d{2}):?(\d{2})?/.exec(offsetName);
     const sign = match?.[1] === '-' ? -1 : 1;
-    result = utc - sign * (Number(match?.[2] ?? 0) * 3600000 + Number(match?.[3] ?? 0) * 60000);
+    const oh = Number(match?.[2] ?? 0),
+      om = Number(match?.[3] ?? 0);
+    result = asUtc - sign * (oh * 3600000 + om * 60000);
   }
   return result;
 }

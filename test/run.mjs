@@ -191,6 +191,8 @@ function apiPairs() {
     'GET /atri.webp',
     // 表情面板动态拼接（`/api/stickers/${slug}/image`），app.js 里没有字面量路径。
     'GET /api/stickers/:slug/image',
+    // 她的状态面板数据源（states 抽屉与 /api/self 共用）。
+    'GET /api/self',
   ]);
   for (const route of routes) {
     if (API_ONLY.has(route)) continue;

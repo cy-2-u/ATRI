@@ -8,8 +8,9 @@ const numberSettings = [
   'requestTimeoutSeconds',
   'turnTimeoutSeconds',
   'diaryHour',
-  'quietStart',
-  'quietEnd',
+  'sleepStart',
+  'sleepEnd',
+  'clinginess',
   'maxConcurrentPeers',
   'debounceMs',
   'sandboxSizeMb',
@@ -20,13 +21,11 @@ const purposeName = (value) =>
     chat: '对话',
     diary: '日记',
     notes: '话题整理',
-    proactive: '主动联系',
+    pulse: '心跳',
     chat_tool: '对话·工具查询',
     diary_tool: '日记·工具查询',
     notes_tool: '话题整理·工具查询',
-    proactive_tool: '主动联系·工具查询',
-    impulse: '想法探询',
-    consider: '想法评估',
+    pulse_tool: '心跳·工具查询',
   })[value] || value;
 const formatNumber = (value) => (Number.isFinite(value) ? value.toLocaleString('zh-CN') : '—');
 

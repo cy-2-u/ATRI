@@ -18,7 +18,8 @@ import {
 } from './constants.js';
 
 /** 回复 JSON 的解析与清洗：气泡（含 beat 停顿与内联表情纠错）、记忆更新、
- *  开环与挂念、心情脉冲。代码做形状校验与来源过滤，语义留给模型。 */
+ *  开环与挂念、心情脉冲、心跳输出。代码做形状校验与来源过滤，语义留给
+ *  模型。 */
 
 export interface Sticker {
   slug: string;
@@ -38,8 +39,8 @@ export interface ParsedReply {
   threads: SoftThreadInput[];
   resolveThreads: string[];
   askedThreads: string[];
-  /** 主动 v2：聊天中形成的新想法（"这个改天想跟他说"）。来源必须是
-   *  本轮可见 ID；由 runtime 落库为持久想法，事件到达时再评估表达。 */
+  /** 聊天中形成的新想法（"这个改天想跟他说"）。来源必须是本轮可见 ID；
+   *  由 runtime 落库为持久想法，心跳时会自己浮上来。 */
   initiatives: InitiativeInput[];
   moodPulse?: { valence: number; energy: number; patience?: number; reason?: string };
   /** 本轮进入提示词的记忆 id，运行时据此记演练。 */
@@ -542,5 +543,71 @@ export function parseReply(
     initiatives: parseInitiatives(raw.initiatives),
     ...(askedLoops ? { askedLoops } : {}),
     ...(moodPulse ? { moodPulse } : {}),
+  };
+}
+
+// ---------- 心跳输出（主动 v3） ----------
+
+/** 心跳的一拍可以同时"做了事"和"说了话"：activity 是这拍真实发生的
+ *  行为（走工具轮，进生活流水），action 只决定话要不要说出口。 */
+export type PulseAction = 'speak' | 'muse' | 'nothing';
+export interface ParsedPulse {
+  action: PulseAction;
+  /** speak 的气泡；muse/nothing 必为空。 */
+  parts: ReplyPart[];
+  /** muse 存进想法池的念头。 */
+  thought: string;
+  /** 这拍真实做成的事（已走完工具轮），进生活流水。 */
+  activity: string;
+  /** 更新"此刻在做什么"。 */
+  selfActivity: string;
+  memories: MemoryUpdate[];
+  moodPulse?: { valence: number; energy: number; patience?: number; reason?: string };
+  resolveLoops: string[];
+  /** 与聊天同契约：缺席 = 没表态；空数组 = 看过、没问。 */
+  askedLoops?: string[];
+}
+
+const PULSE_ACTIONS: PulseAction[] = ['speak', 'muse', 'nothing'];
+
+/** 心跳输出的形状校验：action 非法、speak 无内容、muse 无念头都算失败，
+ *  由运行时的修复轮重试——宁可重问一次，不猜模型想干什么。 */
+export function parsePulseOutput(raw: unknown, stickers: Sticker[]): ParsedPulse {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw))
+    throw new Error('心跳输出不是 JSON 对象');
+  const value = raw as Record<string, unknown>;
+  const action = value.action;
+  if (typeof action !== 'string' || !PULSE_ACTIONS.includes(action as PulseAction))
+    throw new Error('心跳缺少有效 action');
+  const parts =
+    action === 'speak'
+      ? normalizeTextParts(Array.isArray(value.messages) ? value.messages : [], stickers)
+      : [];
+  if (action === 'speak' && !parts.length) throw new Error('speak 没有可发送的内容');
+  const thought = typeof value.thought === 'string' ? value.thought.trim().slice(0, 300) : '';
+  if (action === 'muse' && !thought) throw new Error('muse 没有念头内容');
+  if (action !== 'speak' && Array.isArray(value.messages) && value.messages.length)
+    throw new Error('非 speak 的心跳不应携带 messages');
+  return {
+    action: action as PulseAction,
+    parts,
+    thought,
+    activity: typeof value.activity === 'string' ? value.activity.trim().slice(0, 200) : '',
+    selfActivity:
+      typeof value.selfActivity === 'string' ? value.selfActivity.trim().slice(0, 120) : '',
+    memories: parseMemories(value.memoryUpdates),
+    ...(parseMoodPulse(value.moodPulse) ? { moodPulse: parseMoodPulse(value.moodPulse) } : {}),
+    resolveLoops: Array.isArray(value.resolveLoops)
+      ? value.resolveLoops
+          .filter((s: unknown): s is string => typeof s === 'string')
+          .slice(0, OPEN_LOOP_PROMPT_MAX)
+      : [],
+    ...(Array.isArray(value.askedLoops)
+      ? {
+          askedLoops: value.askedLoops
+            .filter((s: unknown): s is string => typeof s === 'string')
+            .slice(0, OPEN_LOOP_PROMPT_MAX),
+        }
+      : {}),
   };
 }

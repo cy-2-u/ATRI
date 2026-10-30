@@ -1,9 +1,3 @@
-/** 模拟器公共骨架：模拟时钟 + 真实 Runtime/Store 装配 + 转写与检查工具。
- *
- *  对话内容由剧本（同时扮演 ATRI 与用户）决定，但心情、记忆六变量、
- *  巩固、日记、主动联系调度全部由生产代码计算——模拟验证的是机制随
- *  时间的涌现行为。独立进程运行：npx tsx scripts/simulate-month.ts */
-
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -14,10 +8,15 @@ import {
   emotionalResidue,
   significance,
   traceOf,
-  type Message,
 } from '../src/db/index.js';
 import { Runtime, type RuntimeConfig, type WebTools } from '../src/core/index.js';
 import type { Completion, Model, ModelMessage } from '../src/llm.js';
+
+/** 模拟器公共骨架：模拟时钟 + 真实 Runtime/Store 装配 + 转写与检查工具。
+ *
+ *  对话内容由剧本（同时扮演 ATRI 与用户）决定，但心情、记忆六变量、
+ *  巩固、日记、心跳调度全部由生产代码计算——模拟验证的是机制随时间
+ *  的涌现行为。独立进程运行：npx tsx scripts/simulate-month.ts */
 
 export interface SimReplyContext {
   messages: ModelMessage[];
@@ -42,8 +41,6 @@ export interface SimOptions {
   start: string;
   onUserTurn?: () => void;
   stickers?: SimSticker[];
-  images?: (message: Message, signal?: AbortSignal) => Promise<string[]>;
-  web?: WebTools;
   config?: Partial<RuntimeConfig>;
   transcript?: string;
 }
@@ -72,21 +69,6 @@ export function startSim(opts: SimOptions) {
         body: raw.replace(/\[来源[^\]]*\]\s*/g, '').trim(),
         lastId: sourceIds(raw).at(-1) ?? '',
       }) as Record<string, unknown>;
-      // 剧本可用 { simToolCalls: [...] } 发起一轮工具调用，走真实工具循环。
-      const toolCalls = value.simToolCalls as
-        { id: string; name: string; arguments: Record<string, unknown> }[] | undefined;
-      if (toolCalls?.length) {
-        const text = typeof value.text === 'string' ? value.text : '';
-        const callsOut = toolCalls.map((c) => ({ id: c.id, name: c.name, arguments: c.arguments }));
-        return {
-          text,
-          calls: callsOut,
-          continuation: { role: 'assistant' as const, content: text, calls: callsOut },
-          inputTokens: 20,
-          outputTokens: 10,
-          cachedTokens: 0,
-        };
-      }
       const text = JSON.stringify(value);
       const completion: Completion = {
         text,
@@ -102,22 +84,21 @@ export function startSim(opts: SimOptions) {
 
   const store = new Store(join(mkdtempSync(join(tmpdir(), 'atri-sim-')), 'sim.db'));
   const delivered: { at: number; text: string; kind: string; slug?: string }[] = [];
-  const web: WebTools =
-    opts.web ??
-    ({
-      search: async () => {
-        throw new Error('模拟不联网');
-      },
-      open: async () => {
-        throw new Error('模拟不联网');
-      },
-    } as WebTools);
+  const web: WebTools = {
+    search: async () => {
+      throw new Error('模拟不联网');
+    },
+    open: async () => {
+      throw new Error('模拟不联网');
+    },
+  };
   const config: RuntimeConfig = {
     timeZone: 'Asia/Shanghai',
     diaryHour: 3,
     proactiveEnabled: true,
-    quietStart: 0,
-    quietEnd: 0,
+    sleepStart: 1,
+    sleepEnd: 7,
+    clinginess: 80,
     debounceMs: 0,
     maxConcurrentPeers: 2,
     turnTimeoutMs: 5000,
@@ -130,7 +111,6 @@ export function startSim(opts: SimOptions) {
     prompt: (name) => readFileSync(join(process.cwd(), 'shared', 'prompts', `${name}.md`), 'utf8'),
     stickers: () => opts.stickers ?? [],
     web,
-    ...(opts.images ? { images: opts.images } : {}),
     config: () => config,
     timeZone: () => config.timeZone,
     contextTokens: () => config.contextTokens,
@@ -184,6 +164,17 @@ export function startSim(opts: SimOptions) {
     if (m.reason) parts.push(`（${m.reason}）`);
     return parts.join(' ');
   };
+  const selfLine = (): string => {
+    const s = store.self();
+    const parts = [
+      `在做：${s.activity || '（没记）'}`,
+      `社交${s.social.toFixed(2)}`,
+      `表达${s.express.toFixed(2)}`,
+    ];
+    const life = store.recentLife(3).map((e) => `${e.kind}:${e.text.slice(0, 14)}`);
+    if (life.length) parts.push(`流水 ${life.join(' / ')}`);
+    return parts.join('  ');
+  };
   const memoryTable = (): string[] =>
     store.memories(PEER).map((m) => {
       const state = traceOf(m);
@@ -192,6 +183,7 @@ export function startSim(opts: SimOptions) {
   const snapshot = (title: string) => {
     say(`    ── ${title} ──`);
     say(`    [心情] ${moodLine()}`);
+    say(`    [她的当下] ${selfLine()}`);
     for (const line of memoryTable()) say(line);
   };
 
@@ -237,11 +229,9 @@ export function startSim(opts: SimOptions) {
     accept(key, text, media);
     await tick(1100);
   }
+  /** 沉默一段日子：心跳按节律自己跑（睡眠窗口外每拍都可能开口或存念头）。 */
   async function quietDays(label: string, days: number, hm: string) {
     await advanceTo(T(days, hm));
-    // 主动评估是异步模型调用（后台完成，不被 drain 等待），多推一段
-    // 模拟时间让排定的问候/想法评估真正跑完并发出来。
-    await tick(21 * 60000);
     say();
     say(`「……${label}（至 ${stamp(simNow)}）」`);
   }
@@ -273,6 +263,7 @@ export function startSim(opts: SimOptions) {
     problems,
     stamp,
     moodLine,
+    selfLine,
     memoryTable,
     snapshot,
     advanceTo,

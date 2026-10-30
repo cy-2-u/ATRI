@@ -17,274 +17,119 @@ import {
   MOOD_CONGRUENCE_BOOST,
 } from './memory-model.js';
 import type { MemoryTraceLike } from './memory-model.js';
+import {
+  SCHEMA_VERSION,
+  migrate,
+  parse,
+  MEMORY_HALFLIFE_DAYS,
+  MEMORY_STATED_WEIGHT,
+  MEMORY_INTERPRETATION_WEIGHT,
+  MEMORY_HIT_COOLDOWN_MINUTES,
+  OPEN_LOOP_EXPIRE_DAYS,
+  SOFT_THREAD_EXPIRE_DAYS,
+  SOFT_THREAD_MAX,
+  SOFT_THREAD_REVISIT_DAYS,
+  SOFT_THREAD_REVISIT_MAX_DAYS,
+  MOOD_VALENCE_HALFLIFE_HOURS,
+  MOOD_ENERGY_HALFLIFE_HOURS,
+  MOOD_PATIENCE_HALFLIFE_HOURS,
+  MOOD_PULSE_SHARE,
+  USAGE_RETENTION_DAYS,
+  MAX_TASK_ATTEMPTS,
+  TASK_RETENTION_DAYS,
+  LIFE_LOG_KEEP,
+  UNCERTAIN_HOLD_MS,
+  NOTES_MAX_CHARS,
+  type Row,
+  type TaskKind,
+  type SourceKind,
+  type Peer,
+  type Media,
+  type Message,
+  type Task,
+  type Memory,
+  type OpenLoop,
+  type OpenLoopInput,
+  type SoftThreadKind,
+  type SoftThread,
+  type SoftThreadInput,
+  type Initiative,
+  type InitiativeInput,
+  type InitiativeKind,
+  type SelfState,
+  type SelfPatch,
+  type LifeEntry,
+  type MoodState,
+  type DiarySection,
+  type MemoryUpdate,
+  type ReplyPart,
+  type Delivery,
+  type SearchHit,
+  type EmbeddingVector,
+} from './schema.js';
 
 /** 数据层：SQLite（WAL）之上的一站式 Store。所有检索、来源与任务都按
  *  联系人隔离；写路径通过 peers.version 做乐观并发。 */
 
-export type TaskKind = 'chat' | 'notes' | 'diary' | 'proactive';
-export type SourceKind = 'message' | 'memory' | 'diary';
-
-export interface Peer {
-  id: string;
-  channel: string;
-  address: string;
-  context_token: string;
-  approved: number;
-  version: number;
-  notes: string;
-  notes_until: number;
-  last_user_at: number;
-  last_proactive_at: number;
-  created_at: number;
-  persona_id: string;
-}
-export interface Media {
-  path?: string;
-  mime?: string;
-  description?: string;
-  kind: string;
-  ref?: unknown;
-}
-export interface Message {
-  id: string;
-  seq: number;
-  peer_id: string;
-  role: 'user' | 'assistant' | 'system';
-  content: string;
-  media: Media[];
-  status: string;
-  created_at: number;
-}
-export interface Task {
-  id: string;
-  peer_id: string;
-  kind: TaskKind;
-  state: string;
-  payload: Record<string, unknown>;
-  version: number;
-  attempts: number;
-  run_at: number;
-  error: string;
-  created_at: number;
-}
-export interface Memory {
-  id: string;
-  peer_id: string;
-  content: string;
-  kind: 'stated' | 'interpretation';
-  sources: string[];
-  status: string;
-  hits: number;
-  last_hit_at: number;
-  pinned: number;
-  /** 被后续事实替代的时刻；0 表示仍然有效。 */
-  invalid_at: number;
-  importance: number;
-  emotion: number;
-  emotion_reason: string;
-  consolidation: number;
-  interference: number;
-  created_at: number;
-}
-/** 用户提到的有明确时间的安排（"明天面试"）：到点问一次，汇报即了结，
- *  每年循环的事（生日）自动滚到明年。 */
-export interface OpenLoop {
-  id: string;
-  peer_id: string;
-  content: string;
-  due_at: number;
-  due_text: string;
-  sources: string[];
-  recurring: string;
-  asked: number;
-  status: string;
-  created_at: number;
-  resolved_at: number;
-}
-export interface OpenLoopInput {
-  content: string;
-  dueAt: number;
-  dueText?: string;
-  sources: string[];
-  recurring?: string;
-}
-/** 无日期版的"挂念"：对方的持续事件或她答应过的事。从不主动发消息、
- *  不占开环配额，只在话题自然相关时浮现。 */
-export type SoftThreadKind = 'concern' | 'promise';
-export interface SoftThread {
-  id: string;
-  peer_id: string;
-  content: string;
-  kind: SoftThreadKind;
-  sources: string[];
-  revisit_after: number;
-  asked: number;
-  status: string;
-  created_at: number;
-  resolved_at: number;
-}
-export interface SoftThreadInput {
-  content: string;
-  kind: SoftThreadKind;
-  revisitAfter?: number;
-  sources: string[];
-}
-/** 主动 v2：一个尚未表达的想法。kind 是动机类别（share 分享、care 关心、
- *  ask 履约追问、muse 单纯想说），meaning 是"想传达什么"，不是消息草稿。 */
-export type InitiativeKind = 'share' | 'care' | 'ask' | 'muse';
-export interface Initiative {
-  id: string;
-  peer_id: string;
-  topic_key: string;
-  kind: InitiativeKind;
-  meaning: string;
-  sources: string[];
-  source_hash: string;
-  expect_reply: number;
-  /** idle 可以表达；waiting 等一个条件；expressed/dropped 已退场。 */
-  state: 'idle' | 'waiting' | 'expressed' | 'dropped';
-  origin: string;
-  version: number;
-  created_at: number;
-  updated_at: number;
-  released_at: number;
-  dropped_at: number;
-}
-export interface InitiativeInput {
-  topicKey: string;
-  kind: InitiativeKind;
-  meaning: string;
-  sources: string[];
-  expectReply?: boolean;
-}
-/** 跨对话的轻量心情，以体感文字注入提示词而非数值。patience 单独一轴：
- *  累但温暖与烦透了读起来完全不同，只有后者该少说少问。 */
-export interface MoodState {
-  valence: number;
-  energy: number;
-  patience: number;
-  reason?: string;
-  at: number;
-}
-export interface DiarySection {
-  id: string;
-  peer_id: string;
-  day: string;
-  content: string;
-  sources: string[];
-  emotion: number;
-  created_at: number;
-}
-export interface MemoryUpdate {
-  content: string;
-  kind: 'stated' | 'interpretation';
-  sources: string[];
-  supersedes?: string[];
-  importance?: number;
-  emotion?: number;
-  emotionReason?: string;
-}
-export interface ReplyPart {
-  type: 'text' | 'sticker';
-  text?: string;
-  slug?: string;
-  description?: string;
-  /** 模型请求的语义停顿档位；毫秒区间由发送端界定（BEAT_RANGES_MS）。 */
-  beat?: 'short' | 'medium' | 'long';
-}
-export interface Delivery {
-  id: string;
-  task_id: string;
-  peer_id: string;
-  ordinal: number;
-  part: ReplyPart;
-  status: string;
-  attempts: number;
-  error: string;
-  created_at: number;
-}
-export interface SearchHit {
-  id: string;
-  kind: SourceKind;
-  content: string;
-  created_at: number;
-  score: number;
-  /** 乘上近度/类型加权前的原始相关度。 */
-  relevance?: number;
-  /** 本次命中词里最小的文档频率：命中"有点"说明不了什么，命中"年糕"
-   *  才能定位一件事。词面没命中时为 undefined。 */
-  minDf?: number;
-  /** 该联系人已索引的行数，供调用方判断 minDf。 */
-  corpusSize?: number;
-  /** 与查询向量的余弦相似度；语义召回可能词面零重合，必须放行。 */
-  semantic?: number;
-  role?: Message['role'];
-  memory_kind?: Memory['kind'];
-  sources?: string[];
-  /** 记忆/日记命中当下的六变量快照，供分层渲染与情绪染色。 */
-  detail?: number;
-  significance?: number;
-  residue?: number;
-}
-export interface EmbeddingVector {
-  id: string;
-  peer_id: string;
-  kind: SourceKind;
-  vector: Float32Array;
-  dims: number;
-  model: string;
-}
-
-type Row = Record<string, unknown>;
-
-function initiative(row: Row): Initiative {
-  return { ...row, sources: parse(row.sources, []) } as unknown as Initiative;
-}
-const parse = <T>(value: unknown, fallback: T): T => {
-  try {
-    return JSON.parse(String(value)) as T;
-  } catch {
-    return fallback;
-  }
-};
-const sha = (s: string) => createHash('sha256').update(s).digest('hex');
-
-// ---------- 调节常量（写在这里供测试引用） ----------
-
-/** 消息命中近度加权的半衰期；记忆排序本身由六变量接管。 */
-export const MEMORY_HALFLIFE_DAYS = 14;
-export const MEMORY_STATED_WEIGHT = 2.2;
-export const MEMORY_INTERPRETATION_WEIGHT = 0.6;
-/** 一次演练在一个窗口内只计一次。 */
-export const MEMORY_HIT_COOLDOWN_MINUTES = 180;
-/** 开环过期：到期 7 天无人理会即静默退场。 */
-export const OPEN_LOOP_EXPIRE_DAYS = 7;
-export const SOFT_THREAD_EXPIRE_DAYS = 14;
-export const SOFT_THREAD_MAX = 3;
-export const SOFT_THREAD_REVISIT_DAYS = 2;
-export const SOFT_THREAD_REVISIT_MAX_DAYS = 7;
-export const MOOD_VALENCE_HALFLIFE_HOURS = 12;
-export const MOOD_ENERGY_HALFLIFE_HOURS = 4;
-export const MOOD_PATIENCE_HALFLIFE_HOURS = 10;
-/** 同号脉冲每次只收剩余距离的这一比例：一晚上的糟心事钉不死状态。 */
-export const MOOD_PULSE_SHARE = 0.2;
-/** 用量明细保留天数，更早的聚合成按日汇总。 */
-export const USAGE_RETENTION_DAYS = 30;
-/** 任务失败重试上限：防止永久失败的任务被调度器每分钟复活烧模型调用。 */
-export const MAX_TASK_ATTEMPTS = 5;
-/** 终态任务行保留天数。 */
-const TASK_RETENTION_DAYS = 7;
 const USAGE_ROLLUP_INTERVAL_MS = 60 * 60 * 1000;
 const USAGE_CACHE_MS = 5000;
 const DF_CACHE_MS = 5 * 60 * 1000;
 const RHYTHM_CACHE_MS = 5 * 60 * 1000;
 /** 每次向量召回参与打分的候选上限（远大于最终进入提示词的条数）。 */
 const SEARCH_VECTOR_CANDIDATES = 800;
-/** 送达不明的记录暂停该联系人队列的时长；之后放行但保留在待办里。 */
-export const UNCERTAIN_HOLD_MS = 10 * 60000;
-export const NOTES_MAX_CHARS = 4000;
 
-export { hourFormatter, addYear, epochOfWallTime };
+export {
+  SCHEMA_VERSION,
+  MEMORY_HALFLIFE_DAYS,
+  MEMORY_STATED_WEIGHT,
+  MEMORY_INTERPRETATION_WEIGHT,
+  MEMORY_HIT_COOLDOWN_MINUTES,
+  OPEN_LOOP_EXPIRE_DAYS,
+  SOFT_THREAD_EXPIRE_DAYS,
+  SOFT_THREAD_MAX,
+  SOFT_THREAD_REVISIT_DAYS,
+  SOFT_THREAD_REVISIT_MAX_DAYS,
+  MOOD_VALENCE_HALFLIFE_HOURS,
+  MOOD_ENERGY_HALFLIFE_HOURS,
+  MOOD_PATIENCE_HALFLIFE_HOURS,
+  MOOD_PULSE_SHARE,
+  USAGE_RETENTION_DAYS,
+  MAX_TASK_ATTEMPTS,
+  UNCERTAIN_HOLD_MS,
+  NOTES_MAX_CHARS,
+  hourFormatter,
+  addYear,
+  epochOfWallTime,
+};
+export type {
+  TaskKind,
+  SourceKind,
+  Peer,
+  Media,
+  Message,
+  Task,
+  Memory,
+  OpenLoop,
+  OpenLoopInput,
+  SoftThreadKind,
+  SoftThread,
+  SoftThreadInput,
+  InitiativeKind,
+  Initiative,
+  InitiativeInput,
+  SelfState,
+  SelfPatch,
+  LifeEntry,
+  MoodState,
+  DiarySection,
+  MemoryUpdate,
+  ReplyPart,
+  Delivery,
+  SearchHit,
+  EmbeddingVector,
+};
+
+const sha = (s: string) => createHash('sha256').update(s).digest('hex');
 
 export class Store {
   readonly sql: DatabaseSync;
@@ -299,206 +144,7 @@ export class Store {
   constructor(readonly path: string) {
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
     this.sql = new DatabaseSync(path);
-    const openedAt = Number(this.sql.prepare('PRAGMA user_version').get()?.user_version ?? 0);
-    if (openedAt > 10) {
-      this.sql.close();
-      throw new Error('数据库来自更新版本，不能用当前程序打开');
-    }
-    this.sql.exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;
-      CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS peers (
-        id TEXT PRIMARY KEY, channel TEXT NOT NULL, address TEXT NOT NULL, context_token TEXT NOT NULL DEFAULT '',
-        approved INTEGER NOT NULL DEFAULT 0, version INTEGER NOT NULL DEFAULT 0,
-        notes TEXT NOT NULL DEFAULT '', notes_until INTEGER NOT NULL DEFAULT 0,
-        last_user_at INTEGER NOT NULL DEFAULT 0, last_proactive_at INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS messages (
-        seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, peer_id TEXT NOT NULL REFERENCES peers(id),
-        event_key TEXT, role TEXT NOT NULL, content TEXT NOT NULL, media TEXT NOT NULL DEFAULT '[]',
-        status TEXT NOT NULL, created_at INTEGER NOT NULL, UNIQUE(peer_id,event_key)
-      );
-      CREATE INDEX IF NOT EXISTS messages_peer ON messages(peer_id,seq);
-      CREATE TABLE IF NOT EXISTS tasks (
-        id TEXT PRIMARY KEY, peer_id TEXT NOT NULL REFERENCES peers(id), kind TEXT NOT NULL, dedupe_key TEXT NOT NULL,
-        payload TEXT NOT NULL DEFAULT '{}', state TEXT NOT NULL DEFAULT 'queued', version INTEGER NOT NULL DEFAULT 0,
-        attempts INTEGER NOT NULL DEFAULT 0, run_at INTEGER NOT NULL, error TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL,
-        UNIQUE(peer_id,kind,dedupe_key)
-      );
-      CREATE INDEX IF NOT EXISTS tasks_ready ON tasks(state,run_at,peer_id);
-      CREATE TABLE IF NOT EXISTS outbox (
-        id TEXT PRIMARY KEY REFERENCES messages(id), task_id TEXT NOT NULL REFERENCES tasks(id), peer_id TEXT NOT NULL REFERENCES peers(id),
-        ordinal INTEGER NOT NULL, part TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0,
-        error TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, UNIQUE(task_id,ordinal)
-      );
-      CREATE TABLE IF NOT EXISTS memories (
-        id TEXT PRIMARY KEY, peer_id TEXT NOT NULL REFERENCES peers(id), content TEXT NOT NULL, kind TEXT NOT NULL,
-        sources TEXT NOT NULL, source_hash TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active',
-        hits INTEGER NOT NULL DEFAULT 0, last_hit_at INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL,
-        UNIQUE(peer_id,source_hash)
-      );
-      CREATE TABLE IF NOT EXISTS memory_embeddings (
-        id TEXT PRIMARY KEY, peer_id TEXT NOT NULL REFERENCES peers(id),
-        kind TEXT NOT NULL, vector BLOB NOT NULL, dims INTEGER NOT NULL, model TEXT NOT NULL, created_at INTEGER NOT NULL
-      );
-      CREATE INDEX IF NOT EXISTS memory_embeddings_peer ON memory_embeddings(peer_id);
-      CREATE TABLE IF NOT EXISTS diary_sections (
-        id TEXT PRIMARY KEY, peer_id TEXT NOT NULL REFERENCES peers(id), task_id TEXT NOT NULL REFERENCES tasks(id),
-        ordinal INTEGER NOT NULL, day TEXT NOT NULL, content TEXT NOT NULL, sources TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'active', created_at INTEGER NOT NULL, UNIQUE(task_id,ordinal)
-      );
-      CREATE TABLE IF NOT EXISTS usage (id INTEGER PRIMARY KEY, peer_id TEXT, task_id TEXT, purpose TEXT, input_tokens INTEGER, output_tokens INTEGER, duration_ms INTEGER, created_at INTEGER);
-      CREATE TABLE IF NOT EXISTS usage_daily (purpose TEXT NOT NULL, day INTEGER NOT NULL, calls INTEGER NOT NULL, input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL, average_ms INTEGER NOT NULL, PRIMARY KEY(purpose,day));
-      -- FTS 旁的元数据镜像表：元数据列在虚拟表里是 UNINDEXED，过滤/删除
-      -- 走真索引，search_index 只答 MATCH，rowid 两边同步。
-      CREATE TABLE IF NOT EXISTS search_docs (
-        id TEXT PRIMARY KEY, peer_id TEXT NOT NULL, kind TEXT NOT NULL,
-        content TEXT NOT NULL, created_at INTEGER NOT NULL
-      );
-      CREATE INDEX IF NOT EXISTS search_docs_peer_kind ON search_docs(peer_id,kind,created_at DESC);
-      CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(id UNINDEXED, peer_id UNINDEXED, kind UNINDEXED, content, created_at UNINDEXED, tokenize='trigram');
-      CREATE TABLE IF NOT EXISTS open_loops (
-        id TEXT PRIMARY KEY, peer_id TEXT NOT NULL REFERENCES peers(id), content TEXT NOT NULL,
-        due_at INTEGER NOT NULL, due_text TEXT NOT NULL DEFAULT '', sources TEXT NOT NULL,
-        recurring TEXT NOT NULL DEFAULT '', asked INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'open',
-        created_at INTEGER NOT NULL, resolved_at INTEGER NOT NULL DEFAULT 0
-      );
-      CREATE INDEX IF NOT EXISTS open_loops_peer ON open_loops(peer_id,status);
-      CREATE TABLE IF NOT EXISTS soft_threads (
-        id TEXT PRIMARY KEY, peer_id TEXT NOT NULL REFERENCES peers(id), content TEXT NOT NULL,
-        kind TEXT NOT NULL DEFAULT 'concern', sources TEXT NOT NULL,
-        revisit_after INTEGER NOT NULL DEFAULT 2, asked INTEGER NOT NULL DEFAULT 0,
-        status TEXT NOT NULL DEFAULT 'open', created_at INTEGER NOT NULL,
-        resolved_at INTEGER NOT NULL DEFAULT 0
-      );
-      CREATE INDEX IF NOT EXISTS soft_threads_peer ON soft_threads(peer_id,status);
-      -- 想法（initiative v2）：由真实来源形成、会保留/变化/消退的"还没说
-      -- 出口的话"。topicKey 防同一件事换句话重复立项；sourceHash 幂等同
-      -- 一次判断（同一来源+同一进展不会因再次评估变成新想法）。
-      CREATE TABLE IF NOT EXISTS initiatives (
-        id TEXT PRIMARY KEY, peer_id TEXT NOT NULL REFERENCES peers(id),
-        topic_key TEXT NOT NULL, kind TEXT NOT NULL, meaning TEXT NOT NULL,
-        sources TEXT NOT NULL, source_hash TEXT NOT NULL,
-        expect_reply INTEGER NOT NULL DEFAULT 0,
-        state TEXT NOT NULL DEFAULT 'idle', origin TEXT NOT NULL DEFAULT '',
-        version INTEGER NOT NULL DEFAULT 1,
-        created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
-        released_at INTEGER NOT NULL DEFAULT 0, dropped_at INTEGER NOT NULL DEFAULT 0,
-        UNIQUE(peer_id, topic_key)
-      );
-      CREATE INDEX IF NOT EXISTS initiatives_peer_state ON initiatives(peer_id,state,updated_at DESC);
-    `);
-    // 每个版本一个事务（PRAGMA 会自动提交，分开写会留下版本与结构不一致的库）。
-    if (openedAt < 2) {
-      this.transaction(() => {
-        if (!this.hasColumn('memories', 'pinned'))
-          this.sql.exec('ALTER TABLE memories ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;');
-        this.sql.exec('PRAGMA user_version=2;');
-      });
-    }
-    if (openedAt < 3) {
-      this.transaction(() => {
-        if (!this.hasColumn('peers', 'persona_id'))
-          this.sql.exec('ALTER TABLE peers ADD COLUMN persona_id TEXT NOT NULL DEFAULT "";');
-        this.sql.exec('PRAGMA user_version=3;');
-      });
-    }
-    if (openedAt < 4) {
-      this.transaction(() => {
-        if (!this.hasColumn('memories', 'invalid_at'))
-          this.sql.exec('ALTER TABLE memories ADD COLUMN invalid_at INTEGER NOT NULL DEFAULT 0;');
-        if (!this.hasColumn('memories', 'importance'))
-          this.sql.exec('ALTER TABLE memories ADD COLUMN importance REAL NOT NULL DEFAULT 0.5;');
-        this.sql.exec('PRAGMA user_version=4;');
-      });
-    }
-    if (openedAt < 5) {
-      this.transaction(() => {
-        this.sql.exec(
-          'CREATE INDEX IF NOT EXISTS outbox_peer_status ON outbox(peer_id,status);\n' +
-            'CREATE INDEX IF NOT EXISTS usage_created ON usage(created_at);\n' +
-            'CREATE INDEX IF NOT EXISTS memory_embeddings_peer_model ON memory_embeddings(peer_id,model);',
-        );
-        this.sql.exec('PRAGMA user_version=5;');
-      });
-    }
-    if (openedAt < 6) {
-      this.transaction(() => {
-        this.sql.exec(
-          'CREATE INDEX IF NOT EXISTS memories_peer_status_created ON memories(peer_id,status,created_at DESC);\n' +
-            'CREATE INDEX IF NOT EXISTS messages_rhythm ON messages(peer_id,role,status,created_at);\n' +
-            'CREATE INDEX IF NOT EXISTS outbox_status_created ON outbox(status,created_at DESC);\n' +
-            'CREATE INDEX IF NOT EXISTS tasks_kind ON tasks(kind);\n' +
-            'CREATE INDEX IF NOT EXISTS diary_peer_status_day ON diary_sections(peer_id,status,day);',
-        );
-        this.sql.exec('PRAGMA user_version=6;');
-      });
-    }
-    if (openedAt < 7) {
-      this.transaction(() => {
-        // rowid 保持同步，旧库的删除仍是 O(1) 而不是虚拟表扫描。
-        this.sql.exec(
-          `INSERT OR REPLACE INTO search_docs(rowid,id,peer_id,kind,content,created_at)
-           SELECT rowid,id,peer_id,kind,content,created_at FROM search_index;`,
-        );
-        this.sql.exec('PRAGMA user_version=7;');
-      });
-    }
-    if (openedAt < 8) {
-      // 六变量列：S/D/R/E 现算不存列，旧行按中性速率从 created_at 开始遗忘。
-      this.transaction(() => {
-        if (!this.hasColumn('memories', 'emotion'))
-          this.sql.exec('ALTER TABLE memories ADD COLUMN emotion REAL NOT NULL DEFAULT 0;');
-        if (!this.hasColumn('memories', 'emotion_reason'))
-          this.sql.exec("ALTER TABLE memories ADD COLUMN emotion_reason TEXT NOT NULL DEFAULT '';");
-        if (!this.hasColumn('memories', 'consolidation'))
-          this.sql.exec('ALTER TABLE memories ADD COLUMN consolidation REAL NOT NULL DEFAULT 0;');
-        if (!this.hasColumn('memories', 'interference'))
-          this.sql.exec('ALTER TABLE memories ADD COLUMN interference REAL NOT NULL DEFAULT 0;');
-        if (!this.hasColumn('diary_sections', 'emotion'))
-          this.sql.exec('ALTER TABLE diary_sections ADD COLUMN emotion REAL NOT NULL DEFAULT 0;');
-        this.sql.exec('PRAGMA user_version=8;');
-      });
-    }
-    if (openedAt < 9) {
-      // 用量表补充缓存命中列：供应商的前缀缓存命中 token 单独记录，
-      // 调试页据此展示渠道缓存是否实际生效（旧数据按 0 处理）。
-      this.transaction(() => {
-        if (!this.hasColumn('usage', 'cached_tokens'))
-          this.sql.exec('ALTER TABLE usage ADD COLUMN cached_tokens INTEGER NOT NULL DEFAULT 0;');
-        if (!this.hasColumn('usage_daily', 'cached_tokens'))
-          this.sql.exec(
-            'ALTER TABLE usage_daily ADD COLUMN cached_tokens INTEGER NOT NULL DEFAULT 0;',
-          );
-        this.sql.exec('PRAGMA user_version=9;');
-      });
-    }
-    if (openedAt < 10) {
-      // 主动 v2：想法表（持久动机对象）。旧 impulse 探询与读空气冷却的
-      // 设置键在启动时清掉，由新调度接管。
-      this.transaction(() => {
-        this.sql.exec(
-          `CREATE TABLE IF NOT EXISTS initiatives (
-            id TEXT PRIMARY KEY, peer_id TEXT NOT NULL REFERENCES peers(id),
-            topic_key TEXT NOT NULL, kind TEXT NOT NULL, meaning TEXT NOT NULL,
-            sources TEXT NOT NULL, source_hash TEXT NOT NULL,
-            expect_reply INTEGER NOT NULL DEFAULT 0,
-            state TEXT NOT NULL DEFAULT 'idle', origin TEXT NOT NULL DEFAULT '',
-            version INTEGER NOT NULL DEFAULT 1,
-            created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
-            released_at INTEGER NOT NULL DEFAULT 0, dropped_at INTEGER NOT NULL DEFAULT 0,
-            UNIQUE(peer_id, topic_key)
-          );
-          CREATE INDEX IF NOT EXISTS initiatives_peer_state ON initiatives(peer_id,state,updated_at DESC);
-          DELETE FROM settings WHERE key LIKE 'impulse_at:%';`,
-        );
-        this.sql.exec('PRAGMA user_version=10;');
-      });
-    }
-  }
-  private hasColumn(table: string, column: string): boolean {
-    return (
-      this.sql.prepare(`PRAGMA table_info(${table})`).all() as unknown as { name: string }[]
-    ).some((row) => row.name === column);
+    migrate(this.sql);
   }
   close() {
     this.sql.close();
@@ -772,7 +418,7 @@ export class Store {
         .get(peer, kind, key)!.id,
     );
   }
-  /** 等价任务是否已排队：调度器用它在评估进行中不重复选同一个开环。 */
+  /** 等价任务是否已排队：调度器用它避免同一拍重复入队。 */
   hasPendingTask(peer: string, kind: TaskKind, key: string): boolean {
     return Boolean(
       this.sql
@@ -832,7 +478,7 @@ export class Store {
       const row = this.sql
         .prepare(
           `SELECT * FROM tasks WHERE peer_id=? AND state='queued' AND run_at<=? ORDER BY
-        CASE kind WHEN 'chat' THEN 0 WHEN 'notes' THEN 1 WHEN 'diary' THEN 2 ELSE 3 END,created_at LIMIT 1`,
+        CASE kind WHEN 'chat' THEN 0 WHEN 'pulse' THEN 1 WHEN 'notes' THEN 2 WHEN 'diary' THEN 3 ELSE 4 END,created_at LIMIT 1`,
         )
         .get(peer, now);
       if (!row) return undefined;
@@ -984,7 +630,7 @@ export class Store {
       if (status === 'sent') {
         const msg = this.getMessage(String(row.peer_id), id)!;
         this.index(id, msg.peer_id, 'message', msg.content, msg.created_at);
-        if (this.taskById(String(row.task_id))?.kind === 'proactive')
+        if (this.taskById(String(row.task_id))?.kind === 'pulse')
           this.sql.prepare('UPDATE peers SET last_proactive_at=? WHERE id=?').run(now, msg.peer_id);
       }
       const count = Number(
@@ -1636,9 +1282,9 @@ export class Store {
       const invalid = new Set([id]);
       // 失效覆盖全部历史并迭代到固定点：依赖链（记忆→日记→记忆）只有
       // 反复扫到不再新增才传播完整；被替代/已删除的行同样参与。
-      const load = (sql: string) =>
+      const load = (sqlText: string) =>
         this.sql
-          .prepare(sql)
+          .prepare(sqlText)
           .all(peer)
           .map((r) => ({ id: String(r.id), sources: parse<string[]>(r.sources, []) }));
       const diaries = load('SELECT id,sources FROM diary_sections WHERE peer_id=?');
@@ -2149,7 +1795,7 @@ export class Store {
       .run(peer, now - SOFT_THREAD_EXPIRE_DAYS * 86400000);
   }
 
-  // ---------- 想法（主动 v2） ----------
+  // ---------- 想法 ----------
 
   /** 尚未说出口的想法：持久、有来源、有生命周期。它不是消息草稿——
    *  meaning 是想传达的核心，真正的话在生成时才说。 */
@@ -2256,7 +1902,7 @@ export class Store {
       .run(now, peer, id);
   }
   /** 来源已不存在（消息被删/记忆被替代）的想法自动退场。无来源的想法
-   *  （空闲碎碎念，muse:seeded）没有可失效的锚点，原样保留。 */
+   *  （心跳冒出的碎碎念）没有可失效的锚点，原样保留。 */
   expireInitiatives(peer: string, isValidSource: (id: string) => boolean, now = Date.now()) {
     const rows = this.sql
       .prepare("SELECT id,sources FROM initiatives WHERE peer_id=? AND state IN ('idle','waiting')")
@@ -2276,6 +1922,72 @@ export class Store {
       .prepare("DELETE FROM initiatives WHERE state IN ('expressed','dropped') AND updated_at < ?")
       .run(cutoff);
     return Number(gone.changes);
+  }
+
+  // ---------- 她的当下与生活流水（主动 v3） ----------
+
+  self(): SelfState {
+    const row = this.sql.prepare('SELECT * FROM self WHERE id=1').get() as Row | undefined;
+    return {
+      activity: String(row?.activity ?? ''),
+      activity_since: Number(row?.activity_since ?? 0),
+      plan: String(row?.plan ?? ''),
+      plan_day: String(row?.plan_day ?? ''),
+      social: Number(row?.social ?? 1),
+      express: Number(row?.express ?? 0),
+      last_stimulus_at: Number(row?.last_stimulus_at ?? 0),
+      updated_at: Number(row?.updated_at ?? 0),
+    };
+  }
+  updateSelf(patch: SelfPatch, now = Date.now()): SelfState {
+    const current = this.self();
+    this.sql
+      .prepare(
+        `UPDATE self SET activity=?,activity_since=?,plan=?,plan_day=?,
+         social=?,express=?,last_stimulus_at=?,updated_at=? WHERE id=1`,
+      )
+      .run(
+        patch.activity !== undefined ? patch.activity.slice(0, 120) : current.activity,
+        patch.activitySince !== undefined ? patch.activitySince : current.activity_since,
+        patch.plan !== undefined ? patch.plan.slice(0, 300) : current.plan,
+        patch.planDay !== undefined ? patch.planDay : current.plan_day,
+        patch.social !== undefined ? Math.max(0, Math.min(1, patch.social)) : current.social,
+        patch.express !== undefined ? Math.max(0, Math.min(1, patch.express)) : current.express,
+        patch.lastStimulusAt !== undefined ? patch.lastStimulusAt : current.last_stimulus_at,
+        now,
+      );
+    return this.self();
+  }
+  /** 生活流水追加一条；超过环形上限时从最旧处裁掉。 */
+  logLife(kind: string, text: string, artifact = '', now = Date.now()): LifeEntry {
+    const entry = this.sql
+      .prepare('INSERT INTO life_log(at,kind,text,artifact) VALUES(?,?,?,?)')
+      .run(now, kind.slice(0, 12), text.slice(0, 300), artifact.slice(0, 300));
+    this.sql
+      .prepare(
+        `DELETE FROM life_log WHERE id <= (SELECT id FROM life_log ORDER BY id DESC LIMIT 1 OFFSET ?)`,
+      )
+      .run(LIFE_LOG_KEEP - 1);
+    return {
+      id: Number(entry.lastInsertRowid),
+      at: now,
+      kind: kind.slice(0, 12),
+      text: text.slice(0, 300),
+      artifact: artifact.slice(0, 300),
+    };
+  }
+  recentLife(limit = 6): LifeEntry[] {
+    return (
+      this.sql
+        .prepare('SELECT id,at,kind,text,artifact FROM life_log ORDER BY id DESC LIMIT ?')
+        .all(Math.min(50, limit)) as Row[]
+    ).map((r) => ({
+      id: Number(r.id),
+      at: Number(r.at),
+      kind: String(r.kind),
+      text: String(r.text),
+      artifact: String(r.artifact),
+    }));
   }
 
   // ---------- 心情 ----------
@@ -2357,7 +2069,7 @@ export class Store {
     });
   }
 
-  // ---------- 作息与主动 ----------
+  // ---------- 作息与心跳 ----------
 
   /** 近 14 天对方消息的 24 小时分布（按版本缓存）。 */
   activityRhythm(peer: string, timeZone: string): number[] {
@@ -2379,14 +2091,14 @@ export class Store {
     this.rhythmCache.set(peer, { version, at: Date.now(), buckets });
     return buckets.slice();
   }
-  /** 主动消息的开场行（防两天内重复同一话头）。 */
+  /** 心跳开场行（防两天内重复同一话头）。 */
   proactiveHooks(peer: string, since: number): string[] {
     return (
       this.sql
         .prepare(
           `SELECT m.content FROM outbox o JOIN messages m ON m.id=o.id
            WHERE o.peer_id=? AND o.status='sent' AND m.created_at>=?
-             AND o.task_id IN (SELECT id FROM tasks WHERE kind='proactive')
+             AND o.task_id IN (SELECT id FROM tasks WHERE kind='pulse')
            ORDER BY m.created_at DESC LIMIT 12`,
         )
         .all(peer, since) as Row[]
@@ -2394,10 +2106,9 @@ export class Store {
       .map((r) => String(r.content).replace(/\s+/g, ' ').trim())
       .filter(Boolean);
   }
-  /** 读空气：最后一条用户消息之后发出的主动消息（按任务去重）。计数没有
-   *  人工上限：冷却时长由 runtime 的 silenceCooldownMs 按 streak 指数拉长
-   *  并封顶，这里若再 LIMIT 会让"三次以上"永远测不到。 */
-  unansweredProactiveStreak(peer: string): number {
+  /** 读空气素材：最后一条用户消息之后发出的心跳消息（按任务去重）。
+   *  v3 里它不再触发代码冷却——次数如实交给模型看，收不收她自己定。 */
+  unansweredPulseStreak(peer: string): number {
     const lastUser = this.sql
       .prepare(
         "SELECT created_at FROM messages WHERE peer_id=? AND role='user' AND status='received' ORDER BY seq DESC LIMIT 1",
@@ -2408,7 +2119,7 @@ export class Store {
     const rows = this.sql
       .prepare(
         `SELECT MAX(m.created_at) AS created_at FROM outbox o JOIN messages m ON m.id=o.id
-         WHERE o.peer_id=? AND o.status='sent' AND o.task_id IN (SELECT id FROM tasks WHERE kind='proactive')
+         WHERE o.peer_id=? AND o.status='sent' AND o.task_id IN (SELECT id FROM tasks WHERE kind='pulse')
          GROUP BY o.task_id ORDER BY created_at DESC LIMIT 12`,
       )
       .all(peer) as Row[];
@@ -2418,6 +2129,31 @@ export class Store {
       streak++;
     }
     return streak;
+  }
+  /** 故障保险丝的输入：最近一段时间内发出过的心跳消息条数。 */
+  recentPulseSends(peer: string, sinceMs: number, now = Date.now()): number {
+    return Number(
+      (
+        this.sql
+          .prepare(
+            `SELECT COUNT(DISTINCT o.task_id) AS n FROM outbox o JOIN tasks t ON t.id=o.task_id
+             WHERE o.peer_id=? AND o.status='sent' AND t.kind='pulse' AND o.created_at>=?`,
+          )
+          .get(peer, now - sinceMs) as Row
+      ).n ?? 0,
+    );
+  }
+  /** 她最近一次开口（聊天回复或心跳）的时刻；想念从它起算。 */
+  lastSpokeAt(peer: string): number {
+    return Number(
+      (
+        this.sql
+          .prepare(
+            "SELECT MAX(created_at) AS at FROM messages WHERE peer_id=? AND role='assistant' AND status='sent'",
+          )
+          .get(peer) as Row
+      ).at ?? 0,
+    );
   }
 
   // ---------- 用量 ----------
@@ -2601,4 +2337,9 @@ export class Store {
     mkdirSync(dirname(destination), { recursive: true });
     await backup(this.sql, destination);
   }
+}
+
+/** 想法行的 JSON 列解析。 */
+function initiative(row: Row): Initiative {
+  return { ...row, sources: parse(row.sources, []) } as unknown as Initiative;
 }

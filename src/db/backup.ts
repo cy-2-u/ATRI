@@ -86,7 +86,7 @@ export async function createBackup(
     }
     const manifest: Manifest = {
       format: 1,
-      version: '3.0.0',
+      version: '4.0.0',
       createdAt: new Date().toISOString(),
       files: [...files].map((path) => ({
         path,

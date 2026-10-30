@@ -124,7 +124,7 @@ export async function fetchPublicPage(
         {
           signal: combined,
           headers: {
-            'user-agent': 'ATRI/3.0 (web reader)',
+            'user-agent': 'ATRI/4.0 (web reader)',
             accept: 'text/html,text/plain,application/json',
             'accept-encoding': 'identity',
           },

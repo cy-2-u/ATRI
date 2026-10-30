@@ -17,9 +17,14 @@ export interface SavedConfig {
   tavilyKey: string;
   timeZone: string;
   diaryHour: number;
+  /** 心跳总开关：关掉后她只剩聊天回复，没有自己的意识活动。 */
   proactiveEnabled: boolean;
-  quietStart: number;
-  quietEnd: number;
+  /** 她的睡眠时段（语义升级：不是"拦截窗口"，是她真的在睡）。 */
+  sleepStart: number;
+  sleepEnd: number;
+  /** 黏人度 0–100：决定心跳节拍的基准密度。这是人格参数，不是安全滑块
+   *  ——安静的人心跳本来就慢，黏人的人本来就想得多。 */
+  clinginess: number;
   contextWindowTokens: number;
   inputBudgetTokens: number;
   maxOutputTokens: number;
@@ -68,7 +73,7 @@ export const PERSONA_PRESETS: {
       '',
       '说话像微信里很熟的朋友，长短句混合，偶尔用表情包表达心情。你也会分享自己"今天"的小事，让对话是双向的。',
       '',
-      '你关心但有分寸：连续追问会让对方有压力，一天里最多主动关心一两次。对方明显想静一静时，说一句"我在"就退开。',
+      '你关心但有分寸：对方明显想静一静时，说一句"我在"就退开。',
     ].join('\n'),
   },
   {
@@ -136,8 +141,9 @@ function builtinDefaults(env: NodeJS.ProcessEnv): SavedConfig {
     timeZone: env.TZ || 'Asia/Shanghai',
     diaryHour: 3,
     proactiveEnabled: false,
-    quietStart: 23,
-    quietEnd: 8,
+    sleepStart: 1,
+    sleepEnd: 7,
+    clinginess: 50,
     contextWindowTokens: 65536,
     inputBudgetTokens: 24000,
     maxOutputTokens: 3000,
@@ -204,8 +210,14 @@ export class Settings {
     // 泵每 300ms 读一次配置：SQLite+JSON.parse 纯浪费；写路径是唯一变更口。
     if (this.configCache) return this.configCache;
     const defaults = builtinDefaults(this.env);
-    // 旧版本的未知键丢弃，不是永远合并下去。
-    const stored = this.store.getSetting<Partial<SavedConfig>>('config', {});
+    // 旧版本的未知键丢弃，不是永远合并下去（v3 里 quietStart/quietEnd
+    // 改名 sleepStart/sleepEnd，旧值自动落回默认——睡眠时段默认就是
+    // 旧的安静时段，运维在页面上重新确认一次即可）。
+    const stored = this.store.getSetting<Record<string, unknown>>('config', {});
+    if (stored['sleepStart'] === undefined && Number.isInteger(stored['quietStart']))
+      stored['sleepStart'] = stored['quietStart'];
+    if (stored['sleepEnd'] === undefined && Number.isInteger(stored['quietEnd']))
+      stored['sleepEnd'] = stored['quietEnd'];
     const merged = { ...defaults } as Record<string, unknown>;
     for (const key of Object.keys(defaults) as (keyof SavedConfig)[])
       if (stored[key] !== undefined) merged[key] = stored[key];
@@ -230,6 +242,7 @@ export class Settings {
       ['sandboxTimeoutSeconds', 0, 86400],
       ['maxConcurrentPeers', 1, 12],
       ['debounceMs', 0, 10000],
+      ['clinginess', 0, 100],
     ] as const) {
       const value = c[key];
       if (typeof value !== 'number' || !Number.isInteger(value) || value < min || value > max)
@@ -324,12 +337,17 @@ export class Settings {
         if (typeof input[key] !== 'boolean') throw new Error('开关格式无效');
         next[key] = input[key];
       }
-    for (const key of ['diaryHour', 'quietStart', 'quietEnd'] as const)
+    for (const key of ['diaryHour', 'sleepStart', 'sleepEnd'] as const)
       if (input[key] !== undefined) {
         const n = Number(input[key]);
         if (!Number.isInteger(n) || n < 0 || n > 23) throw new Error('时间设置无效');
         next[key] = n;
       }
+    if (input.clinginess !== undefined) {
+      const n = Number(input.clinginess);
+      if (!Number.isInteger(n) || n < 0 || n > 100) throw new Error('黏人度需要 0–100 之间的整数');
+      next.clinginess = n;
+    }
     let url: URL;
     try {
       url = new URL(next.baseUrl);
@@ -465,8 +483,9 @@ export class Settings {
       timeZone: c.timeZone,
       diaryHour: c.diaryHour,
       proactiveEnabled: c.proactiveEnabled,
-      quietStart: c.quietStart,
-      quietEnd: c.quietEnd,
+      sleepStart: c.sleepStart,
+      sleepEnd: c.sleepEnd,
+      clinginess: c.clinginess,
       debounceMs: c.debounceMs,
       maxConcurrentPeers: c.maxConcurrentPeers,
       turnTimeoutMs: c.turnTimeoutSeconds * 1000,

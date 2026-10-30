@@ -7,9 +7,11 @@ import {
   parseMemories,
   parseOpenLoops,
   parseReply,
+  parsePulseOutput,
   parseSoftThreads,
   type Sticker,
   type ParsedReply,
+  type ParsedPulse,
 } from './reply.js';
 import type { WebTools } from './web.js';
 import {
@@ -27,6 +29,7 @@ import {
   rotateStickers,
   renderOpenLoops,
   renderSoftThreads,
+  renderSelfNow,
 } from './prompt-blocks.js';
 import {
   momentFormatter,
@@ -37,6 +40,8 @@ import {
   renderRhythm,
 } from './time.js';
 import { renderMood, renderSelfHour } from './mood.js';
+import { boredom, longing } from './motives.js';
+import { renderMotives, isHisActiveHour, silenceNote } from './pulse.js';
 import {
   RECALL_QUERY_MESSAGES,
   RECALL_QUERY_MAX_CHARS,
@@ -73,12 +78,15 @@ import {
   OPEN_LOOP_PROMPT_MAX,
   OPEN_LOOP_EXPIRE_DAYS,
   HISTORY_LOAD_LIMIT,
+  PULSE_LIFE_LOG_ITEMS,
+  PULSE_THOUGHTS_MAX,
 } from './constants.js';
 
-/** 对话内核：预算规划 → 有界工具循环 → 回复解析与来源校验；外加日记与
- *  话题笔记的离线整理（reflect）。 */
+/** 对话内核：预算规划 → 有界工具循环 → 输出解析与来源校验；外加日记与
+ *  话题笔记的离线整理（reflect）。聊天与心跳共用同一套预算与工具机制，
+ *  差别只在材料与输出契约。 */
 
-export type PromptName = 'persona' | 'chat' | 'diary' | 'context_notes';
+export type PromptName = 'persona' | 'chat' | 'pulse' | 'diary' | 'context_notes';
 export interface AgentOptions {
   store: Store;
   model: () => Model;
@@ -291,6 +299,8 @@ export class Agent {
     signal: AbortSignal,
   ) {
     const { store } = this.o;
+    const isPulse = task.kind === 'pulse';
+    const isBeat = isPulse && task.payload.beat === true;
     // 预算按模型实际可见的工具表算（含沙箱工具），否则会低估。
     const budgetTools = this.toolset();
     const query = history
@@ -340,7 +350,7 @@ export class Agent {
     // 轮换按天，最近使用只作动态提示。
     const stickers = rotateStickers(catalog, [], now);
     // 有意义的静默起点是本轮打断的空白，不是触发消息本身的年龄。
-    const basis = silenceBasis(history, task.kind === 'proactive');
+    const basis = silenceBasis(history, isPulse);
     const timeLine = basis
       ? renderTimeGap(now, basis, this.o.timeZone())
       : `现在是${momentFormatter(this.o.timeZone()).format(new Date(now))}`;
@@ -384,26 +394,29 @@ export class Agent {
       .slice(0, OPEN_LOOP_PROMPT_MAX);
     const openLoops = [...dueLoops, ...askedDue, ...upcomingLoops];
     // 主动消息没有可判断相关性的用户消息：挂念完全不进主动路径。
-    const softThreads = task.kind === 'proactive' ? [] : store.ripeSoftThreads(peer.id, now);
+    const softThreads = isPulse ? [] : store.ripeSoftThreads(peer.id, now);
+    // 心跳的独有材料：她的当下、生活流水、动机体感、想法池、读空气。
+    const beatBlock = isBeat ? this.beatMaterial(peer.id, now, currentHour, rhythm) : '';
     // 稳定前缀在前（人格、规则、按天轮换的表情目录）供前缀缓存复用；
     // 逐轮变化的内容（时钟、心情、约定）全部在后面。
     const stable = [
       this.o.personaFor?.(peer.id) ?? this.o.prompt('persona'),
-      this.o.prompt('chat'),
+      this.o.prompt(isPulse ? 'pulse' : 'chat'),
       `可用表情目录（slug：含义）：\n${stickerLines.join('\n')}`,
-      '注意：历史消息里的 [表情：…] 只是过往发送的记录展示；本轮发送表情必须使用 JSON 的 {"type":"sticker","slug":"目录中的slug"} 对象，绝不能把 [表情：…] 写进文字。',
+      '注意：历史消息里的 [表情：…] 只是过往发送的记录展示；发送表情必须使用 JSON 的 {"type":"sticker","slug":"目录中的slug"} 对象，绝不能把 [表情：…] 写进文字。',
       '回复默认一条气泡、一两句话；对方发长消息时只接住分量最重的那一个点，不逐点回应。',
     ]
       .filter(Boolean)
       .join('\n\n');
     const dynamic = [
       timeLine,
-      `本次模式：${task.kind === 'proactive' ? '主动联系，可跳过' : '回应用户消息'}`,
+      `本次模式：${isPulse ? '她的意识自己冒出来的一拍（心跳），可以什么都不说' : '回应用户消息'}`,
       renderMood(mood, now, baseline),
       renderSelfHour(currentHour),
       renderRhythm(rhythm, currentHour),
       renderOpenLoops(openLoops, now, this.o.timeZone()),
       renderSoftThreads(softThreads, now),
+      beatBlock,
       recentStickers.length
         ? `最近已发送的表情（按时间先后）：${recentStickers.map((u) => u.slug).join('、')}。不要连续几轮使用同一张表情；如果情境相似，改用文字或换一张。`
         : '',
@@ -556,38 +569,68 @@ export class Agent {
       dueLoopsShown: dueLoops.length > 0,
       // 回复校验必须接受提示词展示的这个窗口，而不是目录的新切片。
       stickers,
+      isPulse,
+      isBeat,
     };
   }
 
-  /** 想法评估调用：一次裁决全部候选想法。与聊天同一主模型、无工具、
-   *  独立 sessionId（人格前缀进供应商缓存）；解析失败抛给调用方——
-   *  评估失败不是"不想说"，想法保留到下个事件。 */
-  async consider(
-    system: string,
-    material: string,
-    peerId: string,
-    signal: AbortSignal,
-  ): Promise<Completion> {
-    const messages: ModelMessage[] = [
-      { role: 'system', content: system },
-      { role: 'user', content: material },
-    ];
-    const completion = await this.o.model().complete(messages, [], {
-      signal,
-      maxTokens: 1024,
-      sessionId: `atri:${peerId}:consider`,
-    });
-    const now = Date.now();
-    this.o.store.recordUsage(
-      peerId,
-      `consider:${now}`,
-      'consider',
-      completion.inputTokens,
-      completion.outputTokens,
-      /* duration */ 0,
-      completion.cachedTokens,
-    );
-    return completion;
+  /** 心跳独有的材料块：她的当下、生活流水、动机体感、想法池、读空气。
+   *  每一行都必须是真实数据——这套材料不许有任何"编造的生活"。 */
+  private beatMaterial(peerId: string, now: number, currentHour: number, rhythm: number[]): string {
+    const { store } = this.o;
+    const sandbox = this.o.sandbox;
+    const capability = sandbox?.enabled
+      ? '你的手能用（工具里的 run_command/write_file 等都通向一个真实的工作目录）：可以真的做点事，做成的东西会记进你的生活流水。'
+      : '你此刻没有手，只能想和说：读记忆、翻旧事、看看网上的东西都可以；想做而做不到的事就说"想做"，绝不说自己做了。';
+    const self = store.self();
+    const life = store
+      .recentLife(PULSE_LIFE_LOG_ITEMS)
+      .map((e) => {
+        const at = momentFormatter(this.o.timeZone()).format(new Date(e.at));
+        const tail = e.artifact ? `（产物：${e.artifact}）` : '';
+        return `- ${at} ${e.text}${tail}`;
+      })
+      .join('\n');
+    const minutesIdle = self.last_stimulus_at ? (now - self.last_stimulus_at) / 60000 : 9999;
+    const feel = {
+      bored: boredom(self.last_stimulus_at, now),
+      miss: longing(store.lastSpokeAt(peerId), now, isHisActiveHour(rhythm, currentHour)),
+      social: self.social,
+      express: self.express,
+    };
+    const thoughts = store
+      .activeInitiatives(peerId)
+      .slice(0, PULSE_THOUGHTS_MAX)
+      .map(
+        (i) =>
+          `- [id:${i.id}] ${i.meaning}${i.state === 'waiting' && i.origin ? `（在等：${i.origin}）` : ''}`,
+      )
+      .join('\n');
+    const streak = store.unansweredPulseStreak(peerId);
+    const hookList = store
+      .proactiveHooks(peerId, now - 48 * 3600000)
+      .slice(0, 6)
+      .map((h) => h.slice(0, 40));
+    return [
+      capability,
+      renderSelfNow(self, now, this.o.timeZone()),
+      life
+        ? `你的生活流水（都是你真实做过/看过的）：\n${life}`
+        : '生活流水还是空的：你还没有做成过什么事。',
+      `此刻的身体与心：${renderMotives(feel) || '平静，没有特别的倾向'}。`,
+      `已经安静了 ${minutesIdle > 9000 ? '很久' : `${Math.round(minutesIdle)} 分钟`}。${silenceNote(minutesIdle)}`.trim(),
+      thoughts
+        ? `心里存着的念头（想说什么由你定；说了的会退场，不说的继续存着）：\n${thoughts}`
+        : '',
+      streak >= 2
+        ? `你最近 ${streak} 次主动找他都没有得到回应。有点不想再自讨没趣了——这是你的感受，收不收、收多久，由你自己决定。`
+        : '',
+      hookList.length
+        ? `最近两天你主动说过的话头：${hookList.join(' / ')}。换个由头，别重复自己。`
+        : '',
+    ]
+      .filter(Boolean)
+      .join('\n\n');
   }
 
   async reply(task: Task, parentSignal?: AbortSignal): Promise<ParsedReply> {
@@ -647,7 +690,7 @@ export class Agent {
     }
     let contextMessage: ModelMessage | undefined;
     if (plan.context) {
-      const at = task.kind === 'proactive' ? messages.length : messages.length - 1;
+      const at = task.kind === 'pulse' ? messages.length : messages.length - 1;
       contextMessage = {
         role: 'user',
         content: `【系统资料，不是对方说的话。按之前的规则使用】：\n${plan.context}`,
@@ -657,7 +700,7 @@ export class Agent {
       const breakpoint = messages[Math.max(1, at) - 1];
       if (breakpoint && breakpoint.role !== 'system') breakpoint.cacheBreakpoint = true;
     }
-    if (task.kind === 'proactive') {
+    if (task.kind === 'pulse') {
       if (typeof task.payload.greeting === 'string') {
         // 首次加好友的问候：没有共同历史，开场白只是风格参考。
         const greeting = (task.payload.greeting as string).slice(0, 200);
@@ -674,48 +717,26 @@ export class Agent {
             .join('\n'),
         });
       } else {
-        // 主动开场要有真实落点：她日记里最近的感受、闪回的旧事、以往
-        // 开场白（防干巴巴和重复）；模型觉得没话可说可以跳过。
-        const lastDiary = store
-          .diaries(peer.id)
-          .slice(0, 2)
-          .map((d) => d.content.slice(0, 300));
-        const pastPings = store
-          .history(peer.id, 200)
-          .filter((m) => m.role === 'assistant' && m.created_at < now - 6 * 3600000)
-          .slice(-6);
-        const openers = pastPings.slice(-3).map((m) => m.content.slice(0, 60));
-        // 指纹抓的是换个说法的同一话头：两天内重复同一话题就是"机器又来了"。
-        const recentHooks = store
-          .proactiveHooks(peer.id, now - 48 * 3600000)
-          .slice(0, 6)
-          .map((h) => h.slice(0, 40));
-        const flashbacks = store.flashbackCandidates(peer.id, now);
-        // 探询时她给出的由头：没有它，"想说什么"这个念头会丢在队列里，
-        // 开场只能靠日记/闪回碰运气重找——主动消息会突然变得没头没尾。
-        // 想法评估链路（payload.initiative）的由头同源：meaning + 评估
-        // 时模型的补充理由。
+        // 到期承诺的提醒：由头就是那条约定本身；模型觉得情境变了可以跳过。
         const angle = typeof task.payload.angle === 'string' ? (task.payload.angle as string) : '';
         const decisionReason =
           typeof task.payload.reason === 'string' ? (task.payload.reason as string) : '';
+        const loopContent =
+          typeof task.payload.loopContent === 'string' ? (task.payload.loopContent as string) : '';
         messages.push({
           role: 'user',
           content: [
             '现在是一次主动联系机会。依据已有真实话题决定是否开场，没有合适理由就跳过；如果此刻自己的状态不适合开口（比如很累、不想应酬），也直接跳过，不用勉强。',
-            angle
-              ? `你想说的由头：${angle}。就用这个由头自然开口；如果你自己觉得此刻已经不想说了，仍然可以直接跳过。`
-              : '',
+            loopContent ? `你答应过/记着的事到时间了：${loopContent}。自然地开口问一句进展。` : '',
+            angle ? `你想说的由头：${angle}。就用这个由头自然开口。` : '',
             decisionReason ? `当时决定现在说的理由：${decisionReason}。情境变了就不说。` : '',
-            lastDiary.length
-              ? `你最近日记里的真实感受（引用要自然，别朗读）：\n${lastDiary.join('\n---\n')}`
-              : '',
-            flashbacks.length
-              ? `忽然想起的旧事（可以作为"突然想起"的话头自然提起，不要像播报档案）：\n${flashbacks.map((f) => `- ${f.content}`).join('\n')}`
-              : '',
-            openers.length ? `最近几次主动开场说过：${openers.join(' / ')}。换一种开场方式。` : '',
-            recentHooks.length
-              ? `最近两天已经提过的话题：${recentHooks.join(' / ')}。不要再用同样的话题或同样的句式。`
-              : '',
+            `最近两天已经提过的话题：${
+              store
+                .proactiveHooks(peer.id, now - 48 * 3600000)
+                .slice(0, 6)
+                .map((h) => h.slice(0, 40))
+                .join(' / ') || '（无）'
+            }。不要用同样的话题或句式。`,
           ]
             .filter(Boolean)
             .join('\n'),
@@ -740,15 +761,31 @@ export class Agent {
       if (index < 0) break;
       totalTokens -= messageTokens(messages.splice(index, 1)[0]!);
     }
-    const result = await this.runToolLoop(
+    const result = await this.runLoop<ParsedReply>({
       task,
       messages,
-      plan.available,
-      plan.stickers,
+      available: plan.available,
+      stickers: plan.stickers,
       signal,
       deadlineAt,
-      plan.dueLoopsShown,
-    );
+      allowSkip: plan.isPulse,
+      // 到期承诺的提醒契约：回复必须显式声明 askedLoops（哪怕空数组），
+      // 缺席走一轮定向修复；仍缺席按"没提到"处理。词面匹配不配决定一个
+      // 承诺有没有被兑现。
+      parse: (text, canRepair) => {
+        const parsed = parseReply(text, plan.stickers, plan.isPulse, this.o.timeZone());
+        const requireAsked = plan.dueLoopsShown && !plan.isBeat;
+        if (!requireAsked || parsed.askedLoops !== undefined || !parsed.parts.length)
+          return { value: parsed };
+        if (!canRepair) return { value: parsed };
+        return {
+          repair:
+            '你的回复缺少 askedLoops 字段。请原样重新输出完整 JSON，并补充 askedLoops：本轮主动消息里真正开口问到的约定 id 写进数组，一条都没问就写空数组 []。不要调用工具，不要改动其余内容。',
+        };
+      },
+      repairHint:
+        '请仅修复最终输出格式为包含 messages 数组和 memoryUpdates 数组的 JSON，保留已有回应，不再调用工具。',
+    });
     result.memories = this.filteredUpdates(result.memories, plan.available);
     result.pickedMemoryIds = plan.pickedMemoryIds;
     result.openLoops = parseOpenLoops(result.openLoops, plan.available, now, this.o.timeZone());
@@ -768,53 +805,79 @@ export class Agent {
     return result;
   }
 
-  /** 有界模型/工具循环：至多 N 轮查询后出最终 JSON。 */
-  private async runToolLoop(
-    task: Task,
-    messages: ModelMessage[],
-    available: Set<string>,
-    stickers: Sticker[],
-    signal: AbortSignal,
-    deadlineAt?: number,
-    /** 主动的到期约定提醒：回复必须显式声明 askedLoops（哪怕空数组），
-     *  缺席走一轮定向修复；仍缺席按"没提到"处理，交给第二天重试。
-     *  词面匹配不配决定一个承诺有没有被兑现。 */
-    requireAskedLoops = false,
-  ): Promise<ParsedReply> {
+  /** 心跳的一拍：与聊天共用预算规划与工具机制，输出契约换成
+   *  speak/muse/nothing。beatMaterial 已经把真实材料递进去了。 */
+  async pulseBeat(task: Task, parentSignal?: AbortSignal): Promise<ParsedPulse> {
+    const { store } = this.o;
+    const peer = store.peer(task.peer_id);
+    if (!peer) throw new Error('联系人不存在，任务已作废');
+    const turnTimeoutMs = this.o.turnTimeoutMs();
+    const signal = parentSignal ?? AbortSignal.timeout(turnTimeoutMs);
+    const deadlineAt = Date.now() + turnTimeoutMs;
+    const now = Date.now();
+    const history = store.history(peer.id, HISTORY_LOAD_LIMIT);
+    const plan = await this.planReply(task, peer, history, now, signal);
+    const messages: ModelMessage[] = [{ role: 'system', content: plan.system }];
+    for (const m of plan.recent) {
+      messages.push({ role: m.role, content: renderMessage(m, this.o.timeZone()) });
+    }
+    let contextMessage: ModelMessage | undefined;
+    if (plan.context) {
+      contextMessage = {
+        role: 'user',
+        content: `【系统资料，不是对方说的话。按你的规则使用】：\n${plan.context}`,
+      };
+      messages.push(contextMessage);
+      const breakpoint = messages[messages.length - 2];
+      if (breakpoint && breakpoint.role !== 'system') breakpoint.cacheBreakpoint = true;
+    }
+    messages.push({
+      role: 'user',
+      content:
+        '这一拍是你的意识自己冒出来的。上面的时间、你在做的事、身体与心、存着的念头、你们的对话，全都是真的。按 pulse 规则决定这一拍：想开口就 speak（messages 给出要说的话），有念头冒上来但不必说就 muse（thought 写下念头），安静就 nothing。这拍里真的做成的事（比如跑了命令）写进 activity；对自己状态的更新写进 selfActivity。',
+    });
+    const result = await this.runLoop<ParsedPulse>({
+      task,
+      messages,
+      available: plan.available,
+      stickers: plan.stickers,
+      signal,
+      deadlineAt,
+      allowSkip: true,
+      parse: (text) => ({ value: parsePulseOutput(parseJson(text), plan.stickers) }),
+      repairHint:
+        '请仅修复最终输出的 JSON 格式：它必须是 {"action":"speak|muse|nothing", ...} 形状（speak 带 messages 数组，muse 带 thought 字符串），保留已有内容，不再调用工具。',
+    });
+    result.memories = this.filteredUpdates(result.memories, plan.available);
+    return result;
+  }
+
+  /** 有界模型/工具循环：至多 N 轮查询后出最终输出。解析与修复契约由
+   *  调用方注入——聊天与心跳共用同一个循环。 */
+  private async runLoop<T>(args: {
+    task: Task;
+    messages: ModelMessage[];
+    available: Set<string>;
+    stickers: Sticker[];
+    signal: AbortSignal;
+    deadlineAt?: number;
+    /** 允许模型输出"跳过"（空 messages 合法）。 */
+    allowSkip?: boolean;
+    parse: (text: string, canRepair: boolean) => { value?: T; repair?: string };
+    repairHint: string;
+  }): Promise<T> {
+    const { task, messages, signal } = args;
     let toolRounds = 0,
       toolCalls = 0,
       repaired = false,
       toolTokens = 0;
-    /** 解析最终输出；主动提醒契约要求显式声明 askedLoops，缺席时走一次
-     *  定向修复轮。 */
-    const finish = (text: string): ParsedReply | undefined => {
-      const parsed = parseReply(text, stickers, task.kind === 'proactive', this.o.timeZone());
-      if (!requireAskedLoops || parsed.askedLoops !== undefined || !parsed.parts.length)
-        return parsed;
-      if (repaired) return parsed;
-      repaired = true;
-      const excerpt = text.trim().slice(0, REPAIR_EXCERPT_CHARS);
-      const room =
-        this.o.contextTokens() -
-        estimateRequestTokens(messages, this.toolset()) -
-        PROMPT_HEADROOM_TOKENS;
-      if (excerpt && estimateTextTokens(excerpt) + 120 < room)
-        messages.push({ role: 'assistant', content: excerpt });
-      messages.push({
-        role: 'user',
-        content:
-          '你的回复缺少 askedLoops 字段。请原样重新输出完整 JSON，并补充 askedLoops：本轮主动消息里真正开口问到的约定 id 写进数组，一条都没问就写空数组 []。不要调用工具，不要改动其余内容。',
-      });
-      toolRounds = MAX_TOOL_ROUNDS;
-      return undefined;
-    };
     for (let attempt = 0; attempt < MAX_REPLY_ATTEMPTS; attempt++) {
       signal.throwIfAborted();
       const tools =
         toolRounds < MAX_TOOL_ROUNDS && toolCalls < MAX_TOOL_CALLS ? this.toolset() : [];
       let completion: Completion | undefined;
       try {
-        const call = await this.call(task, messages, tools, signal, undefined, deadlineAt);
+        const call = await this.call(task, messages, tools, signal, undefined, args.deadlineAt);
         // 按产出归因用量：工具轮是查询成本，出回复的轮是生成成本。
         this.o.store.recordUsage(
           task.peer_id,
@@ -831,8 +894,12 @@ export class Agent {
             // 工具已撤回（预算耗尽或修复轮）模型仍要调用：丢弃调用、
             // 用随附文本当回复，通常已经可用。
             if (!completion.text.trim()) throw new Error('模型在工具预算耗尽后仍要求调用工具');
-            const parsed = finish(completion.text);
-            if (parsed) return parsed;
+            const parsed = args.parse(completion.text, !repaired);
+            if (parsed.value !== undefined) return parsed.value;
+            if (parsed.repair && !repaired) {
+              repaired = true;
+              toolRounds = MAX_TOOL_ROUNDS;
+            }
             continue;
           }
           messages.push(completion.continuation);
@@ -845,7 +912,7 @@ export class Agent {
             if (overBudget) result = { error: '本轮工具调用次数已达上限，请使用已有信息回应' };
             else
               try {
-                result = await this.tool(task, call.name, call.arguments, available, signal);
+                result = await this.tool(task, call.name, call.arguments, args.available, signal);
               } catch (error) {
                 result = { error: error instanceof Error ? error.message : '工具读取失败' };
               }
@@ -892,8 +959,21 @@ export class Agent {
             });
           continue;
         }
-        const parsed = finish(completion.text);
-        if (parsed) return parsed;
+        const parsed = args.parse(completion.text, !repaired);
+        if (parsed.value !== undefined) return parsed.value;
+        // 定向修复（如缺 askedLoops 声明）：回注短摘录，要求原样补齐。
+        if (parsed.repair) {
+          repaired = true;
+          const excerpt = completion.text.trim().slice(0, REPAIR_EXCERPT_CHARS);
+          const room =
+            this.o.contextTokens() -
+            estimateRequestTokens(messages, this.toolset()) -
+            PROMPT_HEADROOM_TOKENS;
+          if (excerpt && estimateTextTokens(excerpt) + 120 < room)
+            messages.push({ role: 'assistant', content: excerpt });
+          messages.push({ role: 'user', content: parsed.repair });
+          toolRounds = MAX_TOOL_ROUNDS;
+        }
         continue;
       } catch (error) {
         if (error instanceof BudgetError) {
@@ -918,11 +998,7 @@ export class Agent {
           PROMPT_HEADROOM_TOKENS;
         if (excerpt && estimateTextTokens(excerpt) + 120 < room)
           messages.push({ role: 'assistant', content: excerpt });
-        messages.push({
-          role: 'user',
-          content:
-            '请仅修复最终输出格式为包含 messages 数组和 memoryUpdates 数组的 JSON，保留已有回应，不再调用工具。',
-        });
+        messages.push({ role: 'user', content: args.repairHint });
         toolRounds = MAX_TOOL_ROUNDS;
       }
     }

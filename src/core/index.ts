@@ -6,4 +6,6 @@ export * from './prompt-blocks.js';
 export * from './memory-context.js';
 export * from './time.js';
 export * from './mood.js';
+export * from './motives.js';
+export * from './pulse.js';
 export * from './constants.js';

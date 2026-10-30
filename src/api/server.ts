@@ -237,6 +237,19 @@ export function createServer(o: ServerOptions) {
     return { ok: true };
   });
 
+  // ---------- 她的当下（主动 v3） ----------
+
+  /** 只读视图：此刻在做什么、动机体感的数值真相、生活流水。管理页
+   *  "她的状态"面板与运维排障都用它。 */
+  app.get('/api/self', () => ({
+    self: o.store.self(),
+    life: o.store.recentLife(20),
+    thoughts: o.store
+      .peers()
+      .filter((p) => p.approved)
+      .flatMap((p) => o.store.activeInitiatives(p.id).map((i) => ({ ...i, peer: p.address }))),
+  }));
+
   // ---------- 人格 ----------
 
   app.get('/api/personas', () => {
@@ -393,7 +406,7 @@ export function createServer(o: ServerOptions) {
       if (greeting.trim())
         o.store.enqueue(
           peer.id,
-          'proactive',
+          'pulse',
           `greeting:${peer.version}:${hashGreeting(greeting)}`,
           { greeting },
           Date.now(),

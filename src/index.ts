@@ -19,7 +19,7 @@ const stickers = new Stickers(root, dataDir, store);
 const bridge = new WeChatBridge(store, settings, stickers, (message) => console.warn(message));
 const embeddings = new EmbeddingClient(() => settings.embedding());
 // 沙箱刻意放在 DATA_DIR 外：nsjail 会把数据目录遮蔽成空 tmpfs，工作
-// 目录必须在遮蔽之外才能存活。
+// 目录必须在遮蔽之外才能存活。它不只是安全边界——它也是她的手。
 const sandbox = new Sandbox(resolve(dataDir, '..', 'sandbox'), {
   enabled: () => settings.config().sandboxEnabled,
   network: () => settings.config().sandboxNetwork,

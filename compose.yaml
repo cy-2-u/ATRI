@@ -5,7 +5,8 @@ services:
     restart: unless-stopped
     # nsjail 需要在容器内建挂载树，Docker 默认安全配置不给这个权限，
     # 必须 privileged；模型能触达的范围仍被命名空间收窄（系统目录只读、
-    # 默认无网络路由、看不到 /app 与 /data）。
+    # 默认无网络路由、看不到 /app 与 /data）。沙箱同时是她的手——
+    # 心跳里她真实做成的事都发生在这个卷里。
     privileged: true
     env_file: .env
     environment:
@@ -16,7 +17,7 @@ services:
       - '${ATRI_BIND:-127.0.0.1}:${ATRI_PORT:-3000}:3000'
     volumes:
       - atri-data:/data
-      # 沙箱目录必须在 /data 之外：nsjail 会把 /data 遮蔽成空 tmpfs。
+      # 她的工作目录必须在 /data 之外：nsjail 会把 /data 遮蔽成空 tmpfs。
       - atri-sandbox:/sandbox
     logging:
       driver: json-file

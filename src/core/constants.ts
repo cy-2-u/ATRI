@@ -32,7 +32,7 @@ export const PROMPT_STICKERS = 24;
 
 // ---------- 预算分配 ----------
 
-/** HISTORY_RESERVE 是近期消息的保底份额；三个资料份额各自独立应用于
+/** HISTORY_RESERVE 是近期消息的保底份额；资料份额各自独立应用于
  *  固定系统提示之外的余量（独立份额防一条长笔记饿死全部记忆）。 */
 export const HISTORY_RESERVE_SHARE = 0.4;
 export const PROMPT_NOTES_SHARE = 0.4;
@@ -94,19 +94,30 @@ export const DIARY_GAP_LOOKBACK_DAYS = 2;
 export const DIARY_GAP_MAX_SECTIONS = 4;
 export const DIARY_GAP_MAX_TOKENS = 700;
 
-// ---------- 主动联系 ----------
+// ---------- 心跳（主动 v3：她自己的意识流） ----------
 
-/** 空闲碎碎念（muse）：对方沉默多久后才允许立项一次，以及两次立项的
- *  最小间隔。低频是性格——真人也不会天天主动找人。 */
-export const MUSE_SILENCE_MIN_HOURS = 36;
-export const MUSE_COOLDOWN_DAYS = 4;
+/** 开环与挂念在提示词里的条数上限。 */
 export const OPEN_LOOP_PROMPT_MAX = 5;
 export const SOFT_THREAD_PROMPT_MAX = 3;
-/** 新记忆与既有记忆余弦超过该值时自动替代旧行。 */
-export const SIMILARITY_SUPERSEDE = 0.9;
 /** 作息桶的最低消息数阈值。 */
 export const RHYTHM_MIN_BUCKET = 3;
 export const RHYTHM_PEAK_BUCKETS = 6;
+/** 心跳材料里最近生活流水的条数。 */
+export const PULSE_LIFE_LOG_ITEMS = 6;
+/** 聊天结束后多少分钟内视为"余韵未散"：节拍自动加密。 */
+export const PULSE_AFTER_CHAT_MINUTES = 10;
+/** 故障保险丝：一小时内没有任何对方回应却连发超过这么多条主动消息，
+ *  是程序故障不是活人——熔断本小时剩余心跳并记日志。 */
+export const PULSE_FUSE_PER_HOUR = 2;
+/** 想法池在心跳材料里的条数上限。 */
+export const PULSE_THOUGHTS_MAX = 5;
+/** 心跳单次生成允许的工具轮数：她可以真的动手做一件事。 */
+export const PULSE_TOOL_ROUNDS = 3;
+
+// ---------- 数据 ----------
+
+/** 新记忆与既有记忆余弦超过该值时自动替代旧行。 */
+export const SIMILARITY_SUPERSEDE = 0.9;
 /** 向量回填每批条数。 */
 export const EMBED_BACKFILL_BATCH = 64;
 /** 每轮加载的历史条数上限：静默基准、表情去重、心情回看都只在最近

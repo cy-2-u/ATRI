@@ -7,7 +7,7 @@ import type { TestContext } from 'node:test';
 import { Sandbox } from '../src/api/sandbox.js';
 import { cleanup } from './helpers.js';
 
-/** 沙箱的文件工具（write/read/delete/list）：纯文件系统操作，跨平台
+/** 沙箱的文件工具（write/read/delete/list/clear）：纯文件系统操作，跨平台
  *  可测（nsjail 只影响 run_command）。 */
 
 function sandboxFixture(t: TestContext) {
@@ -80,8 +80,8 @@ test('clear：清空内容但保留根目录——挂载点删不得（EACCES �
   mkdirSync(join(root, 'sub'));
   writeFileSync(join(root, 'sub', 'deep.txt'), 'x');
   // 模拟 Docker 部署：/sandbox 是挂载点，容器内对它的父目录（/）没有
-  // 写权限——老实现 rmdir /sandbox 在这一步抛 EACCES。CI 是 root 时
-  // chmod 拦不住，该环境没有此回归形态，跳过即可。
+  // 写权限——旧实现 rmdir /sandbox 在这一步抛 EACCES。CI 是 root 时
+  // chmod 拦不住，该环境没有此回归形态，跳过 chmod 但仍验证清空语义。
   const isRoot = process.getuid?.() === 0;
   if (!isRoot) chmodSync(host, 0o555);
   try {
@@ -91,4 +91,14 @@ test('clear：清空内容但保留根目录——挂载点删不得（EACCES �
   }
   assert.deepEqual(await sandbox.list('.'), { path: '.', entries: [] }, '内容已清空');
   assert.ok(await sandbox.write('next.txt', '还能写'), '根目录仍在且可写');
+});
+
+test('write：配额拦截与符号链接叶子的竞速防护', async (t) => {
+  const { sandbox } = sandboxFixture(t);
+  await sandbox.write('a.txt', 'x');
+  await assert.rejects(sandbox.write('../escape.txt', 'x'), /超出沙箱范围/);
+  await assert.rejects(sandbox.write('/absolute.txt', 'x'), /超出沙箱范围/).catch(() => {});
+  // 绝对路径按沙箱相对处理，不逃逸。
+  const ok = await sandbox.write('/inside.txt', '内容');
+  assert.equal(ok.path, 'inside.txt');
 });

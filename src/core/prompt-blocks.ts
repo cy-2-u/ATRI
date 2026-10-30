@@ -3,8 +3,9 @@ import { sourceFormatter, vagueDays } from './time.js';
 import { STICKER_RECENT_SHOWN, PROMPT_STICKERS } from './constants.js';
 import type { Sticker } from './reply.js';
 
-/** 提示词资料块的渲染：历史消息、表情目录与使用反馈、未完的约定与挂念。
- *  这些块是"资料"而非编排逻辑——agent 只负责把它们按预算拼进请求。 */
+/** 提示词资料块的渲染：历史消息、表情目录与使用反馈、未完的约定与挂念、
+ *  她自己的当下。这些块是"资料"而非编排逻辑——agent 只负责把它们按预算
+ *  拼进请求。 */
 
 export function renderMessage(m: Message, timeZone = 'Asia/Shanghai'): string {
   const media = m.media
@@ -100,4 +101,24 @@ export function rotateStickers(
   const keep = Math.max(0, window - keptStale.length);
   // 返回挑选出的顺序本身：按目录序重排会悄悄撤销下沉。
   return [...fresh.slice(0, keep), ...keptStale].slice(0, window);
+}
+
+/** 她的当下（聊天与心跳共用）：此刻在做什么、今天打算做什么。聊天时
+ *  对方问"在干嘛"她答得上来，是因为这块资料真的递进去了。 */
+export function renderSelfNow(
+  self: { activity: string; activity_since: number; plan: string; plan_day: string },
+  now: number,
+  timeZone: string,
+): string {
+  const parts: string[] = [];
+  if (self.activity) {
+    const since = self.activity_since
+      ? `，从 ${sourceFormatter(timeZone).format(new Date(self.activity_since))} 开始`
+      : '';
+    parts.push(`此刻在做：${self.activity}${since}`);
+  }
+  if (self.plan && self.plan_day === sourceFormatter(timeZone).format(new Date(now)).slice(0, 5))
+    parts.push(`今天的打算：${self.plan}`);
+  if (!parts.length) return '此刻没有在做特定的事。';
+  return parts.join('；') + '。这些是资料，不是台词：聊天被问到就如实说，没被问就不必提。';
 }

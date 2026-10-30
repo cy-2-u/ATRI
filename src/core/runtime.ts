@@ -4,6 +4,9 @@ import { Agent, type AgentOptions } from './agent.js';
 import { renderMessage } from './prompt-blocks.js';
 import { estimateTextTokens, cosineSimilarity } from '../llm.js';
 import { residuePulse } from './memory-context.js';
+import { createHash } from 'node:crypto';
+import { tickMotives, type MotiveTick } from './motives.js';
+import { inSleepHours, nextBeatDelayMs } from './pulse.js';
 import {
   NOTES_MIN_MESSAGES,
   NOTES_WINDOW,
@@ -13,12 +16,15 @@ import {
   EMBED_BACKFILL_BATCH,
   SIMILARITY_SUPERSEDE,
   BEAT_RANGES_MS,
-  MUSE_SILENCE_MIN_HOURS,
-  MUSE_COOLDOWN_DAYS,
+  PULSE_FUSE_PER_HOUR,
 } from './constants.js';
-import { considerInitiatives } from './initiative.js';
 
-/** 调度主干：泵队列、投递气泡、排日记与主动联系、向量回填。 */
+/** 调度主干：泵队列、投递气泡、她的心跳、日记与向量回填。
+ *
+ *  主动 v3：不再有"审批闸门"。代码只负责三件事——让心跳按节律发生
+ *  （睡眠/黏人度/走神）、把真实材料递给模型、在故障时熔断（一小时无
+ *  回应连发多条是程序故障，不是活人）。想不想说、说什么，永远是模型
+ *  在真实材料上的决定。 */
 
 export interface Embedder {
   configured: boolean;
@@ -31,8 +37,11 @@ export interface RuntimeConfig {
   timeZone: string;
   diaryHour: number;
   proactiveEnabled: boolean;
-  quietStart: number;
-  quietEnd: number;
+  /** 她的睡眠时段。 */
+  sleepStart: number;
+  sleepEnd: number;
+  /** 黏人度 0–100：心跳基准密度。 */
+  clinginess: number;
   debounceMs: number;
   maxConcurrentPeers: number;
   turnTimeoutMs: number;
@@ -82,19 +91,6 @@ export function taskBackoffMs(attempts: number): number {
 }
 /** 单联系人单泵周期的工作预算（含投递轮）。 */
 const MAX_WORK_ITERATIONS = 12;
-/** 读空气刹车：连续无回应时按 3→6→12→14 天封顶拉长——这是打扰保护，
- *  不是性格；对方一开口立即解除。 */
-export function silenceCooldownMs(streak: number): number {
-  const days = Math.min(14, 3 * 2 ** Math.max(0, streak - 2));
-  return days * 86400000;
-}
-export function inQuietHours(hour: number, start: number, end: number) {
-  return start === end
-    ? false
-    : start < end
-      ? hour >= start && hour < end
-      : hour >= start || hour < end;
-}
 /** 可中断的暂停：shutdown/supersede 不用陪完剩余延迟。 */
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   if (signal?.aborted) return Promise.resolve();
@@ -108,6 +104,10 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
     signal?.addEventListener('abort', done, { once: true });
   });
 }
+
+const thoughtKey = (thought: string) =>
+  `thought:${createHash('sha256').update(thought).digest('hex').slice(0, 12)}`;
+
 /** beat 档位 → 有界毫秒区间内随机取值。停不停由语义决定，代码只画边界。 */
 function beatPauseMs(part: ReplyPart): number | undefined {
   if (!part.beat) return undefined;
@@ -117,6 +117,7 @@ function beatPauseMs(part: ReplyPart): number | undefined {
 
 export class Runtime {
   readonly agent: Agent;
+  readonly store: Store;
   private active = new Map<
     string,
     { promise: Promise<void>; controller: AbortController; kind?: string }
@@ -126,23 +127,16 @@ export class Runtime {
   private embedTimer?: ReturnType<typeof setInterval>;
   private embedding = false;
   private stopped = false;
-  /** 有新用户事件待评估想法的联系人；schedule() 消费后移除。按联系人
-   *  记账：A 的新消息不该触发 B 的想法评估，也不能被 B 的评估清掉。 */
-  private pendingIdeaEvents = new Set<string>();
-  /** 想法评估进行中的联系人：评估是异步模型调用，护栏防止调度器
-   *  在它完成前反复重新发起同一批评估。 */
-  private considering = new Set<string>();
-  /** 全部进行中的回填（不止启动那次）：停机关库前要等它们全部落地。 */
-  private readonly backfills = new Set<Promise<void>>();
-  private backfillController = new AbortController();
-  /** 气泡真正发出去之前不可见的 asked 标记；发送失败就弄丢承诺。 */
+  /** 每个联系人的下一次心跳时刻（内存态；重启后从"很快"重新起算）。 */
+  private nextBeatAt = new Map<string, number>();
+  /** 任务产出与投递结果之间的挂起效果（asked 标记），崩溃安全。 */
   private pendingEffects = new Map<string, { loops: string[]; threads: string[] }>();
+  private backfillController = new AbortController();
+  private backfills = new Set<Promise<void>>();
 
-  constructor(readonly options: RuntimeOptions) {
+  constructor(private readonly options: RuntimeOptions) {
     this.agent = new Agent(options);
-  }
-  get store(): Store {
-    return this.options.store;
+    this.store = options.store;
   }
 
   start() {
@@ -268,12 +262,10 @@ export class Runtime {
     const active = this.active.get(peer);
     // 只有产出用户可见输出的轮次值得取消（它的回复会答一条已被取代的
     // 消息）；日记/笔记是后台写入，取消只会让它们永远重启。
-    if (!result.duplicate && active && (active.kind === 'chat' || active.kind === 'proactive'))
+    if (!result.duplicate && active && (active.kind === 'chat' || active.kind === 'pulse'))
       active.controller.abort();
-    // 主动 v2：对方的新消息是真实事件——正在 waiting 的想法可能因此
-    // 释放（"忙完了"），也可能让 fold 的想法重新值得单独说。事件到达
-    // 后交给调度器统一评估（不在消息路径里做模型调用）。
-    if (!result.duplicate) this.pendingIdeaEvents.add(peer);
+    // 新消息是一次真实的刺激：无聊归零、社交电量消耗。
+    if (!result.duplicate) this.settleMotives(peer, { now: timestamp, exchanges: 1 });
     this.pump();
     return result;
   }
@@ -346,8 +338,8 @@ export class Runtime {
           const beatPause = beatPauseMs(delivery.part);
           if (beatPause !== undefined || i > 0) {
             const chars = delivery.part.type === 'text' ? (delivery.part.text?.length ?? 0) : 6;
-            const pause = beatPause ?? Math.min(2500, 400 + Math.min(80, chars) * 25);
-            await sleep(pause, entry.controller.signal);
+            const pauseMs = beatPause ?? Math.min(2500, 400 + Math.min(80, chars) * 25);
+            await sleep(pauseMs, entry.controller.signal);
             if (entry.controller.signal.aborted) return;
           }
           // 运维可能在上个气泡发送期间确认/取消了这行：不再是 pending 就跳过。
@@ -391,112 +383,10 @@ export class Runtime {
         AbortSignal.timeout(this.options.config().turnTimeoutMs),
       ]);
       try {
-        if (task.kind === 'chat' || task.kind === 'proactive') {
-          // 排队中的开环提醒只是排队那一刻的判断：期间它可能被聊天轮
-          // 了结、被别的提醒问过、或已滑出询问窗口——照发就会"提醒"
-          // 用户刚处理完的事。
-          if (task.kind === 'proactive') {
-            const loopId = typeof task.payload?.loop === 'string' ? task.payload.loop : '';
-            if (
-              loopId &&
-              !this.store.dueOpenLoops(peer.id, Date.now()).some((l) => l.id === loopId)
-            ) {
-              this.store.finish(task.id, 'done');
-              continue;
-            }
-          }
-          // 开场白任务是批准联系人时的首次问候：普通门控对从未说话的
-          // 联系人必然否决，非空开场白跳过它；空串是"没配开场白"。
-          const isGreeting =
-            task.kind === 'proactive' &&
-            typeof task.payload.greeting === 'string' &&
-            (task.payload.greeting as string).trim() !== '';
-          if (
-            task.kind === 'proactive' &&
-            !isGreeting &&
-            !this.proactiveGate(task, peer, Date.now())
-          ) {
-            // superseded 而不是 done：否决的常见原因是到期点落进安静时段
-            // （或竞速的提醒吃掉了当日配额），done 会把去重键烧掉一整天。
-            this.store.finish(task.id, 'superseded');
-            continue;
-          }
-          const typing = this.options.transport.typing?.(peer, true).catch(() => {});
-          try {
-            const reply = await this.agent.reply(task, signal);
-            // 气泡先落库、先进投递；记忆去重要一次嵌入请求，不挡回复。
-            const saved = this.store.saveReply(task, reply.parts, []);
-            if (saved) {
-              const loops = this.applyOpenLoops(task, reply);
-              const threads = this.applySoftThreads(task, reply);
-              if (loops.length || threads.length) {
-                this.pendingEffects.set(task.id, { loops, threads });
-                // 崩溃在保存与投递之间时由 outbox 重试气泡，asked 状态
-                // 必须随行，否则提醒可能发两次。
-                this.store.setSetting(`pending_effects:${task.id}`, { loops, threads });
-              }
-              // 主动 v2：聊天中形成的想法落库（"这个改天想跟他说"）。
-              // 来源校验用对话可见的 ID 集（最近消息 + 记忆），模型引用
-              // 没见过的来源直接淘汰。
-              if (reply.initiatives.length) {
-                const available = new Set([
-                  ...this.store.history(peerId, 40).map((m) => m.id),
-                  ...(reply.pickedMemoryIds ?? []),
-                ]);
-                for (const input of reply.initiatives) {
-                  if (!input.sources.every((s) => available.has(s))) continue;
-                  this.store.upsertInitiative(peerId, input, Date.now());
-                }
-                // 新想法是事件：schedule 的下一拍会评估它。
-                this.pendingIdeaEvents.add(peerId);
-              }
-              // 记忆写入后置，版本不匹配时整体放弃。
-              await this.dedupeMemories(peerId, reply.memories, signal);
-              this.store.applyMemoryUpdates(peerId, task.version, reply.memories);
-              // 主动 v2：这次主动真的说出了那个想法——说完即退场，同一
-              // 由头不会被同一句话反复消费。模型选择跳过（无气泡）时
-              // 释放但标记已表达过：同一版本不再自动重评，防止没完没了
-              // 地拿同一个念头打扰；新事件仍会带来新版本。
-              if (task.kind === 'proactive' && typeof task.payload.initiative === 'string') {
-                const initiativeId = task.payload.initiative as string;
-                this.store.releaseInitiative(peerId, initiativeId, Date.now());
-                if (!reply.parts.length)
-                  this.store.sql
-                    .prepare("UPDATE initiatives SET origin='生成时选择跳过' WHERE id=?")
-                    .run(initiativeId);
-              }
-              // 每次进提示词都是一次演练：巩固按间隔增长、细节时钟重置；
-              // 带情绪残留的记忆被想起时泛化成此刻的心情。被跳过的主动
-              // 联系（没产出气泡）不算演练。
-              if (reply.pickedMemoryIds?.length && reply.parts.length) {
-                const residues = this.store.markMemoriesUsed(peerId, reply.pickedMemoryIds);
-                const pulse = residuePulse(residues);
-                if (pulse)
-                  this.store.pulseMood(
-                    peerId,
-                    { valence: pulse.valence, reason: pulse.reason },
-                    Date.now(),
-                  );
-              }
-              if (reply.moodPulse) this.store.pulseMood(peerId, { ...reply.moodPulse }, Date.now());
-              for (const description of reply.descriptions) {
-                const msg = this.store.getMessage(peerId, description.messageId);
-                if (msg) {
-                  this.store.updateMedia(
-                    peerId,
-                    msg.id,
-                    msg.media.map((m) =>
-                      m.kind === 'image' ? { ...m, description: description.description } : m,
-                    ),
-                  );
-                }
-              }
-            }
-          } finally {
-            void Promise.resolve(typing)
-              .then(() => this.options.transport.typing?.(peer, false))
-              .catch(() => {});
-          }
+        if (task.kind === 'chat') {
+          await this.runChat(task, peer, signal);
+        } else if (task.kind === 'pulse') {
+          await this.runPulse(task, peer, signal);
         } else await this.agent.reflect(task, signal);
       } catch (error) {
         if (this.stopped || entry.controller.signal.aborted) {
@@ -518,6 +408,277 @@ export class Runtime {
           this.store.deferFailed(task.id, taskBackoffMs(task.attempts));
         }
       }
+    }
+  }
+
+  /** 聊天轮：生成 → 落库 → 挂起效果 → 记忆。 */
+  private async runChat(task: Task, peer: Peer, signal: AbortSignal) {
+    const typing = this.options.transport.typing?.(peer, true).catch(() => {});
+    try {
+      const reply = await this.agent.reply(task, signal);
+      // 气泡先落库、先进投递；记忆去重要一次嵌入请求，不挡回复。
+      const saved = this.store.saveReply(task, reply.parts, []);
+      if (saved) {
+        const loops = this.applyOpenLoops(task, reply);
+        const threads = this.applySoftThreads(task, reply);
+        if (loops.length || threads.length) {
+          this.pendingEffects.set(task.id, { loops, threads });
+          // 崩溃在保存与投递之间时由 outbox 重试气泡，asked 状态
+          // 必须随行，否则提醒可能发两次。
+          this.store.setSetting(`pending_effects:${task.id}`, { loops, threads });
+        }
+        // 聊天中形成的想法落库（"这个改天想跟他说"）。来源校验用对话
+        // 可见的 ID 集，模型引用没见过的来源直接淘汰。想法不触发任何
+        // 立即评估——它们会在心跳时自己浮上来。
+        if (reply.initiatives.length) {
+          const available = new Set([
+            ...this.store.history(task.peer_id, 40).map((m) => m.id),
+            ...(reply.pickedMemoryIds ?? []),
+          ]);
+          for (const input of reply.initiatives) {
+            if (!input.sources.every((s) => available.has(s))) continue;
+            this.store.upsertInitiative(task.peer_id, input, Date.now());
+          }
+        }
+        // 记忆写入后置，版本不匹配时整体放弃。
+        await this.dedupeMemories(task.peer_id, reply.memories, signal);
+        this.store.applyMemoryUpdates(task.peer_id, task.version, reply.memories);
+        // 每次进提示词都是一次演练：巩固按间隔增长、细节时钟重置；
+        // 带情绪残留的记忆被想起时泛化成此刻的心情。
+        if (reply.pickedMemoryIds?.length && reply.parts.length) {
+          const residues = this.store.markMemoriesUsed(task.peer_id, reply.pickedMemoryIds);
+          const pulse = residuePulse(residues);
+          if (pulse)
+            this.store.pulseMood(
+              task.peer_id,
+              { valence: pulse.valence, reason: pulse.reason },
+              Date.now(),
+            );
+        }
+        if (reply.moodPulse) this.store.pulseMood(task.peer_id, { ...reply.moodPulse }, Date.now());
+        for (const description of reply.descriptions) {
+          const msg = this.store.getMessage(task.peer_id, description.messageId);
+          if (msg) {
+            this.store.updateMedia(
+              task.peer_id,
+              msg.id,
+              msg.media.map((m) =>
+                m.kind === 'image' ? { ...m, description: description.description } : m,
+              ),
+            );
+          }
+        }
+        // 她开口说话也是一次刺激。
+        if (reply.parts.length)
+          this.settleMotives(task.peer_id, {
+            now: Date.now(),
+            exchanges: 1,
+            moodEvent: reply.moodPulse ? Math.abs(reply.moodPulse.valence) : 0,
+          });
+      }
+    } finally {
+      void Promise.resolve(typing)
+        .then(() => this.options.transport.typing?.(peer, false))
+        .catch(() => {});
+    }
+  }
+
+  /** 心跳轮：开场白 / 到期承诺 / 她自己的一拍。 */
+  private async runPulse(task: Task, peer: Peer, signal: AbortSignal) {
+    const now = Date.now();
+    const isGreeting =
+      typeof task.payload.greeting === 'string' && (task.payload.greeting as string).trim() !== '';
+    const loopId = typeof task.payload.loop === 'string' ? task.payload.loop : '';
+    if (loopId) {
+      // 排队中的开环提醒只是排队那一刻的判断：期间它可能被聊天轮
+      // 了结、被别的提醒问过、或已滑出询问窗口——照发就会"提醒"
+      // 用户刚处理完的事。
+      const loop = this.store.dueOpenLoops(peer.id, now).find((l) => l.id === loopId);
+      if (!loop) {
+        this.store.finish(task.id, 'done');
+        return;
+      }
+      this.store.updateSelf({ lastStimulusAt: now }, now);
+      await this.generatePulse(task, peer, signal, {
+        loopContent: loop.content,
+      });
+      return;
+    }
+    if (isGreeting) {
+      await this.generatePulse(task, peer, signal, {});
+      return;
+    }
+    // 她自己的一拍（beat）。守门只剩物理与保险丝：
+    if (!this.options.config().proactiveEnabled) {
+      this.store.finish(task.id, 'superseded');
+      return;
+    }
+    if (
+      inSleepHours(
+        hourAt(now, this.options.config().timeZone),
+        this.options.config().sleepStart,
+        this.options.config().sleepEnd,
+      )
+    ) {
+      // 她在睡觉：这一拍不发生。superseded 让同键任务可被明天复用。
+      this.store.finish(task.id, 'superseded');
+      return;
+    }
+    const fuseTripped =
+      this.store.recentPulseSends(peer.id, 3600000, now) >= PULSE_FUSE_PER_HOUR &&
+      this.store.unansweredPulseStreak(peer.id) >= 2;
+    if (fuseTripped) {
+      // 一小时里无回应连发多条：程序故障不是活人，熔断并告警。
+      this.store.finish(task.id, 'superseded');
+      this.options.log?.('心跳保险丝熔断：一小时多条主动消息未获回应，本小时不再心跳', {
+        peer: peer.id,
+      });
+      return;
+    }
+    await this.generatePulse(task, peer, signal, { beat: true });
+  }
+
+  /** 生成并落库一轮主动输出；beats 与 loop/greeting 共用。 */
+  private async generatePulse(
+    task: Task,
+    peer: Peer,
+    signal: AbortSignal,
+    mode: { beat?: boolean; loopContent?: string },
+  ) {
+    const typing = this.options.transport.typing?.(peer, true).catch(() => {});
+    try {
+      let parts: ReplyPart[] = [];
+      if (mode.beat) {
+        const beat = await this.agent.pulseBeat(task, signal);
+        // 她这拍真实做成的事 → 生活流水；对自己状态的更新 → self。
+        if (beat.activity) this.store.logLife('did', beat.activity, '', Date.now());
+        if (beat.selfActivity || beat.activity) {
+          this.store.updateSelf(
+            {
+              ...(beat.selfActivity ? { activity: beat.selfActivity } : {}),
+              ...(beat.activity && !beat.selfActivity ? { activity: beat.activity } : {}),
+              activitySince: Date.now(),
+            },
+            Date.now(),
+          );
+        }
+        if (beat.action === 'muse' && beat.thought) {
+          // 念头存进想法池：同一念头不会重复立项。
+          this.store.upsertInitiative(
+            task.peer_id,
+            {
+              topicKey: thoughtKey(beat.thought),
+              kind: 'muse',
+              meaning: beat.thought,
+              sources: [],
+            },
+            Date.now(),
+          );
+        }
+        if (beat.resolveLoops.length)
+          for (const id of beat.resolveLoops)
+            this.store.resolveOpenLoop(
+              task.peer_id,
+              id,
+              Date.now(),
+              this.options.config().timeZone,
+            );
+        this.settleMotives(task.peer_id, {
+          now: Date.now(),
+          exchanges: 0,
+          didSomething: Boolean(beat.activity),
+          moodEvent: beat.moodPulse ? Math.abs(beat.moodPulse.valence) : 0,
+        });
+        if (beat.moodPulse) this.store.pulseMood(task.peer_id, { ...beat.moodPulse }, Date.now());
+        await this.dedupeMemories(task.peer_id, beat.memories, signal);
+        this.store.applyMemoryUpdates(task.peer_id, task.version, beat.memories);
+        if (beat.action !== 'speak') {
+          this.store.finish(task.id);
+          return;
+        }
+        parts = beat.parts;
+        // 说出口的心跳进生活流水：下一次心跳她知道自己说过什么。
+        const spoken = parts
+          .map((p) => (p.type === 'text' ? (p.text ?? '') : `[表情：${p.description ?? p.slug}]`))
+          .join(' ')
+          .trim();
+        if (spoken) this.store.logLife('said', spoken, '', Date.now());
+      } else {
+        const reply = await this.agent.reply(task, signal);
+        this.store.updateSelf({ lastStimulusAt: Date.now() }, Date.now());
+        if (reply.resolveLoops.length)
+          for (const id of reply.resolveLoops)
+            this.store.resolveOpenLoop(
+              task.peer_id,
+              id,
+              Date.now(),
+              this.options.config().timeZone,
+            );
+        if (reply.moodPulse) this.store.pulseMood(task.peer_id, { ...reply.moodPulse }, Date.now());
+        await this.dedupeMemories(task.peer_id, reply.memories, signal);
+        this.store.applyMemoryUpdates(task.peer_id, task.version, reply.memories);
+        if (typeof task.payload.initiative === 'string') {
+          // 这次主动真的说出了那个想法——说完即退场；模型选择跳过时
+          // 同样释放并留痕，同一版本不会再被自动重问。
+          const initiativeId = task.payload.initiative as string;
+          this.store.releaseInitiative(task.peer_id, initiativeId, Date.now());
+          if (!reply.parts.length)
+            this.store.sql
+              .prepare("UPDATE initiatives SET origin='生成时选择跳过' WHERE id=?")
+              .run(initiativeId);
+        }
+        parts = reply.parts;
+        const loops = this.applyOpenLoops(task, reply);
+        if (loops.length) {
+          this.pendingEffects.set(task.id, { loops, threads: [] });
+          this.store.setSetting(`pending_effects:${task.id}`, { loops, threads: [] });
+        }
+        if (reply.parts.length) {
+          const spoken = reply.parts
+            .map((p) => (p.type === 'text' ? (p.text ?? '') : `[表情：${p.description ?? p.slug}]`))
+            .join(' ')
+            .trim();
+          if (spoken) this.store.logLife('said', spoken, '', Date.now());
+        }
+      }
+      // 气泡先落库、先进投递（无人回应也照走同一套乐观锁与崩溃安全）。
+      const saved = this.store.saveReply(task, parts, []);
+      if (!saved && !parts.length) this.store.finish(task.id);
+    } finally {
+      void Promise.resolve(typing)
+        .then(() => this.options.transport.typing?.(peer, false))
+        .catch(() => {});
+    }
+  }
+
+  /** 动机结转：任何刺激（收发消息、做成事、心情事件）都从这里进 self。 */
+  private settleMotives(
+    peerId: string,
+    input: { now: number; exchanges: number; didSomething?: boolean; moodEvent?: number },
+  ) {
+    try {
+      const self = this.store.self();
+      const tick: MotiveTick = {
+        now: input.now,
+        exchanges: input.exchanges,
+        didSomething: Boolean(input.didSomething),
+        moodEvent: Math.max(0, Math.min(1, input.moodEvent ?? 0)),
+      };
+      const next = tickMotives(
+        {
+          social: self.social,
+          express: self.express,
+          lastStimulusAt: self.last_stimulus_at,
+          updatedAt: self.updated_at || input.now,
+        },
+        tick,
+      );
+      this.store.updateSelf(next, input.now);
+    } catch (error) {
+      this.options.log?.('动机结转失败（不影响消息）', {
+        peer: peerId,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 
@@ -591,23 +752,22 @@ export class Runtime {
     const explicit = (reply.askedLoops ?? []).filter((id) => due.has(id));
     // 主动消息没有用户轮次垫底：在那里新建或了结有日期的安排等于凭旧
     // 消息发明承诺；同规则也适用于挂念。主动轮只能标记它真正提到的。
-    if (task.kind !== 'proactive') {
-      for (const id of reply.resolveLoops ?? [])
-        store.resolveOpenLoop(peer, id, now, this.options.config().timeZone);
-      for (const loop of reply.openLoops ?? []) {
-        if (!Number.isFinite(loop.dueAt) || loop.dueAt < now - 86400000) continue;
-        if (!loop.sources.length) continue;
-        store.addOpenLoop(peer, loop, now);
-      }
-      // 聊天轮自然问到到期安排时同样要标记，否则调度器会再问一遍。
+    if (task.kind !== 'chat') {
+      // 没说话（模型选择跳过）什么都没问；聊别的也什么都没问。只标模型
+      // 声明提到的——契约要求显式声明，说没问就是没问。
+      const spoken =
+        reply.parts?.map((p) => ('text' in p ? String(p.text ?? '') : '')).join(' ') ?? '';
+      if (!spoken.trim()) return [];
       return [...new Set(explicit)];
     }
-    // 没说话（模型选择跳过）什么都没问；聊别的也什么都没问。只标模型
-    // 声明提到的——契约要求显式声明（缺席会被 agent 修一轮），说没问
-    // 就是没问，第二天自然会再给一次机会，不用词面匹配去猜。
-    const spoken =
-      reply.parts?.map((p) => ('text' in p ? String(p.text ?? '') : '')).join(' ') ?? '';
-    if (!spoken.trim()) return [];
+    for (const id of reply.resolveLoops ?? [])
+      store.resolveOpenLoop(peer, id, now, this.options.config().timeZone);
+    for (const loop of reply.openLoops ?? []) {
+      if (!Number.isFinite(loop.dueAt) || loop.dueAt < now - 86400000) continue;
+      if (!loop.sources.length) continue;
+      store.addOpenLoop(peer, loop, now);
+    }
+    // 聊天轮自然问到到期安排时同样要标记，否则调度器会再问一遍。
     return [...new Set(explicit)];
   }
   /** 挂念：记录、了结、标记真正问到的。它们从不变成任务或主动消息。 */
@@ -629,7 +789,7 @@ export class Runtime {
       now = Date.now();
     store.expireSoftThreads(peer, now);
     // 主动消息没有用户轮次垫底：在那里新写挂念等于凭空发明担心。
-    if (task.kind === 'proactive') return [];
+    if (task.kind !== 'chat') return [];
     for (const id of reply.resolveThreads ?? []) store.resolveSoftThread(peer, id, now);
     for (const thread of reply.threads ?? []) {
       if (!thread.sources.length) continue;
@@ -672,89 +832,34 @@ export class Runtime {
     const records = this.store
       .historyAfter(peerId, after, Number.MAX_SAFE_INTEGER, 200)
       .filter((m) => force || dayAt(m.created_at, this.options.config().timeZone) < today);
-    if (!records.length) return;
-    // 纯沉默日（只有她自己发过的主动问候）不写日记：没有可回看的经历，
-    // 任务注定返回空 sections。这些日子直接越过游标；手动整理交给模型。
-    let start = 0;
-    let skippedThrough = after;
-    while (start < records.length) {
-      const day = dayAt(records[start]!.created_at, this.options.config().timeZone);
-      let end = start;
-      while (
-        end < records.length &&
-        dayAt(records[end]!.created_at, this.options.config().timeZone) === day
-      )
-        end++;
-      if (force || records.slice(start, end).some((m) => m.role === 'user')) break;
-      skippedThrough = records[end - 1]!.seq;
-      start = end;
-    }
-    if (skippedThrough > after) this.store.setSetting(`diary_cursor:${peerId}`, skippedThrough);
-    if (start >= records.length) return;
-    const day = dayAt(records[start]!.created_at, this.options.config().timeZone);
+    const size = records.reduce((n, m) => n + estimateTextTokens(renderMessage(m)), 0);
+    if (!records.length || (!force && size < DIARY_MAX_CHARS * 0.05)) return;
+    const picked: typeof records = [];
     let chars = 0;
-    const picked = [];
-    for (let i = start; i < records.length; i++) {
-      const m = records[i]!;
-      if (dayAt(m.created_at, this.options.config().timeZone) !== day) break;
+    for (const m of [...records].reverse()) {
       const size = renderMessage(m).length;
       if (picked.length && chars + size > DIARY_MAX_CHARS) break;
       picked.push(m);
       chars += size;
     }
     const through = picked.at(-1)!.seq;
-    const id = this.store.enqueue(peerId, 'diary', `${day}:${through}`, {
-      day,
-      through,
-      after: Math.max(after, skippedThrough),
-      ids: picked.map((m) => m.id),
-    });
+    const id = this.store.enqueue(
+      peerId,
+      'diary',
+      `${dayAt(now, this.options.config().timeZone)}:${through}`,
+      {
+        day: dayAt(now, this.options.config().timeZone),
+        through,
+        after: Math.max(after, 0),
+        ids: picked.map((m) => m.id),
+      },
+    );
     this.pump();
     return id;
   }
 
-  /** 主动消息的硬护栏（发送前的最后闸门）。想不想说、说什么由想法与
-   *  模型决定；代码只负责：安静时段不吵、读空气刹车、渠道许可。没有
-   *  每日上限、没有两小时间隔——那些是配额，不是性格；防重复靠想法
-   *  的生命周期（同源不重发、说过即退场），防打扰靠这一道闸门。 */
-  proactiveAllowed(peer: Peer, now: number): boolean {
-    const c = this.options.config(),
-      hour = hourAt(now, c.timeZone);
-    if (!(
-      c.proactiveEnabled &&
-      !!peer.approved &&
-      !!peer.context_token &&
-      peer.channel === 'wechat' &&
-      peer.last_user_at > 0 &&
-      !inQuietHours(hour, c.quietStart, c.quietEnd)
-    ))
-      return false;
-    const streak = this.store.unansweredProactiveStreak(peer.id);
-    if (streak >= 2) return now - peer.last_proactive_at >= silenceCooldownMs(streak);
-    return true;
-  }
-  /** 主动任务的门槛分流：带 payload.loop 的走开环独立通道（承诺优先于
-   *  读空气与日常分享），其余走日常闸门。 */
-  private proactiveGate(task: Task, peer: Peer, now: number): boolean {
-    if (typeof task.payload?.loop === 'string') return this.loopPingAllowed(peer, now);
-    return this.proactiveAllowed(peer, now);
-  }
-  /** 到期开环的独立通道：承诺优先于日常闲聊与读空气刹车（对方明确托付的
-   *  约定不该被冷落饿死）；安静时段仍然有效。不受"上次主动两小时内"
-   *  限制：早上八点的闲聊问候不该把"今天提醒我"拖到晚上。 */
-  loopPingAllowed(peer: Peer, now: number): boolean {
-    const c = this.options.config(),
-      hour = hourAt(now, c.timeZone);
-    return Boolean(
-      c.proactiveEnabled &&
-      !!peer.approved &&
-      !!peer.context_token &&
-      peer.channel === 'wechat' &&
-      peer.last_user_at > 0 &&
-      !inQuietHours(hour, c.quietStart, c.quietEnd),
-    );
-  }
-
+  /** 每分钟的调度 tick：日记、到期承诺、她的心跳。
+   *  这里没有任何"该不该说话"的判断——只有"该不该发生一拍意识"。 */
   schedule(now = Date.now()) {
     if (this.stopped) return;
     const c = this.options.config(),
@@ -768,138 +873,59 @@ export class Runtime {
         error: error instanceof Error ? error.message : String(error),
       });
     }
+    const asleep = inSleepHours(hour, c.sleepStart, c.sleepEnd);
     for (const peer of this.store.peers().filter((p) => p.approved)) {
       try {
         if (hour >= c.diaryHour) this.queueDiary(peer.id, false, now);
-        // 到期开环优先且与日常互斥：一次调度最多花一条主动消息。
-        const dueLoops = this.store.dueOpenLoops(peer.id, now);
-        const loop =
-          dueLoops.length > 0 && this.loopPingAllowed(peer, now)
-            ? dueLoops.find(
-                (candidate) =>
-                  !this.store.hasPendingTask(
-                    peer.id,
-                    'proactive',
-                    `${this.store.loopTaskKey(candidate)}:${dayAt(now, c.timeZone)}`,
-                  ),
-              )
-            : undefined;
-        if (loop) {
-          // 到期的约定不挑时间——承诺不该等作息，也不做行为抖动。
-          this.store.enqueue(
-            peer.id,
-            'proactive',
-            // 到期日在 key 里：yearly 滚动靠它区分。
-            `${this.store.loopTaskKey(loop)}:${dayAt(now, c.timeZone)}`,
-            { loop: loop.id },
-            now,
-          );
-          this.pump();
-          continue;
+        this.store.expireOpenLoops(peer.id, now, c.timeZone);
+        this.store.expireSoftThreads(peer.id, now);
+        // 到期承诺：她自己的记性，不等心跳碰运气。
+        if (c.proactiveEnabled) {
+          const dueLoops = this.store.dueOpenLoops(peer.id, now);
+          for (const loop of dueLoops) {
+            const key = `${this.store.loopTaskKey(loop)}:${dayAt(now, c.timeZone)}`;
+            if (this.store.hasPendingTask(peer.id, 'pulse', key)) continue;
+            this.store.enqueue(
+              peer.id,
+              'pulse',
+              key,
+              { loop: loop.id, loopContent: loop.content },
+              now,
+            );
+          }
         }
-        // 主动 v2：想法评估由事件驱动（新用户消息置 pendingIdeaEvents，
-        // 或者存在尚未评估过的新想法）。没有事件与未处理变化时不调用
-        // 模型——时间流逝本身不再制造聊天理由。
-        if (!c.proactiveEnabled || !this.proactiveAllowed(peer, now)) continue;
-        this.seedIdleMuse(peer, now);
-        const ideaEvent = this.pendingIdeaEvents.has(peer.id);
-        // "新鲜"= 值得再评一轮：从未评估过（origin 空）。hold 的想法不在
-        // 此列：条件没满足时不该被反复重问。
-        const hasFresh = this.store
-          .activeInitiatives(peer.id)
-          .some(
-            (idea) =>
-              !this.store.hasPendingTask(peer.id, 'proactive', `idea:${idea.id}:${idea.version}`) &&
-              idea.origin === '',
-          );
-        if (!ideaEvent && !hasFresh) continue;
-        if (this.considering.has(peer.id)) continue;
-        this.evaluateInitiatives(peer.id, now);
+        // 心跳：睡眠中不发生；醒着时按节律排下一拍。
+        if (!c.proactiveEnabled || asleep) continue;
+        const next = this.nextBeatAt.get(peer.id) ?? now + 30000;
+        if (now < next) continue;
+        if (this.store.hasPendingTask(peer.id, 'pulse', 'beat')) continue;
+        const self = this.store.self();
+        const delay = nextBeatDelayMs({
+          clinginess: c.clinginess,
+          motives: {
+            bored: self.last_stimulus_at
+              ? Math.min(1, (now - self.last_stimulus_at) / (240 * 60000))
+              : 1,
+            miss: Math.min(
+              1,
+              self.last_stimulus_at
+                ? (now - Math.max(self.last_stimulus_at, peer.last_user_at)) / (20 * 3600000)
+                : 0.5,
+            ),
+            social: self.social,
+            express: self.express,
+          },
+          sinceLastExchangeMs: peer.last_user_at ? now - peer.last_user_at : Infinity,
+        });
+        this.nextBeatAt.set(peer.id, now + delay);
+        this.store.enqueue(peer.id, 'pulse', 'beat', { beat: true }, now);
+        this.pump();
       } catch (error) {
-        this.options.log?.('联系人调度失败，本轮跳过', {
+        this.options.log?.('联系人调度失败，跳过', {
           peer: peer.id,
           error: error instanceof Error ? error.message : String(error),
         });
       }
     }
-    this.pump();
-  }
-
-  /** 空闲碎碎念（图灵审查修复 #1）：事件驱动的想法评估在"对方一直不说话"
-   *  时是死的——真人一个月里总有几次手痒（想起一个梗、看到海、单纯想他了），
-   *  一个永远等对方先开口的人比任何口癖都像机器人。这里按低频时间通道给
-   *  沉默注入一条 muse 想法（无来源，meaning 只是"想说一句"的冲动），
-   *  立项后仍走完整评估链路：模型在评估时说"安静"就安静，说"说"才说。
-   *  频率：距对方上次消息 ≥ MUSE_SILENCE_MIN_HOURS 且距上次立项 ≥
-   *  MUSE_COOLDOWN_DAYS 天，每天至多一条；安静时段与读空气刹车照常拦在
-   *  评估与发送之前。 */
-  private seedIdleMuse(peer: Peer, now: number): void {
-    if (this.pendingIdeaEvents.has(peer.id)) return;
-    if (peer.last_user_at <= 0) return;
-    const sinceUser = now - peer.last_user_at;
-    if (sinceUser < MUSE_SILENCE_MIN_HOURS * 3600000) return;
-    const lastSeeded = this.store.getSetting<number>(`muse_seeded_at:${peer.id}`, 0);
-    if (now - lastSeeded < MUSE_COOLDOWN_DAYS * 86400000) return;
-    // 已经有活跃的 muse 轮在等评估时不再叠一条。
-    if (this.store.activeInitiatives(peer.id).some((idea) => idea.kind === 'muse')) return;
-    const day = dayAt(now, this.options.config().timeZone);
-    const topicKey = `idle-muse:${day}`;
-    if (this.store.activeInitiativeByTopic(peer.id, topicKey)) return;
-    // 冲动措辞带一点当下感，模型评估时只当"想说一句"的素材，不保证说。
-    const hours = Math.floor(sinceUser / 3600000);
-    const meaning = `他安静了挺久了（约 ${hours} 小时没说话）。此刻就是有点想他/想找个话头，没有具体的事——要不要随口说一句`;
-    this.store.upsertInitiative(peer.id, { topicKey, kind: 'muse', meaning, sources: [] }, now);
-    this.store.setSetting(`muse_seeded_at:${peer.id}`, now);
-    this.pendingIdeaEvents.add(peer.id);
-  }
-
-  /** 把当前想法交给模型评估一轮。每个想法版本只评估一次（幂等键 =
-   *  ideaId:version），评估结束清事件标记；评估在后台异步完成，期间
-   *  用 considering 护栏挡住调度器的重复发起。 */
-  private evaluateInitiatives(peerId: string, now: number): void {
-    if (this.considering.has(peerId)) return;
-    const initiatives = this.store.activeInitiatives(peerId);
-    this.pendingIdeaEvents.delete(peerId);
-    if (!initiatives.length) return;
-    // 清理来源已失效的想法（消息被删、记忆被替代）。
-    this.store.expireInitiatives(peerId, (id) => !!this.sourceExists(peerId, id), now);
-    const pending = this.store
-      .activeInitiatives(peerId)
-      .filter(
-        (idea) =>
-          !this.store.hasPendingTask(peerId, 'proactive', `idea:${idea.id}:${idea.version}`),
-      );
-    if (!pending.length) return;
-    this.considering.add(peerId);
-    const consider = considerInitiatives({
-      store: this.store,
-      agent: this.agent,
-      peerId,
-      initiatives: pending,
-      log: this.options.log,
-    })
-      .catch((error) => {
-        this.options.log?.('想法评估异常', {
-          peer: peerId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      })
-      .finally(() => {
-        this.considering.delete(peerId);
-        this.pump();
-      });
-    // 评估是异步模型调用：完成后若入队了主动消息，泵会把它消费掉。
-    void consider;
-  }
-  /** 想法来源是否仍然有效：消息在历史里、记忆活跃、或约定/挂念开着。 */
-  private sourceExists(peerId: string, sourceId: string): boolean {
-    if (this.store.getMessage(peerId, sourceId)) return true;
-    if (this.store.memories(peerId).some((m) => m.id === sourceId && m.status === 'active'))
-      return true;
-    if (this.store.openLoops(peerId).some((l) => l.id === sourceId && l.status === 'open'))
-      return true;
-    if (this.store.softThreads(peerId).some((t) => t.id === sourceId && t.status === 'open'))
-      return true;
-    return false;
   }
 }

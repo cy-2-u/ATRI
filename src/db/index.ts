@@ -1,5 +1,6 @@
 export { Store } from './store.js';
 export {
+  SCHEMA_VERSION,
   MAX_TASK_ATTEMPTS,
   MEMORY_HALFLIFE_DAYS,
   MEMORY_STATED_WEIGHT,
@@ -37,6 +38,9 @@ export type {
   InitiativeKind,
   Initiative,
   InitiativeInput,
+  SelfState,
+  SelfPatch,
+  LifeEntry,
   MoodState,
   DiarySection,
   MemoryUpdate,
