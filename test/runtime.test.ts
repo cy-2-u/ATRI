@@ -94,6 +94,23 @@ test('聊天端到端：回复落库、心情脉冲、想法入库不触发评�
   assert.equal(f.store.memories('p1').length, 0, '无有效来源的 stated 不落库');
 });
 
+test('心跳调度：醒着时 schedule 必须排拍，已排拍的间隔被尊重', async (t) => {
+  const model = new FakeModel(() => completion({ action: 'nothing' }));
+  // 不眠窗口（0–0）：任何真实时刻都不在睡眠分支。回归：曾因
+  // nextBeatAt 缺省时取 now+30s 再判 now<next，第一拍永远排不上。
+  const f = fixture(t, model, { proactiveEnabled: true, sleepStart: 0, sleepEnd: 0 });
+  f.runtime.schedule();
+  assert.equal(f.store.hasPendingTask('p1', 'pulse', 'beat'), true, '首次 schedule 就要排第一拍');
+  // 已有 pending beat 时不得重复入队。
+  f.runtime.schedule();
+  const rows = f.store.sql
+    .prepare(
+      "SELECT count(*) AS n FROM tasks WHERE peer_id='p1' AND kind='pulse' AND dedupe_key='beat'",
+    )
+    .get() as { n: number };
+  assert.equal(rows.n, 1, '同一拍去重');
+});
+
 test('心跳端到端：beat 任务按契约三分，speak 进投递、muse 进想法池', async (t) => {
   let calls = 0;
   const model = new FakeModel(() => {

@@ -896,9 +896,12 @@ export class Runtime {
         }
         // 心跳：睡眠中不发生；醒着时按节律排下一拍。
         if (!c.proactiveEnabled || asleep) continue;
-        const next = this.nextBeatAt.get(peer.id) ?? now + 30000;
-        if (now < next) continue;
+        // nextBeatAt 只在拍真的排下去（入队）时才写；未排时不能把"下一
+        // 拍"推到未来——否则 now < next 永远成立，第一拍永远来不了
+        // （v4 上线后心跳从未入队就是这行）。
         if (this.store.hasPendingTask(peer.id, 'pulse', 'beat')) continue;
+        const next = this.nextBeatAt.get(peer.id);
+        if (next !== undefined && now < next) continue;
         const self = this.store.self();
         const delay = nextBeatDelayMs({
           clinginess: c.clinginess,
