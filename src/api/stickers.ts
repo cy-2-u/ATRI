@@ -6,7 +6,7 @@ import type { Sticker } from '../core/index.js';
 import { sniffMediaMime, isVisionMime } from '../ilink/media.js';
 
 /** 表情目录：内置素材 + 自定义上传（存 settings 与 data/custom），最多
- *  同时启用 32 个，目录按天轮换进提示词（窗口 24）。 */
+ *  同时启用 32 个，全量进提示词的稳定前缀。 */
 
 export class Stickers {
   private builtins?: Sticker[];

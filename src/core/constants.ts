@@ -26,9 +26,6 @@ export const PROMPT_MEMORIES = 10;
 export const MEMORY_COOLDOWN_CORE = 3;
 export const RECALL_CONTENT_MAX_CHARS = 600;
 export const MEMORY_CONTENT_MAX_CHARS = 500;
-/** 提示词里的表情窗口。刻意低于 32 上限：窗口等于上限时轮换与下沉
- *  永远不触发，长目录的尾部永远不可见。 */
-export const PROMPT_STICKERS = 24;
 
 // ---------- 预算分配 ----------
 
@@ -111,8 +108,6 @@ export const PULSE_AFTER_CHAT_MINUTES = 10;
 export const PULSE_FUSE_PER_HOUR = 2;
 /** 想法池在心跳材料里的条数上限。 */
 export const PULSE_THOUGHTS_MAX = 5;
-/** 心跳单次生成允许的工具轮数：她可以真的动手做一件事。 */
-export const PULSE_TOOL_ROUNDS = 3;
 
 // ---------- 数据 ----------
 

@@ -26,7 +26,6 @@ import {
 import {
   renderMessage,
   recentStickerUse,
-  rotateStickers,
   renderOpenLoops,
   renderSoftThreads,
   renderSelfNow,
@@ -346,9 +345,9 @@ export class Agent {
     }));
     const catalog = this.o.stickers();
     const recentStickers = recentStickerUse(history, catalog);
-    // 目录住在稳定前缀里，顺序不能依赖刚发过什么（那会逐轮击穿前缀缓存）；
-    // 轮换按天，最近使用只作动态提示。
-    const stickers = rotateStickers(catalog, [], now);
+    // 目录全量进提示词：住在稳定前缀里（顺序固定、不随时间变化），解析
+    // 回复时模型能选的 slug 与提示词展示的完全一致，不会静默丢表情。
+
     // 有意义的静默起点是本轮打断的空白，不是触发消息本身的年龄。
     const basis = silenceBasis(history, isPulse);
     const timeLine = basis
@@ -366,7 +365,7 @@ export class Agent {
             DIARY_GAP_MAX_SECTIONS,
           )
         : [];
-    const stickerLines = stickers.map(({ slug, description }) => `${slug}：${description}`);
+    const stickerLines = catalog.map(({ slug, description }) => `${slug}：${description}`);
     // 情绪基线：脉冲散尽之后，残留还在的难过/开心给整个状态铺一层底色。
     const baseline = store.emotionalBaseline(peer.id, now);
     const rhythm = store.activityRhythm(peer.id, this.o.timeZone());
@@ -397,7 +396,7 @@ export class Agent {
     const softThreads = isPulse ? [] : store.ripeSoftThreads(peer.id, now);
     // 心跳的独有材料：她的当下、生活流水、动机体感、想法池、读空气。
     const beatBlock = isBeat ? this.beatMaterial(peer.id, now, currentHour, rhythm) : '';
-    // 稳定前缀在前（人格、规则、按天轮换的表情目录）供前缀缓存复用；
+    // 稳定前缀在前（人格、规则、全量表情目录）供前缀缓存复用；
     // 逐轮变化的内容（时钟、心情、约定）全部在后面。
     const stable = [
       this.o.personaFor?.(peer.id) ?? this.o.prompt('persona'),
@@ -567,8 +566,9 @@ export class Agent {
       // 提示词里是否列出了到期约定：主动提醒契约的 askedLoops 声明
       // 只有在场展示过约定时才会被要求。
       dueLoopsShown: dueLoops.length > 0,
-      // 回复校验必须接受提示词展示的这个窗口，而不是目录的新切片。
-      stickers,
+      // 回复校验必须与提示词展示的目录完全一致：目录全量在场，模型选
+      // 任何目录里的 slug 都能解析。
+      stickers: catalog,
       isPulse,
       isBeat,
     };

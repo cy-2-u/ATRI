@@ -954,30 +954,7 @@ export class Store {
     }
     return Math.max(-0.3, Math.min(0.3, sum * 0.2));
   }
-  /** 闪回候选：意义重、带残留、≥3 天没被想起的旧记忆。 */
-  flashbackCandidates(peer: string, now = Date.now(), limit = 2): Memory[] {
-    return this.memories(peer)
-      .filter((m) => !m.pinned)
-      .filter((m) => {
-        const state = traceOf(m);
-        return (
-          now - m.created_at >= 3 * 86400000 &&
-          (m.last_hit_at === 0 || now - m.last_hit_at >= 7 * 86400000) &&
-          !isForgotten(state, now)
-        );
-      })
-      .map((m) => {
-        const state = traceOf(m);
-        return {
-          m,
-          rank: Math.abs(emotionalResidue(state, now)) * 0.6 + significance(state, now) * 0.4,
-        };
-      })
-      .sort((a, b) => b.rank - a.rank)
-      .slice(0, limit)
-      .map((x) => x.m);
-  }
-  /** 应用 supersedes：旧条退出默认召回但保留文本与失效时刻。 */
+  /** 气泡投递后的记忆落库：版本不匹配（期间来了新消息）时整体放弃。 */
   private supersede(peer: string, ids: string[], now: number) {
     for (const previous of ids) {
       if (
@@ -1888,32 +1865,6 @@ export class Store {
         "UPDATE initiatives SET state='expressed',released_at=?,updated_at=? WHERE peer_id=? AND id=?",
       )
       .run(now, now, peer, id);
-  }
-  dropInitiative(peer: string, id: string, now = Date.now()) {
-    this.sql
-      .prepare(
-        "UPDATE initiatives SET state='dropped',dropped_at=?,updated_at=? WHERE peer_id=? AND id=?",
-      )
-      .run(now, now, peer, id);
-  }
-  holdInitiative(peer: string, id: string, now = Date.now()) {
-    this.sql
-      .prepare("UPDATE initiatives SET state='waiting',updated_at=? WHERE peer_id=? AND id=?")
-      .run(now, peer, id);
-  }
-  /** 来源已不存在（消息被删/记忆被替代）的想法自动退场。无来源的想法
-   *  （心跳冒出的碎碎念）没有可失效的锚点，原样保留。 */
-  expireInitiatives(peer: string, isValidSource: (id: string) => boolean, now = Date.now()) {
-    const rows = this.sql
-      .prepare("SELECT id,sources FROM initiatives WHERE peer_id=? AND state IN ('idle','waiting')")
-      .all(peer) as Row[];
-    for (const row of rows) {
-      const sources = parse<string[]>(row.sources, []);
-      if (sources.length && sources.every((s) => !isValidSource(s)))
-        this.sql
-          .prepare("UPDATE initiatives SET state='dropped',dropped_at=?,updated_at=? WHERE id=?")
-          .run(now, now, String(row.id));
-    }
   }
   /** 已结束的想法保留 7 天供调试回看，之后清掉。 */
   pruneInitiatives(now = Date.now()): number {

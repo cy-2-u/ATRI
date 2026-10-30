@@ -74,12 +74,6 @@ export function renderMotives(feel: MotiveFeel): string {
   return parts.join('；');
 }
 
-/** 距上次往来消息的毫秒数（收或发都算"往来"）。 */
-export function sinceLastExchangeMs(lastUserAt: number, lastAssistantAt: number, now: number) {
-  const last = Math.max(lastUserAt, lastAssistantAt);
-  return last > 0 ? Math.max(0, now - last) : Infinity;
-}
-
 /** 心跳材料里对静默时长的分档提醒（与聊天共用同一套体感阈值）。 */
 export function silenceNote(minutes: number): string {
   if (minutes < SILENCE_HOURS_THRESHOLD * 60) return '';

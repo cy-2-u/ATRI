@@ -1,6 +1,6 @@
 import type { Message, OpenLoop, SoftThread } from '../db/index.js';
 import { sourceFormatter, vagueDays } from './time.js';
-import { STICKER_RECENT_SHOWN, PROMPT_STICKERS } from './constants.js';
+import { STICKER_RECENT_SHOWN } from './constants.js';
 import type { Sticker } from './reply.js';
 
 /** 提示词资料块的渲染：历史消息、表情目录与使用反馈、未完的约定与挂念、
@@ -80,27 +80,6 @@ export function renderSoftThreads(threads: SoftThread[], now: number): string {
       return `- [id:${t.id}] ${label}：${t.content}（${vagueDays(age(t.created_at))}前记下的${asked}）`;
     })
     .join('\n')}\nthreads/resolveThreads/askedThreads 的字段用法见上方对话规则。`;
-}
-
-/** 表情窗口按天轮转（尾部可达），最近用过的下沉但不占半窗。 */
-export function rotateStickers(
-  all: Sticker[],
-  recentUse: { slug: string }[],
-  now: number,
-  window = PROMPT_STICKERS,
-): Sticker[] {
-  if (all.length <= window) return all;
-  const day = Math.floor(now / 86400000);
-  const offset = day % all.length;
-  const order = [...all.slice(offset), ...all.slice(0, offset)];
-  const used = new Set(recentUse.map((u) => u.slug));
-  const fresh = order.filter((s) => !used.has(s.slug));
-  const stale = order.filter((s) => used.has(s.slug));
-  const staleCap = Math.max(1, Math.floor(window / 2));
-  const keptStale = stale.slice(0, staleCap);
-  const keep = Math.max(0, window - keptStale.length);
-  // 返回挑选出的顺序本身：按目录序重排会悄悄撤销下沉。
-  return [...fresh.slice(0, keep), ...keptStale].slice(0, window);
 }
 
 /** 她的当下（聊天与心跳共用）：此刻在做什么、今天打算做什么。聊天时

@@ -198,7 +198,7 @@ function normalizeTextParts(raw: unknown[], stickers: Sticker[]): ReplyPart[] {
       if (m && typeof m === 'object' && 'type' in m && m.type === 'sticker' && 'slug' in m) {
         const slug = m.slug;
         if (typeof slug !== 'string') return [];
-        const sticker = stickers.find((s) => s.slug === slug);
+        const sticker = stickers.find((s) => s.slug.toLowerCase() === slug.toLowerCase());
         if (sticker)
           return [
             { type: 'sticker' as const, slug: sticker.slug, description: sticker.description },
