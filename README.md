@@ -73,4 +73,4 @@ test/               单元测试（六个领域文件）+ run.mjs（配对检查
 
 ## 来源与许可
 
-微信协议模块和原测试复用自 [SMNETSTUDIO/WeChat-AI](https://github.com/SMNETSTUDIO/WeChat-AI/tree/cf8fbec)（Apache 2.0 + Commons Clause），见 `licenses/`；其余代码沿用本仓库的 PolyForm Noncommercial 许可（见 `LICENSE`）。内置的五张基础表情为本项目绘制。
+微信协议模块和原测试复用自 [SMNETSTUDIO/WeChat-AI](https://github.com/SMNETSTUDIO/WeChat-AI/tree/cf8fbec)（Apache 2.0 + Commons Clause），见 `licenses/`；其余代码沿用本仓库的 PolyForm Noncommercial 许可（见 `LICENSE`）。

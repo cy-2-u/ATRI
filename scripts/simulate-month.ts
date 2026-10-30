@@ -5,8 +5,18 @@ import { startSim } from './sim-lib.js';
  *  运行：npx tsx scripts/simulate-month.ts */
 
 const stickers = [
-  { slug: 'happy', description: '开心大笑', tags: ['开心'], file: 'happy.png' },
-  { slug: 'miss', description: '想你了', tags: ['想你'], file: 'miss.png' },
+  {
+    slug: 'cat028',
+    description: '伸爪凑过来讨吃的：吃啥呢给我掰点',
+    tags: ['嘴馋', '讨吃'],
+    file: 'memes/028.jpg',
+  },
+  {
+    slug: 'cat043',
+    description: '张开双臂扑过来：抱抱！',
+    tags: ['抱抱', '热情'],
+    file: 'memes/043.jpg',
+  },
 ];
 
 /** 心跳拍与聊天轮共用一个回复口：按材料判断这拍怎么答。 */
