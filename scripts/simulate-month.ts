@@ -7,8 +7,8 @@ import {
   BURST_WINDOW_MS,
 } from '../src/core/index.js';
 
-/** 一个月的生活模拟（主动 v3 版）：聊天、心跳、承诺、睡眠与日记全部走
- *  生产代码。剧本同时扮演 ATRI 与用户；模型输出按角色分发。
+/** 一个月的生活模拟：聊天、心跳、承诺、睡眠与日记全部走生产代码。
+ *  剧本同时扮演 ATRI 与用户；模型输出按角色分发。
  *  运行：npx tsx scripts/simulate-month.ts */
 
 const stickers = [
