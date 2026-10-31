@@ -2,12 +2,19 @@ import { createHash } from 'node:crypto';
 import { lstatSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 import { ILinkClient, ILinkError, loginWithQrcode } from '../ilink/client.js';
-import { extractText, extractMediaRefs, isUserInbound, isVisionMime } from '../ilink/media.js';
+import {
+  extractText,
+  extractMediaRefs,
+  isUserInbound,
+  isVisionMime,
+  sniffMediaMime,
+} from '../ilink/media.js';
 import type { WeixinMessage, InboundMediaRef } from '../ilink/types.js';
 import { DeliveryError, type Runtime, type Transport } from '../core/index.js';
 import type { Store, Peer, ReplyPart, Message, Media } from '../db/index.js';
 import type { Settings } from './config.js';
 import type { Stickers } from './stickers.js';
+import type { Sandbox } from './sandbox.js';
 
 /** 微信桥：ilink 协议事件 ↔ Runtime。扫码登录、长轮询收件、文本/表情
  *  发送、图片下载转 data URI。 */
@@ -62,6 +69,8 @@ export class WeChatBridge implements Transport {
     private readonly settings: Settings,
     private readonly stickers: Stickers,
     private readonly log: (message: string) => void = () => {},
+    /** 她的手：image 气泡的字节来源。缺省或未启用时图片不可发。 */
+    private readonly sandbox?: Sandbox,
   ) {
     const session = store.getSetting<Session | null>('wechat:session', null);
     if (session) this.useSession(session);
@@ -277,7 +286,23 @@ export class WeChatBridge implements Transport {
       const params = { toUserId: peer.address, contextToken: peer.context_token, clientId };
       if (part.type === 'sticker')
         await this.client.sendImage({ ...params, image: this.stickers.bytes(part.slug!) });
-      else await this.client.sendText({ ...params, text: part.text! });
+      else if (part.type === 'image') {
+        // 她沙箱里的真实文件：确定性失败（没开沙箱/没有这个文件/不是图片）
+        // 重试无意义，判死进待办；只有上传通道自身的错误保持不确定语义。
+        if (!this.sandbox?.enabled) throw new DeliveryError('沙箱未启用，图片发不出去', true);
+        let bytes: Buffer;
+        try {
+          const file = await this.sandbox.readFile(part.path!, 5 * 1024 * 1024);
+          const mime = sniffMediaMime(file.bytes);
+          if (!mime?.startsWith('image/'))
+            throw new DeliveryError(`不是图片文件：${part.path}（${mime ?? '未知类型'}）`, true);
+          bytes = file.bytes;
+        } catch (error) {
+          if (error instanceof DeliveryError) throw error;
+          throw new DeliveryError(error instanceof Error ? error.message : '图片读取失败', true);
+        }
+        await this.client.sendImage({ ...params, image: bytes });
+      } else await this.client.sendText({ ...params, text: part.text! });
     } catch (error) {
       if (error instanceof ILinkError) {
         const status = error.httpStatus;

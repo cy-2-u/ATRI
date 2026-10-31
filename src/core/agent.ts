@@ -613,8 +613,8 @@ export class Agent {
     const { store } = this.o;
     const sandbox = this.o.sandbox;
     const capability = sandbox?.enabled
-      ? '你的手能用（工具里的 run_command/write_file 等都通向一个真实的工作目录）：可以真的做点事，做成的东西会记进你的生活流水。'
-      : '你此刻没有手，只能想和说：读记忆、翻旧事、看看网上的东西都可以；想做而做不到的事就说"想做"，绝不说自己做了。';
+      ? '你的手能用（工具里的 run_command/write_file 等都通向一个真实的工作目录）：可以真的做点事，做成的东西会记进你的生活流水；做成的图片（比如你跑脚本画的图）可以直接发给他——messages 里写 {"type":"image","path":"相对路径"}，先用 list_files 确认文件在。'
+      : '你此刻没有手，只能想和说：读记忆、翻旧事、看看网上的东西都可以；想做而做不到的事就说"想做"，绝不说自己做了（沙箱关着，也没有图片可发）。';
     const self = store.self();
     const life = store
       .recentLife(PULSE_LIFE_LOG_ITEMS)

@@ -650,7 +650,11 @@ export class Store {
       validParts.forEach((part, ordinal) => {
         const id = `${task.id}:${ordinal}`;
         const content =
-          part.type === 'text' ? part.text! : `[表情：${part.description ?? part.slug}]`;
+          part.type === 'text'
+            ? part.text!
+            : part.type === 'image'
+              ? `[图片：${part.path ?? ''}]`
+              : `[表情：${part.description ?? part.slug}]`;
         this.sql
           .prepare(
             "INSERT INTO messages(id,peer_id,role,content,status,created_at) VALUES(?,?,'assistant',?,'pending',?)",

@@ -208,10 +208,13 @@ export interface MemoryUpdate {
   emotionReason?: string;
 }
 export interface ReplyPart {
-  type: 'text' | 'sticker';
+  type: 'text' | 'sticker' | 'image';
   text?: string;
   slug?: string;
   description?: string;
+  /** image 专用：她沙箱里的相对路径——只发真实存在的图片文件，
+   *  文件是否存在由发送侧响亮校验（诚实红线：没有的图不发）。 */
+  path?: string;
   /** 模型请求的语义停顿档位；毫秒区间由发送端界定（BEAT_RANGES_MS）。 */
   beat?: 'short' | 'medium' | 'long';
 }

@@ -614,7 +614,13 @@ export class Runtime {
         parts = beat.parts;
         // 说出口的心跳进生活流水：下一次心跳她知道自己说过什么。
         const spoken = parts
-          .map((p) => (p.type === 'text' ? (p.text ?? '') : `[表情：${p.description ?? p.slug}]`))
+          .map((p) =>
+            p.type === 'text'
+              ? (p.text ?? '')
+              : p.type === 'image'
+                ? `[图片：${p.path ?? ''}]`
+                : `[表情：${p.description ?? p.slug}]`,
+          )
           .join(' ')
           .trim();
         if (spoken) this.store.logLife('said', spoken, '', Date.now());
@@ -650,7 +656,13 @@ export class Runtime {
         }
         if (reply.parts.length) {
           const spoken = reply.parts
-            .map((p) => (p.type === 'text' ? (p.text ?? '') : `[表情：${p.description ?? p.slug}]`))
+            .map((p) =>
+              p.type === 'text'
+                ? (p.text ?? '')
+                : p.type === 'image'
+                  ? `[图片：${p.path ?? ''}]`
+                  : `[表情：${p.description ?? p.slug}]`,
+            )
             .join(' ')
             .trim();
           if (spoken) this.store.logLife('said', spoken, '', Date.now());

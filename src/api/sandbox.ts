@@ -255,6 +255,32 @@ export class Sandbox {
     }
   }
 
+  /** 读出沙箱文件的原始字节（发图片用）：与 read 同一套路径守卫和检查-
+   *  打开竞速防护，但不做文本解码；大小上限由调用方按通道能力传入。
+   *  返回路径按模型契约用正斜杠（不随宿主系统分隔符漂移）。 */
+  async readFile(path: string, maxBytes: number): Promise<{ bytes: Buffer; path: string }> {
+    if (!this.enabled) throw new Error('沙箱未启用');
+    const target = this.safePath(path);
+    if (!existsSync(target)) throw new Error(`图片文件不存在：${path}`);
+    if (!lstatSync(target).isFile()) throw new Error('只能读取普通文件');
+    const fd = openSync(
+      target,
+      fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0) | (fsConstants.O_NONBLOCK ?? 0),
+    );
+    try {
+      const stat = fstatSync(fd);
+      if (!stat.isFile()) throw new Error('只能读取普通文件');
+      if (stat.size > maxBytes)
+        throw new Error(`图片超过 ${Math.round(maxBytes / 1024 / 1024)} MB 上限`);
+      return {
+        path: relative(this.root, target).split(sep).join('/') || '.',
+        bytes: readFileSync(fd),
+      };
+    } finally {
+      closeSync(fd);
+    }
+  }
+
   async list(path: string): Promise<{
     path: string;
     entries: { name: string; kind: string; size: number }[];

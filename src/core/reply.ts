@@ -217,6 +217,17 @@ function normalizeTextParts(raw: unknown[], stickers: Sticker[]): ReplyPart[] {
         if (beat && parts.length) parts[0] = { ...parts[0]!, beat };
         return parts;
       }
+      // {"type":"image","path":"plot.png"}：把她沙箱里真实存在的图片文件
+      // 发出去。这里只做形状校验（相对路径 + 图片扩展名）；文件是否存在
+      // 由发送侧对着沙箱响亮校验——解析层没有沙箱，不替它撒谎。
+      if (m && typeof m === 'object' && 'type' in m && m.type === 'image' && 'path' in m) {
+        const item = m as { path?: unknown };
+        if (typeof item.path !== 'string' || !item.path.trim()) return [];
+        const normalized = item.path.trim().replace(/\\/g, '/');
+        if (normalized.startsWith('/') || normalized.split('/').includes('..')) return [];
+        if (!/\.(png|jpe?g|gif|webp)$/i.test(normalized)) return [];
+        return [{ type: 'image' as const, path: normalized.slice(0, 200) }];
+      }
       return [];
     })
     .slice(0, MAX_REPLY_PARTS);

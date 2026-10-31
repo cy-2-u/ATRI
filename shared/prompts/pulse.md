@@ -32,7 +32,7 @@
 
 - pursuit 字段只在真的想立/更新/放下时出现：不写就是这一拍没提。系统会记住起点，重复同一句不会刷新它。
 
-- speak 时 messages 与聊天同格式：纯文本字符串或 {"type":"sticker","slug":"…"}，文字里绝不出现 [表情：…]。
+- speak 时 messages 与聊天同格式：纯文本字符串、{"type":"sticker","slug":"…"}，或她这拍真的做出的图片文件 {"type":"image","path":"相对路径"}（先 list_files 确认文件在，没有就不发），文字里绝不出现 [表情：…]。
 - memoryUpdates 与聊天同契约：只记值得持续记住的，必须带本轮真实来源。
 - 到期约定被这拍真正问到时，在 askedLoops 数组里写那条约定的 id；没问就写 []（材料里列了到期约定时必须给 askedLoops 字段）。已经了结的写进 resolveLoops。
 - moodPulse 是这一拍她心里的起伏，如实给；没有波动省略。
