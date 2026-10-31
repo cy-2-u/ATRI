@@ -35,7 +35,7 @@ function apiFixture(t: TestContext) {
     PORT: '0',
     DATA_DIR: directory,
   };
-  const store = new Store(join(directory, 'atri.db'));
+  const store = new Store(join(directory, 'xing.db'));
   const settings = new Settings(store, join(directory, 'app'), env as NodeJS.ProcessEnv);
   const stickers = new Stickers(join(directory, 'app'), directory, store);
   const web: WebTools = {

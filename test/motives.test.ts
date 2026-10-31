@@ -10,7 +10,7 @@ import {
 } from '../src/core/motives.js';
 import {
   nextBeatDelayMs,
-  inSleepHours,
+  inSleepMinutes,
   renderMotives,
   type MotiveFeel,
 } from '../src/core/pulse.js';
@@ -152,12 +152,12 @@ test('心跳间隔：黏人度决定基准，饥饿加速，社交没电减速�
   assert.ok(afterChat <= 5 * MIN * 1.26 + 1000, '余韵未散时节拍加密到几分钟');
 });
 
-test('睡眠窗口：跨午夜区间与整日不眠', () => {
-  assert.equal(inSleepHours(3, 1, 7), true);
-  assert.equal(inSleepHours(8, 1, 7), false);
-  assert.equal(inSleepHours(23, 23, 7), true);
-  assert.equal(inSleepHours(12, 23, 7), false);
-  assert.equal(inSleepHours(4, 7, 7), false, 'start==end 是不眠设定');
+test('睡眠窗口：跨午夜区间与整日不眠（分钟版，抖动后窗口不再整点）', () => {
+  assert.equal(inSleepMinutes(3 * 60, 60, 420), true);
+  assert.equal(inSleepMinutes(8 * 60, 60, 420), false);
+  assert.equal(inSleepMinutes(23 * 60, 23 * 60, 420), true);
+  assert.equal(inSleepMinutes(12 * 60, 23 * 60, 420), false);
+  assert.equal(inSleepMinutes(4 * 60, 420, 420), false, 'start==end 是不眠设定');
 });
 
 // ---------- 心跳输出契约 ----------

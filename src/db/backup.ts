@@ -12,7 +12,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
-import { dirname, join, resolve, sep } from 'node:path';
+import { basename, dirname, join, resolve, sep } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { Store } from './store.js';
 
@@ -26,13 +26,15 @@ interface Manifest {
 }
 
 const hash = (path: string) => createHash('sha256').update(readFileSync(path)).digest('hex');
+/** 库文件名新旧兼容：xing.db（本代）与 atri.db（4.0 时代就地升级的库）。 */
+const isDbFile = (path: string) => /^(atri|xing)\.db$/.test(path);
 
 /** 备份内允许出现的文件名白名单（路径穿越与符号链接双重防线）。 */
 function safePath(root: string, path: string) {
   const full = resolve(root, path);
   if (
     !full.startsWith(resolve(root) + sep) ||
-    !/^atri\.db$|^admin-secret\.txt$|^(media|custom)\/[a-zA-Z0-9_.-]+$/.test(path)
+    (!isDbFile(path) && !/^admin-secret\.txt$|^(media|custom)\/[a-zA-Z0-9_.-]+$/.test(path))
   )
     throw new Error('备份包含无效文件路径');
   return full;
@@ -53,10 +55,11 @@ export async function createBackup(
   } catch {
     /* Windows 上 chmod 只是建议 */
   }
-  const destination = join(directory, 'atri.db');
+  const dbName = basename(store.path);
+  const destination = join(directory, dbName);
   await store.backup(destination);
   const snapshot = new DatabaseSync(destination, { readOnly: true });
-  const files = new Set<string>(['atri.db']);
+  const files = new Set<string>([dbName]);
   try {
     for (const row of snapshot.prepare("SELECT media FROM messages WHERE status<>'deleted'").all())
       for (const item of JSON.parse(String(row.media)))
@@ -66,7 +69,7 @@ export async function createBackup(
     // admin-secret.txt 有意不进备份：备份最容易被拷去 NAS/发给别人，带上
     // 管理密码会把数据泄露升级成账号接管。恢复仍接受包含它的旧清单。
     for (const file of files) {
-      if (file === 'atri.db') continue;
+      if (file === dbName) continue;
       const source = safePath(dataDir, file),
         target = safePath(directory, file);
       if (!lstatSync(source).isFile() || lstatSync(source).isSymbolicLink())
@@ -86,7 +89,7 @@ export async function createBackup(
     }
     const manifest: Manifest = {
       format: 1,
-      version: '4.0.0',
+      version: '5.0.0',
       createdAt: new Date().toISOString(),
       files: [...files].map((path) => ({
         path,
@@ -111,12 +114,9 @@ export async function createBackup(
 
 export function restoreBackup(backupDir: string, dataDir: string) {
   const manifest = JSON.parse(readFileSync(join(backupDir, 'manifest.json'), 'utf8')) as Manifest;
-  if (
-    manifest.format !== 1 ||
-    !Array.isArray(manifest.files) ||
-    !manifest.files.some((f) => f.path === 'atri.db')
-  )
-    throw new Error('备份格式无效');
+  if (manifest.format !== 1 || !Array.isArray(manifest.files)) throw new Error('备份格式无效');
+  const dbEntry = manifest.files.find((f) => isDbFile(f.path));
+  if (!dbEntry) throw new Error('备份格式无效');
   const targetDir = resolve(dataDir);
   if (existsSync(targetDir) && readdirSync(targetDir).length)
     throw new Error('请停止服务，并恢复到一个空的数据目录');
@@ -138,7 +138,7 @@ export function restoreBackup(backupDir: string, dataDir: string) {
   if (existsSync(targetDir) && !lstatSync(targetDir).isDirectory())
     throw new Error('数据目录不是目录');
   mkdirSync(targetDir, { recursive: true, mode: 0o700 });
-  const tempDir = join(targetDir, `.atri-restore-${randomUUID().slice(0, 8)}`);
+  const tempDir = join(targetDir, `.xing-restore-${randomUUID().slice(0, 8)}`);
   mkdirSync(tempDir, { recursive: true, mode: 0o700 });
   const moved: string[] = [];
   try {
@@ -152,7 +152,7 @@ export function restoreBackup(backupDir: string, dataDir: string) {
         /* Windows */
       }
     }
-    const store = new Store(join(tempDir, 'atri.db'));
+    const store = new Store(join(tempDir, dbEntry.path));
     try {
       if (String(store.sql.prepare('PRAGMA integrity_check').get()?.integrity_check ?? '') !== 'ok')
         throw new Error('备份数据库完整性校验失败');

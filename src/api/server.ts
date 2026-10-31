@@ -183,10 +183,12 @@ export function createServer(o: ServerOptions) {
       usage: o.store.usage(),
       recentUsage: o.store.recentUsage(),
       issues: o.store.issues(),
-      // "她最近怎么样"的只读视图：心情、待问的约定、多久没来。
+      // "她最近怎么样"的只读视图：心情、待问的约定、多久没来、近 7 天
+      // 的节律统计（"分布像人"的在线观测）。
       states: (() => {
         const moods = o.store.moods();
         const due = o.store.dueLoopCounts();
+        const timeZone = o.settings.config().timeZone;
         return o.store.peers().map((peer) => {
           const mood = moods.get(peer.id) ?? { valence: 0, energy: 0, patience: 0, at: 0 };
           return {
@@ -197,6 +199,7 @@ export function createServer(o: ServerOptions) {
             dueLoops: due.get(peer.id) ?? 0,
             lastUserAt: peer.last_user_at,
             lastProactiveAt: peer.last_proactive_at,
+            rhythm: o.store.rhythmStats(peer.id, 7, timeZone),
           };
         });
       })(),

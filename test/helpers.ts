@@ -83,7 +83,7 @@ export function fixture(
   patch: Partial<RuntimeConfig> = {},
 ) {
   const directory = temporary(t),
-    store = new Store(join(directory, 'atri.db'));
+    store = new Store(join(directory, 'xing.db'));
   const root = projectRoot;
   const delivered: { peer: Peer; part: ReplyPart; id: string }[] = [];
   const config: RuntimeConfig = {

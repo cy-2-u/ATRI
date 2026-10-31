@@ -1,10 +1,81 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fixture } from './helpers.js';
-import { OPEN_LOOP_EXPIRE_DAYS, SOFT_THREAD_MAX } from '../src/db/index.js';
+import {
+  OPEN_LOOP_EXPIRE_DAYS,
+  SOFT_THREAD_MAX,
+  detailDecayRate,
+  detailIntegrity,
+  isForgotten,
+  significance,
+  traceOf,
+  consolidationGain,
+} from '../src/db/index.js';
 
 const DAY = 86400000;
 const HOUR = 3600000;
+
+// ---------- 记忆六变量的数学不变量：这套公式是产品的人格底层 ----------
+
+test('遗忘速率：情绪护住、巩固放慢、干扰加速', () => {
+  const base = detailDecayRate(0, 0, 0);
+  assert.ok(detailDecayRate(-0.9, 0, 0) < base, '情绪越强忘得越慢');
+  assert.ok(detailDecayRate(0, 0.8, 0) < base, '巩固越深忘得越慢');
+  assert.ok(detailDecayRate(0, 0, 0.8) > base, '干扰越大忘得越快');
+  assert.ok(detailDecayRate(0, 0, 0) > 0);
+});
+
+test('细节衰减：回想重置时钟但不重置意义', () => {
+  const now = Date.now();
+  const raw = {
+    importance: 0.8,
+    emotion: 0,
+    consolidation: 0,
+    interference: 0,
+    created_at: now - 10 * DAY,
+    last_hit_at: now - 2 * DAY,
+  };
+  const state = traceOf(raw);
+  const d = detailIntegrity(state, now);
+  // 2 天前的回想：细节从那一刻重新起算，比重照 10 年前算要清晰得多。
+  assert.ok(d > 0.7, `回想后细节应较完整，实际 ${d.toFixed(2)}`);
+  // 意义按写入起算：回想不重置。
+  const aged = traceOf({ ...raw, last_hit_at: now });
+  assert.equal(significance(state, now), significance(aged, now), '回想不重置意义');
+  // 符号保留：难受的事淡了还是难受的方向。
+  const sad = traceOf({ ...raw, emotion: -0.6 });
+  const residue = traceOf({ ...raw, emotion: -0.6, created_at: now });
+  assert.ok(significance(sad, now) > 0);
+  assert.equal(Math.sign(residue.emotion), -1);
+});
+
+test('遗忘判定：细节与意义双低才算想不起来', () => {
+  const now = Date.now();
+  const old = {
+    importance: 0.2,
+    emotion: 0,
+    consolidation: 0,
+    interference: 0,
+    created_at: now - 60 * DAY,
+    last_hit_at: 0,
+  };
+  assert.equal(isForgotten(traceOf(old), now), true, '又轻又旧又没演练 → 想不起来');
+  const pinned = {
+    importance: 0.9,
+    emotion: 0,
+    consolidation: 0,
+    interference: 0,
+    created_at: now - 60 * DAY,
+    last_hit_at: 0,
+  };
+  assert.equal(isForgotten(traceOf(pinned), now), false, '重要的事淡了也在');
+});
+
+test('间隔效应：隔得越久回想留下的巩固越多，且封顶', () => {
+  assert.ok(consolidationGain(10 * 60000) < consolidationGain(4 * DAY));
+  assert.ok(consolidationGain(10 * DAY) <= 0.15 + 1e-9);
+  assert.ok(consolidationGain(0) > 0, '同拍重看也涨一点点');
+});
 
 test('消息：event_key 去重，history 有序', (t) => {
   const f = fixture(t);
@@ -217,6 +288,93 @@ test('她的当下与生活流水：单行状态 + 环形裁剪', (t) => {
   const recent = f.store.recentLife(300);
   assert.ok(recent.length <= 200, '环形保留上限');
   assert.equal(recent[0]!.text, '事情259', '最新在前');
+});
+
+test('在追的事：设置、重复不刷新起点、放下归零', (t) => {
+  const f = fixture(t);
+  const now = Date.now();
+  const first = f.store.updateSelf({ pursuit: '在读深海热泉的资料' }, now);
+  assert.equal(first.pursuit, '在读深海热泉的资料');
+  assert.equal(first.pursuit_since, now, '新起点是设置时刻');
+  // 内容没变就不动起点："追了三天"不能被重写成"追了一瞬间"。
+  const again = f.store.updateSelf({ pursuit: '在读深海热泉的资料' }, now + HOUR);
+  assert.equal(again.pursuit_since, now);
+  // 更新说法：起点随内容变化移动。
+  const updated = f.store.updateSelf({ pursuit: '在读深海热泉的论文' }, now + 2 * HOUR);
+  assert.equal(updated.pursuit_since, now + 2 * HOUR);
+  // 放下：清空并归零。
+  const cleared = f.store.updateSelf({ pursuitClear: true }, now + 3 * HOUR);
+  assert.equal(cleared.pursuit, '');
+  assert.equal(cleared.pursuit_since, 0);
+  // 超长截断到 120 字。
+  assert.equal(
+    f.store.updateSelf({ pursuit: '追'.repeat(200) }, now).pursuit.length,
+    120,
+    'pursuit 截断',
+  );
+});
+
+test('夜间整理候选：相近记忆配对，遗忘与置顶不参与', (t) => {
+  const f = fixture(t);
+  const now = Date.now();
+  const { message } = f.store.ingest('p1', 'e1', '我不吃香菜', [], now);
+  f.store.addMemory(
+    'p1',
+    { content: '他不吃香菜', kind: 'stated', sources: [message.id] },
+    f.store.peer('p1')!.version,
+  );
+  f.store.addMemory(
+    'p1',
+    { content: '他不爱吃香菜', kind: 'interpretation', sources: [message.id] },
+    f.store.peer('p1')!.version,
+  );
+  f.store.addMemory(
+    'p1',
+    { content: '他喜欢喝茶', kind: 'stated', sources: [message.id] },
+    f.store.peer('p1')!.version,
+  );
+  const candidates = f.store.consolidationCandidates('p1');
+  assert.equal(candidates.length, 1, '香菜的两条相近成对，茶不参与');
+  assert.ok(candidates[0]!.similarity >= 0.3);
+  // 置顶行不参与：把其中一条置顶后，剩下的对消失。
+  const first = candidates[0]!;
+  f.store.setMemoryPinned('p1', first.a.id, true);
+  assert.equal(f.store.consolidationCandidates('p1').length, 0, '置顶不参与整理');
+});
+
+test('节律统计：心跳开口、气泡形状、连发', (t) => {
+  const f = fixture(t);
+  const now = Date.now();
+  f.store.ingest('p1', 'e1', '嗨', [], now - 2 * DAY);
+  // 一轮聊天回复：两个气泡（文本 + 表情）。显式传 created_at：默认时钟
+  // 会让所有气泡落进同一连发窗。
+  const chat = f.store.enqueue('p1', 'chat', 'c1', {}, now - 2 * DAY);
+  f.store.claim('p1');
+  f.store.saveReply(
+    f.store.taskById(chat)!,
+    [
+      { type: 'text', text: '你好呀，今天过得怎么样？' },
+      { type: 'sticker', slug: 'happy', description: '开心' },
+    ],
+    [],
+    now - 2 * DAY,
+  );
+  // 一拍心跳开口。
+  const beat = f.store.enqueue('p1', 'pulse', 'b1', { beat: true }, now - DAY);
+  f.store.claim('p1');
+  f.store.saveReply(f.store.taskById(beat)!, [{ type: 'text', text: '在干嘛' }], [], now - DAY);
+  for (const d of f.store.pendingDeliveries('p1')) f.store.markDelivery(d.id, 'sent');
+  const stats = f.store.rhythmStats('p1', 7, 'Asia/Shanghai');
+  assert.equal(stats.days, 7);
+  assert.equal(stats.beats, 1);
+  assert.equal(stats.beatSpeaks, 1, '发出过气泡的拍算开口');
+  assert.equal(stats.proactiveMsgs, 1, '只有心跳那条是主动');
+  assert.equal(stats.userMsgs, 1);
+  assert.equal(stats.bubbles, 3);
+  assert.equal(stats.stickers, 1);
+  assert.ok(stats.avgLen > 0 && stats.lenStdev > 0, '长度有均值有方差');
+  assert.equal(stats.maxBurst, 2, '同一轮的两个气泡在连发窗内');
+  assert.ok(stats.perDay.length >= 1 && stats.perDay[0]!.bubbles >= 1);
 });
 
 test('混合检索：命中带角色与来源，近度不掩盖精确', (t) => {

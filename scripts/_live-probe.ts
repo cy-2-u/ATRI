@@ -1,6 +1,6 @@
 /** 模型管线探针：用真实模型走完整对话管线（提示词组装→解析→投递），
  *  打印模型原始输出与实际投递的差异，用于更换渠道/模型后的实测。
- *  密钥与端点只从环境变量读（ATRI_LIVE_URL / ATRI_LIVE_KEY / ATRI_LIVE_MODEL），
+ *  密钥与端点只从环境变量读（XING_LIVE_URL / XING_LIVE_KEY / XING_LIVE_MODEL），
  *  不进仓库。运行：npx tsx scripts/_live-probe.ts <要说的第几句>...（默认三句固定台词） */
 import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -9,11 +9,11 @@ import { Store } from '../src/db/index.js';
 import { HttpModel, type Completion } from '../src/llm.js';
 import { Runtime, type Sticker } from '../src/core/index.js';
 
-const url = process.env.ATRI_LIVE_URL ?? '';
-const key = process.env.ATRI_LIVE_KEY ?? '';
-const modelName = process.env.ATRI_LIVE_MODEL ?? '';
+const url = process.env.XING_LIVE_URL ?? '';
+const key = process.env.XING_LIVE_KEY ?? '';
+const modelName = process.env.XING_LIVE_MODEL ?? '';
 if (!url || !key || !modelName)
-  throw new Error('需要环境变量 ATRI_LIVE_URL / ATRI_LIVE_KEY / ATRI_LIVE_MODEL');
+  throw new Error('需要环境变量 XING_LIVE_URL / XING_LIVE_KEY / XING_LIVE_MODEL');
 
 const stickers: Sticker[] = JSON.parse(
   readFileSync(join(process.cwd(), 'assets', 'stickers', 'catalog.json'), 'utf8'),
@@ -40,7 +40,7 @@ const model = new LoggingModel({
   inputBudgetTokens: 24000,
 });
 
-const store = new Store(join(mkdtempSync(join(tmpdir(), 'atri-live-')), 'atri.db'));
+const store = new Store(join(mkdtempSync(join(tmpdir(), 'xing-live-')), 'xing.db'));
 const delivered: { kind: string; text: string; slug?: string }[] = [];
 const runtime = new Runtime({
   store,

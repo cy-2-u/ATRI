@@ -1,5 +1,5 @@
 import type { Message, Memory, Store, Task, SearchHit, MemoryUpdate } from '../db/index.js';
-import { hourFormatter } from '../db/index.js';
+import { hourFormatter, CONSOLIDATION_PAIRS_MAX } from '../db/index.js';
 import type { Model, ModelMessage, ToolDefinition, Completion } from '../llm.js';
 import { ModelError, estimateRequestTokens, estimateTextTokens, trimToTokens } from '../llm.js';
 import {
@@ -79,13 +79,15 @@ import {
   HISTORY_LOAD_LIMIT,
   PULSE_LIFE_LOG_ITEMS,
   PULSE_THOUGHTS_MAX,
+  PULSE_HISTORY_LOAD,
+  PERSONA_ANCHORS,
 } from './constants.js';
 
-/** 对话内核：预算规划 → 有界工具循环 → 输出解析与来源校验；外加日记与
- *  话题笔记的离线整理（reflect）。聊天与心跳共用同一套预算与工具机制，
- *  差别只在材料与输出契约。 */
+/** 对话内核：预算规划 → 有界工具循环 → 输出解析与来源校验；外加日记、
+ *  话题笔记与记忆整理的离线整理（reflect）。聊天与心跳共用同一套预算
+ *  与工具机制，差别只在材料与输出契约。 */
 
-export type PromptName = 'persona' | 'chat' | 'pulse' | 'diary' | 'context_notes';
+export type PromptName = 'persona' | 'chat' | 'pulse' | 'diary' | 'context_notes' | 'consolidate';
 export interface AgentOptions {
   store: Store;
   model: () => Model;
@@ -302,15 +304,34 @@ export class Agent {
     const isBeat = isPulse && task.payload.beat === true;
     // 预算按模型实际可见的工具表算（含沙箱工具），否则会低估。
     const budgetTools = this.toolset();
-    const query = history
-      .filter((m) => m.role === 'user')
-      .slice(-RECALL_QUERY_MESSAGES)
-      .map((m) => m.content)
-      .join(' ')
-      .slice(-RECALL_QUERY_MAX_CHARS);
+    // 白日梦的查询是她的心事：beat 没有刚发生的用户消息可挂，用过时的
+    // 旧消息当查询只会召回与当下无关的东西。用她存着的念头、挂念与
+    // 此刻在做的事撑起检索——安静时想起旧事的人，是先有心事再撞见旧事。
+    const query = isBeat
+      ? [
+          ...store
+            .activeInitiatives(peer.id)
+            .slice(0, PULSE_THOUGHTS_MAX)
+            .map((i) => i.meaning),
+          ...store.ripeSoftThreads(peer.id, now).map((t) => t.content),
+          store.self().activity,
+        ]
+          .filter(Boolean)
+          .join(' ')
+          .slice(-RECALL_QUERY_MAX_CHARS)
+      : history
+          .filter((m) => m.role === 'user')
+          .slice(-RECALL_QUERY_MESSAGES)
+          .map((m) => m.content)
+          .join(' ')
+          .slice(-RECALL_QUERY_MAX_CHARS);
     let queryVector: Float32Array | undefined;
+    // 向量检索每次查询要一次 embeddings API 调用：beat 一天几十拍，短查询
+    // （几个念头拼起来）词面命中已经够用，不值得每拍都付这一次往返。
+    const embedFloor = isBeat ? 24 : 1;
     try {
-      queryVector = query.trim() ? await this.o.embedQuery?.(query, signal) : undefined;
+      queryVector =
+        query.trim().length >= embedFloor ? await this.o.embedQuery?.(query, signal) : undefined;
     } catch (error) {
       if (signal.aborted) throw error;
       queryVector = undefined;
@@ -407,11 +428,21 @@ export class Agent {
     ]
       .filter(Boolean)
       .join('\n\n');
+    // 人格锚：按天轮换的行为重申（人格漂移的实证对策：会话中途的低频
+    // 重申）。落在缓存断点之后的资料里，不碰逐字节稳定的 system 前缀。
+    const anchorDay = dayKey(now, this.o.timeZone());
+    let anchorHash = 0;
+    for (let i = 0; i < anchorDay.length; i++)
+      anchorHash = (anchorHash * 31 + anchorDay.charCodeAt(i)) | 0;
+    const anchor = PERSONA_ANCHORS.length
+      ? PERSONA_ANCHORS[Math.abs(anchorHash) % PERSONA_ANCHORS.length]!
+      : '';
     const dynamic = [
       timeLine,
       `本次模式：${isPulse ? '她的意识自己冒出来的一拍（心跳），可以什么都不说' : '回应用户消息'}`,
       renderMood(mood, now, baseline),
       renderSelfHour(currentHour),
+      anchor ? `人格锚（今天的重申，不是新规则）：${anchor}` : '',
       renderRhythm(rhythm, currentHour),
       renderOpenLoops(openLoops, now, this.o.timeZone()),
       renderSoftThreads(softThreads, now),
@@ -560,6 +591,8 @@ export class Agent {
       context,
       recent,
       pickedMemoryIds: pickedMemories.map((m) => m.id),
+      // 白日梦用的召回命中（仅记忆行）：拍内演练与情绪泛化的输入。
+      recalledMemoryIds: pickedRecalled.filter((h) => h.kind === 'memory').map((h) => h.id),
       available,
       budget,
       gapDiary,
@@ -617,6 +650,9 @@ export class Agent {
       life
         ? `你的生活流水（都是你真实做过/看过的）：\n${life}`
         : '生活流水还是空的：你还没有做成过什么事。',
+      self.pursuit
+        ? `你最近在追的事：${self.pursuit}。可以让它真的长进——用 web 工具读一点相关的（真的看过才有的聊），这拍有收获就写进 activity；想更新说法写进 pursuit，不想追了把 pursuit 写成空字符串放下。`
+        : '你还没有在追的事。人总有点自己的世界：此刻对什么有点好奇的话，就在 pursuit 里立一项（一句话就够），之后用 web 工具真的去看、去追。',
       `此刻的身体与心：${renderMotives(feel) || '平静，没有特别的倾向'}。`,
       `已经安静了 ${minutesIdle > 9000 ? '很久' : `${Math.round(minutesIdle)} 分钟`}。${silenceNote(minutesIdle)}`.trim(),
       thoughts
@@ -806,7 +842,9 @@ export class Agent {
   }
 
   /** 心跳的一拍：与聊天共用预算规划与工具机制，输出契约换成
-   *  speak/muse/nothing。beatMaterial 已经把真实材料递进去了。 */
+   *  speak/muse/nothing。beatMaterial 已经把真实材料递进去了。
+   *  历史窗口用 beat 专用的小份额：她不是在"回复"，完整窗口只让缓存
+   *  断点之后的资料段每拍全价重付。 */
   async pulseBeat(task: Task, parentSignal?: AbortSignal): Promise<ParsedPulse> {
     const { store } = this.o;
     const peer = store.peer(task.peer_id);
@@ -815,8 +853,18 @@ export class Agent {
     const signal = parentSignal ?? AbortSignal.timeout(turnTimeoutMs);
     const deadlineAt = Date.now() + turnTimeoutMs;
     const now = Date.now();
-    const history = store.history(peer.id, HISTORY_LOAD_LIMIT);
+    const history = store.history(peer.id, PULSE_HISTORY_LOAD);
     const plan = await this.planReply(task, peer, history, now, signal);
+    // 白日梦的收尾：这一拍真在眼前的记忆记一次演练（冷却与巩固增益都
+    // 是既有机制），带情绪残留的旧事泛化成此刻的感觉。放在输出之前：
+    // 说不说话由她定，"突然想起了什么"的感觉先到——安静一整天时，
+    // 心情也能因为想起了旧事而起落，而不是只剩这一拍的自评。
+    const daydreamIds = [...plan.pickedMemoryIds, ...plan.recalledMemoryIds];
+    if (daydreamIds.length) {
+      const residues = store.markMemoriesUsed(peer.id, daydreamIds, now);
+      const pulse = residuePulse(residues);
+      if (pulse) store.pulseMood(peer.id, { valence: pulse.valence, reason: pulse.reason }, now);
+    }
     const messages: ModelMessage[] = [{ role: 'system', content: plan.system }];
     for (const m of plan.recent) {
       messages.push({ role: m.role, content: renderMessage(m, this.o.timeZone()) });
@@ -990,7 +1038,7 @@ export class Agent {
         if (signal.aborted) throw error;
         if (repaired || attempt === MAX_REPLY_ATTEMPTS - 1) throw error;
         repaired = true;
-        // 重注全文曾一次吃掉 16k token 让修复轮必炸：只回注短摘录且有余量时。
+        // 修复轮重注全文会顶爆预算：只回注短摘录且有余量时。
         const excerpt = (completion?.text ?? '').trim().slice(0, REPAIR_EXCERPT_CHARS);
         const room =
           this.o.contextTokens() -
@@ -1092,7 +1140,7 @@ export class Agent {
     return hits;
   }
 
-  /** 离线整理：话题笔记或日记。 */
+  /** 离线整理：话题笔记、日记或夜间记忆整理。 */
   async reflect(task: Task, signal: AbortSignal): Promise<void> {
     const { store } = this.o;
     const peer = store.peer(task.peer_id);
@@ -1100,6 +1148,7 @@ export class Agent {
       store.finish(task.id);
       return;
     }
+    if (task.kind === 'consolidate') return this.consolidate(task, signal);
     const through = Number(task.payload.through ?? Number.MAX_SAFE_INTEGER);
     const after = task.kind === 'notes' ? peer.notes_until : Number(task.payload.after ?? 0);
     let messages = store.historyAfter(peer.id, after, through, 200);
@@ -1196,5 +1245,52 @@ export class Agent {
       sections,
       updates,
     );
+  }
+
+  /** 夜间整理拍：相近记忆对的矛盾检测与合并（sleep-time agent 的
+   *  "重组织/找矛盾"职责，与日记的反思互补）。整理只动已有条目：每条
+   *  update 必须 supersedes 本材料里出现过的记忆，纯新增整体丢弃——
+   *  夜里不凭空长出新记忆；白天由对话产生记忆，夜里把它理顺。 */
+  private async consolidate(task: Task, signal: AbortSignal): Promise<void> {
+    const { store } = this.o;
+    const peerId = task.peer_id;
+    const pairs = store.consolidationCandidates(peerId, CONSOLIDATION_PAIRS_MAX);
+    if (!pairs.length) {
+      store.finish(task.id);
+      return;
+    }
+    const involved = new Map<string, Memory>();
+    for (const { a, b } of pairs) {
+      involved.set(a.id, a);
+      involved.set(b.id, b);
+    }
+    const line = (m: Memory) =>
+      `- [id:${m.id}]（${m.kind === 'stated' ? '对话确认' : '主观理解'}，来源：${m.sources.join('、') || '无'}）${m.content}`;
+    const body = pairs
+      .map(({ a, b }, index) => `第 ${index + 1} 对：\n${line(a)}\n${line(b)}`)
+      .join('\n\n');
+    const completion = await this.complete(
+      task,
+      [
+        { role: 'system', content: this.o.prompt('consolidate') },
+        {
+          role: 'user',
+          content: `以下是你自己的记忆里两两相近的条目，夜里整理一遍：\n\n${body}`,
+        },
+      ],
+      [],
+      signal,
+    );
+    const raw = parseJson(completion.text);
+    // 不走 filteredUpdates：它会把 supersedes 也按来源集过滤，而这里的
+    // supersedes 指向的是候选记忆本身。来源校验（只能引用候选记忆自带
+    // 的消息来源）与 supersedes 校验（必须指向材料里的记忆）分开做。
+    const available = new Set([...involved.values()].flatMap((m) => m.sources));
+    const updates = parseMemories(raw.updates)
+      .filter((u) => u.sources.length > 0 && u.sources.every((id) => available.has(id)))
+      .map((u) => ({ ...u, supersedes: (u.supersedes ?? []).filter((id) => involved.has(id)) }))
+      .filter((u) => (u.supersedes ?? []).length > 0);
+    if (updates.length) store.applyMemoryUpdates(peerId, task.version, updates);
+    store.finish(task.id);
   }
 }

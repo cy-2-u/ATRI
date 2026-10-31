@@ -1,4 +1,11 @@
 import { startSim } from './sim-lib.js';
+import {
+  dayKey,
+  jitteredSleepWindow,
+  inSleepMinutes,
+  minutesOfDay,
+  BURST_WINDOW_MS,
+} from '../src/core/index.js';
 
 /** 一个月的生活模拟（主动 v3 版）：聊天、心跳、承诺、睡眠与日记全部走
  *  生产代码。剧本同时扮演 ATRI 与用户；模型输出按角色分发。
@@ -19,33 +26,61 @@ const stickers = [
   },
 ];
 
+/** 心跳开口的人味限流：材料命中就想说的冲动，真人也不会每小时都找他。
+ *  到期承诺的追问不受此限——记性是记性，闲聊是闲聊。 */
+let lastBeatSpeakAt = 0;
+const BEAT_SPEAK_GAP_MS = 4 * 3600000;
+/** 台词轮换：同一句台词说一个月不是人，长短错落也让长度方差有量纲。 */
+const MISS_LINES = ['在干嘛～我这边闲下来了', '想你了。冒个泡？', '喂——在忙吗，我想找你说会儿话'];
+const BORED_LINES = [
+  '好无聊哦，你又不理我',
+  '闲的。你在干嘛呢',
+  '闲得发慌，整理了半天表情包也没人看',
+];
+let lineIndex = 0;
+const pickLine = (lines: string[]) => lines[lineIndex++ % lines.length]!;
+
 /** 心跳拍与聊天轮共用一个回复口：按材料判断这拍怎么答。 */
 function reply(ctx: Parameters<Parameters<typeof startSim>[0]['reply']>[0]): unknown {
   const text = ctx.all;
   // 心跳拍：材料里有"心跳"与"此刻的身体与心"。
   if (text.includes('这一拍是你的意识自己冒出来的')) {
-    if (text.includes('已到约定时间')) {
-      // 到期承诺：自然问一句，并显式声明 askedLoops。
-      const id = /#([a-f0-9-]{36})/.exec(text)?.[1] ?? '';
+    // 到期承诺：只认真实到期行（renderOpenLoops 的 [id:uuid] 行），绝不
+    // 认系统提示里的措辞——"已到约定时间"五个字就写在 pulse.md 正文里，
+    // 按词匹配会让每一拍都在追问同一件不存在的事。问过一次的行不再问。
+    const dueLine = text
+      .split('\n')
+      .find(
+        (l) =>
+          /\[id:[0-9a-f-]{36}\]/.test(l) && l.includes('已到约定时间') && !l.includes('已问过一次'),
+      );
+    const dueRow = dueLine ? /\[id:([0-9a-f-]{36})\] ([^\n（]+)/.exec(dueLine) : undefined;
+    if (dueRow) {
       return {
         action: 'speak',
-        messages: [
-          `说好的事到时间啦——${text.match(/你答应过\/记着的事到时间了：([^\n。]+)/)?.[1] ?? '那件事'}怎么样了？`,
-        ],
-        askedLoops: id ? [id] : [],
+        messages: [`说好的事到时间啦——${dueRow[2]!.trim()}——办得怎么样了？`],
+        askedLoops: [dueRow[1]!],
       };
     }
-    if (text.includes('很想他')) return { action: 'speak', messages: ['在干嘛～我这边闲下来了'] };
-    if (text.includes('有点闲') || text.includes('闲得发慌'))
+    const maySpeak = sim.now() - lastBeatSpeakAt >= BEAT_SPEAK_GAP_MS;
+    if (maySpeak && text.includes('很想他')) {
+      lastBeatSpeakAt = sim.now();
+      return { action: 'speak', messages: [pickLine(MISS_LINES)] };
+    }
+    if (maySpeak && (text.includes('有点闲') || text.includes('闲得发慌'))) {
+      lastBeatSpeakAt = sim.now();
       return {
         action: 'speak',
-        messages: ['好无聊哦，你又不理我'],
+        messages: [pickLine(BORED_LINES)],
         selfActivity: '翻来覆去整理表情包',
       };
-    if (text.includes('记着的事') || text.includes('存着的念头')) {
+    }
+    if (maySpeak && (text.includes('记着的事') || text.includes('存着的念头'))) {
       const thought = /- \[id:[^\]]+\] ([^\n（]+)/.exec(text)?.[1];
-      if (thought)
+      if (thought) {
+        lastBeatSpeakAt = sim.now();
         return { action: 'speak', messages: [`对了，${thought.slice(0, 14)}——现在说正好`] };
+      }
     }
     return { action: 'nothing', selfActivity: '看了一会儿海的照片' };
   }
@@ -88,6 +123,8 @@ function reply(ctx: Parameters<Parameters<typeof startSim>[0]['reply']>[0]): unk
   }
   // 话题笔记。
   if (text.includes('"notes"')) return { notes: '他在忙项目；喜欢喝茶。' };
+  // 夜间整理拍：模拟里没有值得合并的重复记忆，直接交空。
+  if (text.includes('两两相近的条目，夜里整理一遍')) return { updates: [] };
   // 聊天回复。
   if (ctx.body.includes('喜欢喝茶'))
     return {
@@ -245,4 +282,83 @@ say('    —— 一个月跑完 ——');
 say(
   `    心跳开口 ${said} 次，做成的事 ${did} 件；念头池剩 ${store.activeInitiatives(sim.PEER).length} 条。`,
 );
+
+// ---------- 人味统计（设计文档验收：分布像人） ----------
+// 机制层面的量化：深夜静、连发上限、长度方差、每日分布、心跳开口占比。
+// 剧本扮演双方，所以这些统计验证的是调度与投递机制的人味，不是模型文风。
+{
+  const tz = sim.config.timeZone;
+  const bubbles = sim.bubbles;
+  const texts = bubbles.filter((b) => b.kind === 'text').map((b) => b.text.length);
+  const mean = texts.length ? texts.reduce((a, b) => a + b, 0) / texts.length : 0;
+  const stdev = texts.length
+    ? Math.sqrt(texts.reduce((a, b) => a + (b - mean) ** 2, 0) / texts.length)
+    : 0;
+  // 深夜静：每条气泡都落在当天抖动后的清醒窗内。
+  const asleep = bubbles.filter((b) => {
+    const w = jitteredSleepWindow(dayKey(b.at, tz), sim.config.sleepStart, sim.config.sleepEnd);
+    return inSleepMinutes(minutesOfDay(b.at, tz), w.startMin, w.endMin);
+  }).length;
+  // 连发：5 分钟窗内的连续气泡。
+  let maxBurst = 0,
+    run = 0,
+    prev = 0;
+  for (const b of bubbles) {
+    run = b.at - prev < BURST_WINDOW_MS ? run + 1 : 1;
+    if (run > maxBurst) maxBurst = run;
+    prev = b.at;
+  }
+  // 每日条数分布。
+  const daily = new Map<string, number>();
+  for (const b of bubbles) daily.set(dayKey(b.at, tz), (daily.get(dayKey(b.at, tz)) ?? 0) + 1);
+  const counts = [...daily.values()];
+  const maxDay = counts.length ? Math.max(...counts) : 0;
+  const minDay = counts.length ? Math.min(...counts) : 0;
+  // 心跳开口占比：beat 任务里真发了气泡的比例（大多数拍应该是安静）。
+  const pulseRows = store.sql
+    .prepare("SELECT id,payload FROM tasks WHERE peer_id=? AND kind='pulse'")
+    .all(sim.PEER) as { id: string; payload: string }[];
+  const spoken = new Set(
+    (
+      store.sql
+        .prepare("SELECT DISTINCT task_id AS id FROM outbox WHERE peer_id=? AND status='sent'")
+        .all(sim.PEER) as { id: string }[]
+    ).map((r) => r.id),
+  );
+  let beats = 0,
+    beatSpeaks = 0;
+  for (const row of pulseRows) {
+    if (!row.payload.includes('"beat":true')) continue;
+    beats++;
+    if (spoken.has(row.id)) beatSpeaks++;
+  }
+  const userMsgs = Number(
+    (
+      store.sql
+        .prepare("SELECT COUNT(*) AS n FROM messages WHERE peer_id=? AND role='user'")
+        .get(sim.PEER) as { n: number }
+    ).n ?? 0,
+  );
+  const stickers = bubbles.filter((b) => b.kind === 'sticker').length;
+  const spanDays = Math.max(
+    1,
+    Math.ceil((sim.now() - Date.parse('2026-11-01T09:00:00+08:00')) / 86400000),
+  );
+  say();
+  say('    —— 人味统计 ——');
+  say(
+    `    气泡 ${bubbles.length} 条（文本均长 ${mean.toFixed(1)}±${stdev.toFixed(1)} 字，表情 ${stickers} 次）；每日 ${minDay}–${maxDay} 条；最大连发 ${maxBurst} 条。`,
+  );
+  say(`    心跳开口 ${beatSpeaks}/${beats} 拍；主动消息 ${said} 条 / 对方消息 ${userMsgs} 条。`);
+  check(asleep === 0, `深夜静：睡眠窗内 ${asleep} 条气泡`);
+  check(maxBurst <= 6, `连发不超上限（最多 ${maxBurst} 条）`);
+  check(stdev >= 3, `气泡长度有方差（σ=${stdev.toFixed(1)} 字）`);
+  check(maxDay - minDay >= 2, `每日密度有起伏（${minDay}–${maxDay} 条/天）`);
+  check(
+    beats === 0 || beatSpeaks / beats <= 0.6,
+    `大多数拍是安静的（开口 ${beats ? ((beatSpeaks / beats) * 100).toFixed(0) : 0}%）`,
+  );
+  // 主动不淹没对方：机制级看日均主动条数（黏人度 80 也不该刷屏）。
+  check(said / spanDays <= 5, `日均主动 ${(said / spanDays).toFixed(1)} 条（≤5）`);
+}
 sim.finish();

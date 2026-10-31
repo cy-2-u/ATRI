@@ -84,6 +84,9 @@ export function startSim(opts: SimOptions) {
 
   const store = new Store(join(mkdtempSync(join(tmpdir(), 'atri-sim-')), 'sim.db'));
   const delivered: { at: number; text: string; kind: string; slug?: string }[] = [];
+  // 全月累计的气泡流水（delivered 会被 flushDelivered 清空，这里不清）：
+  // 人味统计（气泡长度方差、连发分布、深夜静）从这份数据算。
+  const bubbles: { at: number; kind: string; text: string }[] = [];
   const web: WebTools = {
     search: async () => {
       throw new Error('模拟不联网');
@@ -119,6 +122,7 @@ export function startSim(opts: SimOptions) {
       send: async (peer, part) => {
         if (part.type === 'text') {
           delivered.push({ at: simNow, text: part.text ?? '', kind: 'text' });
+          bubbles.push({ at: simNow, kind: 'text', text: part.text ?? '' });
           say(`         ATRI（${stamp(simNow)}）：${(part.text ?? '').replace(/\n/g, ' / ')}`);
         } else {
           delivered.push({
@@ -127,6 +131,7 @@ export function startSim(opts: SimOptions) {
             kind: 'sticker',
             slug: part.slug,
           });
+          bubbles.push({ at: simNow, kind: 'sticker', text: `[表情:${part.slug}]` });
           say(`         ATRI（${stamp(simNow)}）：[表情图片 ${part.slug}]`);
         }
         void peer;
@@ -256,6 +261,7 @@ export function startSim(opts: SimOptions) {
     runtime,
     calls,
     delivered,
+    bubbles,
     config,
     PEER,
     say,

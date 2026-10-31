@@ -210,9 +210,9 @@ export class Settings {
     // 泵每 300ms 读一次配置：SQLite+JSON.parse 纯浪费；写路径是唯一变更口。
     if (this.configCache) return this.configCache;
     const defaults = builtinDefaults(this.env);
-    // 旧版本的未知键丢弃，不是永远合并下去（v3 里 quietStart/quietEnd
-    // 改名 sleepStart/sleepEnd，旧值自动落回默认——睡眠时段默认就是
-    // 旧的安静时段，运维在页面上重新确认一次即可）。
+    // 存量配置里的旧键名（quietStart/quietEnd → sleepStart/sleepEnd）
+    // 自动落回：睡眠时段默认就是旧的安静时段，运维在页面上重新确认一次
+    // 即可。未知键丢弃，不是永远合并下去。
     const stored = this.store.getSetting<Record<string, unknown>>('config', {});
     if (stored['sleepStart'] === undefined && Number.isInteger(stored['quietStart']))
       stored['sleepStart'] = stored['quietStart'];
@@ -227,7 +227,7 @@ export class Settings {
     this.configCache = config;
     return config;
   }
-  /** 旧版本直接写入的存量配置绕过 update()：合并结果也要校验。 */
+  /** 存量配置（直接写入 settings 的）绕过了 update()：合并结果也要校验。 */
   private validateConfig(c: SavedConfig): void {
     if (!['openai', 'anthropic', 'gemini'].includes(c.format))
       throw new Error('模型接口格式无效，请在设置页重新选择');

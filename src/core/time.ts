@@ -1,4 +1,4 @@
-import { hourFormatter } from '../db/index.js';
+import { hourFormatter, BURST_WINDOW_MS } from '../db/index.js';
 import {
   SILENCE_NOTIFY_MINUTES,
   SILENCE_HOURS_THRESHOLD,
@@ -7,6 +7,9 @@ import {
 } from './constants.js';
 
 /** 时间感知：她知道现在是什么时候、隔了多久、上次聊天挂在哪个时段。 */
+
+// 连发窗口的唯一定义在数据层（节律统计共用），这里保持原公开名。
+export { BURST_WINDOW_MS };
 
 const cache = <T>(make: (timeZone: string) => T) => {
   const store = new Map<string, T>();
@@ -66,8 +69,6 @@ export function daypart(at: number, timeZone: string): string {
   return '晚上';
 }
 
-/** 同一 burst（连发）内的消息间隔上限。 */
-export const BURST_WINDOW_MS = 5 * 60000;
 /** 日级天数的口语模糊化（图灵审查修复 #8）：人报"隔了几天"是估的，
  *  "第三天""整整八天"这种分毫不差的计数是系统读表。数字 >=3 天时按
  *  邻近天数渲染为"约 N 天"或"好几天"，让模型的措辞带上容差；小时与

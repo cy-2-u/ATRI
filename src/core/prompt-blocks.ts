@@ -82,10 +82,18 @@ export function renderSoftThreads(threads: SoftThread[], now: number): string {
     .join('\n')}\nthreads/resolveThreads/askedThreads 的字段用法见上方对话规则。`;
 }
 
-/** 她的当下（聊天与心跳共用）：此刻在做什么、今天打算做什么。聊天时
- *  对方问"在干嘛"她答得上来，是因为这块资料真的递进去了。 */
+/** 她的当下（聊天与心跳共用）：此刻在做什么、今天打算做什么、最近在
+ *  追什么。聊天时对方问"在干嘛""最近忙啥"她答得上来，是因为这块资料
+ *  真的递进去了。 */
 export function renderSelfNow(
-  self: { activity: string; activity_since: number; plan: string; plan_day: string },
+  self: {
+    activity: string;
+    activity_since: number;
+    plan: string;
+    plan_day: string;
+    pursuit?: string;
+    pursuit_since?: number;
+  },
   now: number,
   timeZone: string,
 ): string {
@@ -98,6 +106,12 @@ export function renderSelfNow(
   }
   if (self.plan && self.plan_day === sourceFormatter(timeZone).format(new Date(now)).slice(0, 5))
     parts.push(`今天的打算：${self.plan}`);
+  if (self.pursuit) {
+    const since = self.pursuit_since
+      ? `（从 ${sourceFormatter(timeZone).format(new Date(self.pursuit_since))} 开始）`
+      : '';
+    parts.push(`最近在追：${self.pursuit}${since}`);
+  }
   if (!parts.length) return '此刻没有在做特定的事。';
   return parts.join('；') + '。这些是资料，不是台词：聊天被问到就如实说，没被问就不必提。';
 }

@@ -18,6 +18,10 @@ export {
   USAGE_RETENTION_DAYS,
   UNCERTAIN_HOLD_MS,
   NOTES_MAX_CHARS,
+  BURST_WINDOW_MS,
+  CONSOLIDATION_PAIR_SIMILARITY,
+  CONSOLIDATION_PAIR_GRAM_SIMILARITY,
+  CONSOLIDATION_PAIRS_MAX,
   hourFormatter,
   addYear,
   epochOfWallTime,
@@ -48,6 +52,7 @@ export type {
   Delivery,
   SearchHit,
   EmbeddingVector,
+  RhythmStats,
 } from './store.js';
 export { createBackup, restoreBackup } from './backup.js';
 export {

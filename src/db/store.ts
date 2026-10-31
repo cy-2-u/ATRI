@@ -21,6 +21,9 @@ import {
   SCHEMA_VERSION,
   migrate,
   parse,
+  CONSOLIDATION_PAIR_SIMILARITY,
+  CONSOLIDATION_PAIR_GRAM_SIMILARITY,
+  CONSOLIDATION_PAIRS_MAX,
   MEMORY_HALFLIFE_DAYS,
   MEMORY_STATED_WEIGHT,
   MEMORY_INTERPRETATION_WEIGHT,
@@ -40,6 +43,7 @@ import {
   LIFE_LOG_KEEP,
   UNCERTAIN_HOLD_MS,
   NOTES_MAX_CHARS,
+  BURST_WINDOW_MS,
   type Row,
   type TaskKind,
   type SourceKind,
@@ -66,6 +70,7 @@ import {
   type Delivery,
   type SearchHit,
   type EmbeddingVector,
+  type RhythmStats,
 } from './schema.js';
 
 /** 数据层：SQLite（WAL）之上的一站式 Store。所有检索、来源与任务都按
@@ -97,6 +102,10 @@ export {
   MAX_TASK_ATTEMPTS,
   UNCERTAIN_HOLD_MS,
   NOTES_MAX_CHARS,
+  BURST_WINDOW_MS,
+  CONSOLIDATION_PAIR_SIMILARITY,
+  CONSOLIDATION_PAIR_GRAM_SIMILARITY,
+  CONSOLIDATION_PAIRS_MAX,
   hourFormatter,
   addYear,
   epochOfWallTime,
@@ -127,9 +136,27 @@ export type {
   Delivery,
   SearchHit,
   EmbeddingVector,
+  RhythmStats,
 };
 
 const sha = (s: string) => createHash('sha256').update(s).digest('hex');
+
+/** 字符二元组 Jaccard：CJK 短句的廉价相似度。三元组在中文短句上太稀，
+ *  二元组能抓住"同一件事的两个说法"的共享字对；无向量渠道的整理兜底。 */
+const gramJaccard = (a: string, b: string): number => {
+  const grams = (text: string) => {
+    const clean = text.replace(/\s+/g, '');
+    const out = new Set<string>();
+    for (let i = 0; i < clean.length - 1; i++) out.add(clean.slice(i, i + 2));
+    return out;
+  };
+  const ga = grams(a),
+    gb = grams(b);
+  if (!ga.size || !gb.size) return 0;
+  let shared = 0;
+  for (const g of ga) if (gb.has(g)) shared++;
+  return shared / (ga.size + gb.size - shared);
+};
 
 export class Store {
   readonly sql: DatabaseSync;
@@ -138,6 +165,7 @@ export class Store {
   private memoryCache = new Map<string, { version: number; memories: Memory[] }>();
   private dfCache = new Map<string, { at: number; total: number; counts: Map<string, number> }>();
   private rhythmCache = new Map<string, { version: number; at: number; buckets: number[] }>();
+  private statsCache = new Map<string, { at: number; data: RhythmStats }>();
   private lastUsageRollup = 0;
   private usageCache?: { at: number; rows: Row[] };
 
@@ -1025,7 +1053,39 @@ export class Store {
     }
     return Math.max(-0.3, Math.min(0.3, sum * 0.2));
   }
-  /** 气泡投递后的记忆落库：版本不匹配（期间来了新消息）时整体放弃。 */
+  /** 夜间整理的候选：向量余弦或字符二元组 Jaccard 达标的 active 记忆对，
+   *  相似度从高到低。置顶（运维的明确意愿）与已遗忘的行不参与；只看最近
+   *  120 条——配对是 O(n²)，老条目等下一轮日记整理自然沉底。 */
+  consolidationCandidates(
+    peer: string,
+    limit = CONSOLIDATION_PAIRS_MAX,
+  ): { a: Memory; b: Memory; similarity: number }[] {
+    const now = Date.now();
+    const rows = this.memories(peer)
+      .filter((m) => !m.pinned && !isForgotten(traceOf(m), now))
+      .slice(0, 120);
+    if (rows.length < 2) return [];
+    const vectors = new Map<string, { vector: Float32Array; dims: number; model: string }>();
+    for (const e of this.embeddings(peer, 'memory'))
+      vectors.set(e.id, { vector: e.vector, dims: e.dims, model: e.model });
+    const pairs: { a: Memory; b: Memory; similarity: number }[] = [];
+    for (let i = 0; i < rows.length; i++)
+      for (let j = i + 1; j < rows.length; j++) {
+        const a = rows[i]!,
+          b = rows[j]!;
+        const gram = gramJaccard(a.content, b.content);
+        const va = vectors.get(a.id),
+          vb = vectors.get(b.id);
+        const cosine =
+          va && vb && va.model === vb.model && va.dims === vb.dims
+            ? cosineSimilarity(va.vector, vb.vector)
+            : 0;
+        if (cosine >= CONSOLIDATION_PAIR_SIMILARITY || gram >= CONSOLIDATION_PAIR_GRAM_SIMILARITY)
+          pairs.push({ a, b, similarity: Math.max(cosine, gram) });
+      }
+    return pairs.sort((x, y) => y.similarity - x.similarity).slice(0, limit);
+  }
+  /** 记忆行下线（不是删除）：status 转 superseded、索引与向量同撤。 */
   private supersede(peer: string, ids: string[], now: number) {
     for (const previous of ids) {
       if (
@@ -1955,6 +2015,8 @@ export class Store {
       activity_since: Number(row?.activity_since ?? 0),
       plan: String(row?.plan ?? ''),
       plan_day: String(row?.plan_day ?? ''),
+      pursuit: String(row?.pursuit ?? ''),
+      pursuit_since: Number(row?.pursuit_since ?? 0),
       social: Number(row?.social ?? 1),
       express: Number(row?.express ?? 0),
       last_stimulus_at: Number(row?.last_stimulus_at ?? 0),
@@ -1963,16 +2025,27 @@ export class Store {
   }
   updateSelf(patch: SelfPatch, now = Date.now()): SelfState {
     const current = this.self();
+    // 在追的事：内容没变就不刷新起点——"追了三天"被重写成"追了一瞬间"
+    // 是篡改经历。空串 = 放下，起点归零。
+    const pursuit =
+      patch.pursuit !== undefined
+        ? patch.pursuit.trim().slice(0, 120)
+        : patch.pursuitClear
+          ? ''
+          : current.pursuit;
+    const pursuitSince = pursuit !== current.pursuit ? (pursuit ? now : 0) : current.pursuit_since;
     this.sql
       .prepare(
         `UPDATE self SET activity=?,activity_since=?,plan=?,plan_day=?,
-         social=?,express=?,last_stimulus_at=?,updated_at=? WHERE id=1`,
+         pursuit=?,pursuit_since=?,social=?,express=?,last_stimulus_at=?,updated_at=? WHERE id=1`,
       )
       .run(
         patch.activity !== undefined ? patch.activity.slice(0, 120) : current.activity,
         patch.activitySince !== undefined ? patch.activitySince : current.activity_since,
         patch.plan !== undefined ? patch.plan.slice(0, 300) : current.plan,
         patch.planDay !== undefined ? patch.planDay : current.plan_day,
+        pursuit,
+        pursuitSince,
         patch.social !== undefined ? Math.max(0, Math.min(1, patch.social)) : current.social,
         patch.express !== undefined ? Math.max(0, Math.min(1, patch.express)) : current.express,
         patch.lastStimulusAt !== undefined ? patch.lastStimulusAt : current.last_stimulus_at,
@@ -2129,7 +2202,7 @@ export class Store {
       .filter(Boolean);
   }
   /** 读空气素材：最后一条用户消息之后发出的心跳消息（按任务去重）。
-   *  v3 里它不再触发代码冷却——次数如实交给模型看，收不收她自己定。 */
+   *  次数只是如实交给模型看的材料——收不收、收多久，她自己定。 */
   unansweredPulseStreak(peer: string): number {
     const lastUser = this.sql
       .prepare(
@@ -2152,7 +2225,7 @@ export class Store {
     }
     return streak;
   }
-  /** 故障保险丝的输入：最近一段时间内发出过的心跳消息条数。 */
+  /** 异常观察的输入：最近一段时间内发出过的心跳消息条数。 */
   recentPulseSends(peer: string, sinceMs: number, now = Date.now()): number {
     return Number(
       (
@@ -2176,6 +2249,133 @@ export class Store {
           .get(peer) as Row
       ).at ?? 0,
     );
+  }
+
+  /** 近 N 天的节律统计（设计文档验收"分布像人"的在线观测：心跳开口占比、
+   *  气泡长度方差、连发上限、主动/回应比）。状态页轮询用，60 秒缓存。 */
+  rhythmStats(peer: string, days = 7, timeZone = 'Asia/Shanghai'): RhythmStats {
+    const cached = this.statsCache.get(peer);
+    if (cached && Date.now() - cached.at < USAGE_CACHE_MS * 12) return cached.data;
+    const now = Date.now();
+    const since = now - days * 86400000;
+    const dayFormatter = new Intl.DateTimeFormat('en-CA', {
+      timeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    });
+    const perDay = new Map<
+      string,
+      { day: string; beats: number; speaks: number; userMsgs: number; bubbles: number }
+    >();
+    const dayOf = (at: number) => {
+      const key = dayFormatter.format(new Date(at));
+      let entry = perDay.get(key);
+      if (!entry)
+        perDay.set(key, (entry = { day: key, beats: 0, speaks: 0, userMsgs: 0, bubbles: 0 }));
+      return entry;
+    };
+    // 心跳拍与开口拍：beat 任务计数，发出过气泡的拍算开口。
+    const pulseTasks = this.sql
+      .prepare(
+        "SELECT id,payload,created_at FROM tasks WHERE peer_id=? AND kind='pulse' AND created_at>=?",
+      )
+      .all(peer, since) as Row[];
+    const spokenTasks = new Set(
+      (
+        this.sql
+          .prepare(
+            "SELECT DISTINCT task_id FROM outbox WHERE peer_id=? AND status='sent' AND created_at>=?",
+          )
+          .all(peer, since) as Row[]
+      ).map((r) => String(r.task_id)),
+    );
+    let beats = 0,
+      beatSpeaks = 0;
+    for (const row of pulseTasks) {
+      if (!parse<{ beat?: boolean }>(row.payload, {}).beat) continue;
+      beats++;
+      const spoke = spokenTasks.has(String(row.id));
+      if (spoke) beatSpeaks++;
+      const day = dayOf(Number(row.created_at));
+      day.beats++;
+      if (spoke) day.speaks++;
+    }
+    // 主动消息条数（心跳/承诺/开场白发出的气泡）。
+    const proactiveMsgs = Number(
+      (
+        this.sql
+          .prepare(
+            `SELECT COUNT(*) AS n FROM outbox o JOIN tasks t ON t.id=o.task_id
+             WHERE o.peer_id=? AND o.status='sent' AND t.kind='pulse' AND o.created_at>=?`,
+          )
+          .get(peer, since) as Row
+      ).n ?? 0,
+    );
+    // 气泡形状：长度统计与最大连发（含聊天回复，那是"像人"的主体）。
+    const assistantRows = this.sql
+      .prepare(
+        "SELECT created_at,content FROM messages WHERE peer_id=? AND role='assistant' AND status='sent' AND created_at>=? ORDER BY created_at",
+      )
+      .all(peer, since) as Row[];
+    let bubbles = 0,
+      stickers = 0,
+      lenSum = 0,
+      lenSumSq = 0,
+      maxBurst = 0,
+      burstRun = 0,
+      prevAt = 0;
+    for (const row of assistantRows) {
+      const at = Number(row.created_at);
+      const content = String(row.content);
+      const isSticker = /^\[表情：[^】\]]+?\]$/.test(content);
+      bubbles++;
+      const day = dayOf(at);
+      day.bubbles++;
+      if (isSticker) stickers++;
+      else {
+        const len = content.length;
+        lenSum += len;
+        lenSumSq += len * len;
+      }
+      burstRun = at - prevAt < BURST_WINDOW_MS ? burstRun + 1 : 1;
+      if (burstRun > maxBurst) maxBurst = burstRun;
+      prevAt = at;
+    }
+    const textBubbles = bubbles - stickers;
+    const userMsgs = Number(
+      (
+        this.sql
+          .prepare(
+            "SELECT COUNT(*) AS n FROM messages WHERE peer_id=? AND role='user' AND status='received' AND created_at>=?",
+          )
+          .get(peer, since) as Row
+      ).n ?? 0,
+    );
+    for (const row of this.sql
+      .prepare(
+        "SELECT created_at FROM messages WHERE peer_id=? AND role='user' AND status='received' AND created_at>=?",
+      )
+      .all(peer, since) as Row[])
+      dayOf(Number(row.created_at)).userMsgs++;
+    const mean = textBubbles ? lenSum / textBubbles : 0;
+    const variance = textBubbles ? Math.max(0, lenSumSq / textBubbles - mean * mean) : 0;
+    const data: RhythmStats = {
+      days,
+      beats,
+      beatSpeaks,
+      proactiveMsgs,
+      userMsgs,
+      bubbles,
+      stickers,
+      avgLen: mean,
+      lenStdev: Math.sqrt(variance),
+      maxBurst,
+      perDay: [...perDay.values()].sort((a, b) => a.day.localeCompare(b.day)),
+    };
+    this.statsCache.set(peer, { at: Date.now(), data });
+    if (this.statsCache.size > 64) this.statsCache.clear();
+    return data;
   }
 
   // ---------- 用量 ----------

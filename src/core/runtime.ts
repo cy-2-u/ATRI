@@ -5,8 +5,14 @@ import { renderMessage } from './prompt-blocks.js';
 import { estimateTextTokens, cosineSimilarity } from '../llm.js';
 import { residuePulse } from './memory-context.js';
 import { createHash } from 'node:crypto';
-import { tickMotives, type MotiveTick } from './motives.js';
-import { inSleepHours, nextBeatDelayMs } from './pulse.js';
+import { boredom, longing, tickMotives, type MotiveTick } from './motives.js';
+import {
+  inSleepMinutes,
+  jitteredSleepWindow,
+  minutesOfDay,
+  isHisActiveHour,
+  nextBeatDelayMs,
+} from './pulse.js';
 import {
   NOTES_MIN_MESSAGES,
   NOTES_WINDOW,
@@ -16,15 +22,16 @@ import {
   EMBED_BACKFILL_BATCH,
   SIMILARITY_SUPERSEDE,
   BEAT_RANGES_MS,
-  PULSE_FUSE_PER_HOUR,
+  PULSE_ANOMALY_PER_HOUR,
+  BOOT_BEAT_GRACE_MS,
 } from './constants.js';
 
 /** 调度主干：泵队列、投递气泡、她的心跳、日记与向量回填。
  *
- *  主动 v3：不再有"审批闸门"。代码只负责三件事——让心跳按节律发生
- *  （睡眠/黏人度/走神）、把真实材料递给模型、在故障时熔断（一小时无
- *  回应连发多条是程序故障，不是活人）。想不想说、说什么，永远是模型
- *  在真实材料上的决定。 */
+ *  她是自由的：代码没有"审批闸门"，也不熔断她的表达。代码只负责两件
+ *  事——让心跳按节律发生（睡眠/黏人度/走神），把真实材料递给模型；
+ *  异常模式（一小时多条无回应）只记日志给人看，不改变她的行为。
+ *  想不想说、说什么、连不连续说，永远是她在真实材料上的决定。 */
 
 export interface Embedder {
   configured: boolean;
@@ -133,6 +140,9 @@ export class Runtime {
   private pendingEffects = new Map<string, { loops: string[]; threads: string[] }>();
   private backfillController = new AbortController();
   private backfills = new Set<Promise<void>>();
+  /** 进程启动时刻：首拍宽限的起点（0 = 未启动，宽限不生效——测试直接
+   *  new Runtime 不经 start()，不受宽限影响）。 */
+  private startedAt = 0;
 
   constructor(private readonly options: RuntimeOptions) {
     this.agent = new Agent(options);
@@ -142,6 +152,7 @@ export class Runtime {
   start() {
     this.store.recover();
     this.stopped = false;
+    this.startedAt = Date.now();
     this.timer = setInterval(() => {
       try {
         this.pump();
@@ -508,33 +519,30 @@ export class Runtime {
       await this.generatePulse(task, peer, signal, {});
       return;
     }
-    // 她自己的一拍（beat）。守门只剩物理与保险丝：
+    // 她自己的一拍（beat）。守门只剩物理：总开关与睡眠。之后想不想说、
+    // 说几次，完全是她的决定——代码不设任何"不许再发"的闸门。
     if (!this.options.config().proactiveEnabled) {
       this.store.finish(task.id, 'superseded');
       return;
     }
-    if (
-      inSleepHours(
-        hourAt(now, this.options.config().timeZone),
-        this.options.config().sleepStart,
-        this.options.config().sleepEnd,
-      )
-    ) {
+    const c = this.options.config();
+    // 睡眠窗带生理抖动（按本地日期稳定）：她不会每天在同一分钟睡着。
+    const window = jitteredSleepWindow(dayAt(now, c.timeZone), c.sleepStart, c.sleepEnd);
+    if (inSleepMinutes(minutesOfDay(now, c.timeZone), window.startMin, window.endMin)) {
       // 她在睡觉：这一拍不发生。superseded 让同键任务可被明天复用。
       this.store.finish(task.id, 'superseded');
       return;
     }
-    const fuseTripped =
-      this.store.recentPulseSends(peer.id, 3600000, now) >= PULSE_FUSE_PER_HOUR &&
-      this.store.unansweredPulseStreak(peer.id) >= 2;
-    if (fuseTripped) {
-      // 一小时里无回应连发多条：程序故障不是活人，熔断并告警。
-      this.store.finish(task.id, 'superseded');
-      this.options.log?.('心跳保险丝熔断：一小时多条主动消息未获回应，本小时不再心跳', {
+    // 异常观察（不是闸门）：一小时多条无回应的主动消息，多数时候是对方
+    // 真的忙，少数时候是程序故障。记一条日志给运维判断与处置，她的心跳
+    // 照常进行——连续发或不再发，都是她的决定。
+    if (
+      this.store.recentPulseSends(peer.id, 3600000, now) >= PULSE_ANOMALY_PER_HOUR &&
+      this.store.unansweredPulseStreak(peer.id) >= 2
+    )
+      this.options.log?.('心跳异常观察：一小时多条主动消息未获回应（仅记录，不拦截）', {
         peer: peer.id,
       });
-      return;
-    }
     await this.generatePulse(task, peer, signal, { beat: true });
   }
 
@@ -562,6 +570,13 @@ export class Runtime {
             Date.now(),
           );
         }
+        // 在追的事：有值=设置/更新，空串=放下；起点由 store 按内容是否
+        // 变化自动处理（重复同一句不会把"追了三天"改写成"追了一瞬间"）。
+        if (beat.pursuit !== undefined)
+          this.store.updateSelf(
+            beat.pursuit ? { pursuit: beat.pursuit } : { pursuitClear: true },
+            Date.now(),
+          );
         if (beat.action === 'muse' && beat.thought) {
           // 念头存进想法池：同一念头不会重复立项。
           this.store.upsertInitiative(
@@ -873,10 +888,23 @@ export class Runtime {
         error: error instanceof Error ? error.message : String(error),
       });
     }
-    const asleep = inSleepHours(hour, c.sleepStart, c.sleepEnd);
+    // 睡眠窗带生理抖动（按本地日期稳定）：她不会每天在同一分钟睡着、
+    // 同一分钟醒来。窗口算一次，本 tick 内所有联系人共用。
+    const window = jitteredSleepWindow(dayAt(now, c.timeZone), c.sleepStart, c.sleepEnd);
+    const asleep = inSleepMinutes(minutesOfDay(now, c.timeZone), window.startMin, window.endMin);
     for (const peer of this.store.peers().filter((p) => p.approved)) {
       try {
         if (hour >= c.diaryHour) this.queueDiary(peer.id, false, now);
+        // 夜间整理拍：日记写完后的两小时窗里，把相近/矛盾的记忆对交给
+        // 模型理顺。只在有候选时入队，去重键按天（done 行占键，天然幂等）。
+        if (hour >= c.diaryHour && hour < c.diaryHour + 2) {
+          const consolidateKey = `consolidate:${dayAt(now, c.timeZone)}`;
+          if (
+            !this.store.hasPendingTask(peer.id, 'consolidate', consolidateKey) &&
+            this.store.consolidationCandidates(peer.id, 1).length
+          )
+            this.store.enqueue(peer.id, 'consolidate', consolidateKey, {}, now);
+        }
         this.store.expireOpenLoops(peer.id, now, c.timeZone);
         this.store.expireSoftThreads(peer.id, now);
         // 到期承诺：她自己的记性，不等心跳碰运气。
@@ -896,27 +924,33 @@ export class Runtime {
         }
         // 心跳：睡眠中不发生；醒着时按节律排下一拍。
         if (!c.proactiveEnabled || asleep) continue;
-        // nextBeatAt 只在拍真的排下去（入队）时才写；未排时不能把"下一
-        // 拍"推到未来——否则 now < next 永远成立，第一拍永远来不了
-        // （v4 上线后心跳从未入队就是这行）。
-        // beat 键是一次性的（beat:时间戳）：固定键会撞唯一索引——拍完成
-        // 后 done 行仍占着键，INSERT OR IGNORE 静默失败、复活语句又不救
-        // done，心跳就变成 7 天一拍（等 pruneTasks 清行）。
+        // 两条不变式，都由测试钉住：
+        // 1. nextBeatAt 只在拍真的排下去（入队）时才写；未排时把"下一拍"
+        //    推到未来会让 now < next 永远成立，第一拍永远来不了。
+        // 2. beat 键是一次性的（beat:时间戳）：拍完成后 done 行仍占着
+        //    UNIQUE 键，固定键会让 INSERT OR IGNORE 静默失败。
         if (this.store.hasPendingBeat(peer.id)) continue;
         const next = this.nextBeatAt.get(peer.id);
         if (next !== undefined && now < next) continue;
+        // 启动宽限：部署重启不让她"恰好醒来"。宽限期内不排拍，把下一拍
+        // 压到宽限结束——之后 now < next 不再成立，拍自然接上（不会永远
+        // 卡住：入队路径就在这个判断后面）。
+        const graceEnd = this.startedAt ? this.startedAt + BOOT_BEAT_GRACE_MS : 0;
+        if (graceEnd && now < graceEnd) {
+          this.nextBeatAt.set(peer.id, graceEnd);
+          continue;
+        }
         const self = this.store.self();
         const delay = nextBeatDelayMs({
           clinginess: c.clinginess,
+          // 动机数学与体感同源（motives.ts）：节拍密度与材料措辞必须是
+          // 同一份生理。想念含对方活跃时段加成，与 beatMaterial 一致。
           motives: {
-            bored: self.last_stimulus_at
-              ? Math.min(1, (now - self.last_stimulus_at) / (240 * 60000))
-              : 1,
-            miss: Math.min(
-              1,
-              self.last_stimulus_at
-                ? (now - Math.max(self.last_stimulus_at, peer.last_user_at)) / (20 * 3600000)
-                : 0.5,
+            bored: boredom(self.last_stimulus_at, now),
+            miss: longing(
+              this.store.lastSpokeAt(peer.id),
+              now,
+              isHisActiveHour(this.store.activityRhythm(peer.id, c.timeZone), hour),
             ),
             social: self.social,
             express: self.express,

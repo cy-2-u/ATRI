@@ -574,7 +574,23 @@ async function loadStatus() {
       badges.append(el('span', '上次问候 ' + relTime(peer.lastProactiveAt), 'badge'));
     if (!peer.approved) badges.append(el('span', '未允许', 'badge'));
     row.append(title, badges);
-    if (!badges.childNodes.length) row.append(el('p', '状态平静，暂无惦记的事。', 'hint'));
+    // 近 7 天节律（"分布像人"的观测）：心跳开口占比、气泡形状、主动/回应。
+    const r = peer.rhythm;
+    if (r && (r.beats || r.bubbles)) {
+      const bits = ['近' + r.days + '天心跳开口 ' + r.beatSpeaks + '/' + r.beats + ' 拍'];
+      if (r.bubbles) {
+        bits.push(
+          '气泡均长 ' + Math.round(r.avgLen) + ' 字',
+          '连发至多 ' + r.maxBurst + ' 条',
+        );
+        if (r.stickers) bits.push('表情 ' + r.stickers + ' 次');
+      }
+      if (r.userMsgs || r.proactiveMsgs)
+        bits.push('主动 ' + r.proactiveMsgs + ' / 收到 ' + r.userMsgs);
+      row.append(el('p', bits.join(' · '), 'hint'));
+    }
+    if (!badges.childNodes.length && !(r && (r.beats || r.bubbles)))
+      row.append(el('p', '状态平静，暂无惦记的事。', 'hint'));
     states.append(row);
   }
   if (!states.childNodes.length) empty(states, '还没有联系人的状态可以显示。');

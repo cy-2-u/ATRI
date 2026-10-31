@@ -1,9 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { fixture, completion, FakeModel } from './helpers.js';
+import { fixture, completion, FakeModel, promptText } from './helpers.js';
 import { parseReply, resolveDue } from '../src/core/reply.js';
+import { jitteredSleepWindow, inSleepMinutes, minutesOfDay } from '../src/core/pulse.js';
 
 const HOUR = 3600000;
+const DAY = 86400000;
 
 test('resolveDue：口语时间、星期几、MM-DD、荒谬时间戳', () => {
   const now = Date.parse('2026-10-29T10:00:00+08:00');
@@ -179,7 +181,7 @@ test('心跳端到端：beat 任务按契约三分，speak 进投递、muse 进�
 test('心跳调度：睡眠中不排拍，承诺提醒独立于心跳', async (t) => {
   const model = new FakeModel(() => completion({ action: 'nothing' }));
   // 深夜（sleepStart=1, sleepEnd=7）：用真实时钟不可控，改为直接验证
-  // inSleepHours 的调度行为——把睡眠窗设成"现在必然在睡"的 24 小时窗
+  // inSleepMinutes 的调度行为——把睡眠窗设成"现在必然在睡"的 24 小时窗
   // 不可行（start==end 是不眠），改为验证承诺通道与 proactive 开关。
   const f = fixture(t, model, { proactiveEnabled: false });
   const now = Date.now();
@@ -198,12 +200,15 @@ test('心跳调度：睡眠中不排拍，承诺提醒独立于心跳', async (t
   );
 });
 
-test('心跳保险丝：一小时无回应连发多条后熔断', async (t) => {
-  let speak = true;
-  const model = new FakeModel(() =>
-    speak ? completion({ action: 'speak', messages: ['在吗'] }) : completion({ action: 'nothing' }),
-  );
-  const f = fixture(t, model, { proactiveEnabled: true, maxConcurrentPeers: 2 });
+test('她是自由的：一小时无回应连发也不拦截心跳（异常只观察）', async (t) => {
+  const model = new FakeModel(() => completion({ action: 'speak', messages: ['在吗'] }));
+  // 不眠窗（0–0）：测试在真实时钟的任何时刻跑都不进睡眠分支。
+  const f = fixture(t, model, {
+    proactiveEnabled: true,
+    maxConcurrentPeers: 2,
+    sleepStart: 0,
+    sleepEnd: 0,
+  });
   const now = Date.now();
   const { message } = f.store.ingest('p1', 'e1', '嗯', [], now - 5 * 3600000);
   void message;
@@ -218,13 +223,118 @@ test('心跳保险丝：一小时无回应连发多条后熔断', async (t) => {
   }
   assert.ok(f.store.recentPulseSends('p1', 3600000, now) >= 2, '最近一小时多次心跳已发出');
   assert.ok(f.store.unansweredPulseStreak('p1') >= 2, '且都未获回应');
-  // schedule 会按保险丝条件跳过新拍：无新 beat 任务入队。
-  const before = f.store.sql
-    .prepare("SELECT count(*) AS n FROM tasks WHERE kind='pulse' AND state='queued'")
-    .get() as { n: number };
+  // 异常条件齐备时，新拍照常排下去（schedule 内部的泵会把任务领走：
+  // queued 或 running 都算在拍）：代码不替她决定"该不该闭嘴"。
   f.runtime.schedule(now);
-  const after = f.store.sql
-    .prepare("SELECT count(*) AS n FROM tasks WHERE kind='pulse' AND state='queued'")
-    .get() as { n: number };
-  assert.ok(after.n <= before.n + 1, '熔断只阻止心跳本身，不抛错');
+  assert.equal(f.store.hasPendingBeat('p1'), true, '异常模式下心跳照常排拍（仅记观察日志）');
+});
+
+test('睡眠窗抖动：同日稳定、跨日变化、不眠窗不被造出、跨午夜可用', () => {
+  const day1 = jitteredSleepWindow('2026-10-31', 1, 7);
+  assert.deepEqual(jitteredSleepWindow('2026-10-31', 1, 7), day1, '同一天稳定');
+  assert.ok(Math.abs(day1.startMin - 60) <= 45, '入睡抖动 ±45 分钟内');
+  assert.ok(Math.abs(day1.endMin - 420) <= 45, '醒来抖动 ±45 分钟内');
+  const day2 = jitteredSleepWindow('2026-11-01', 1, 7);
+  assert.notDeepEqual(day1, day2, '跨天窗口变化（固定输入，非随机）');
+  const none = jitteredSleepWindow('2026-10-31', 0, 0);
+  assert.deepEqual(none, { startMin: 0, endMin: 0 }, '不眠窗不受抖动影响');
+  const wrap = jitteredSleepWindow('2026-10-31', 23, 7);
+  assert.equal(inSleepMinutes(23 * 60 + 30, wrap.startMin, wrap.endMin), true);
+  assert.equal(inSleepMinutes(12 * 60, wrap.startMin, wrap.endMin), false);
+  assert.equal(
+    minutesOfDay(Date.parse('2026-10-31T00:30:00+08:00'), 'Asia/Shanghai'),
+    30,
+    '本地分钟数',
+  );
+});
+
+test('在追的事：心跳 pursuit 契约（设置、进材料、重复不刷新、放下）', async (t) => {
+  let step = 0;
+  let pursuitInPrompt = false;
+  const model = new FakeModel((messages) => {
+    step++;
+    if (step === 2) pursuitInPrompt = promptText(messages).includes('最近在追：在读深海热泉的资料');
+    if (step === 1) return completion({ action: 'nothing', pursuit: '在读深海热泉的资料' });
+    if (step === 2) return completion({ action: 'nothing', pursuit: '在读深海热泉的资料' });
+    return completion({ action: 'nothing', pursuit: '' });
+  });
+  const f = fixture(t, model, { proactiveEnabled: true, sleepStart: 0, sleepEnd: 0 });
+  const now = Date.now();
+  f.store.enqueue('p1', 'pulse', 'b1', { beat: true }, now);
+  await f.runtime.drain(15000);
+  const first = f.store.self();
+  assert.equal(first.pursuit, '在读深海热泉的资料', 'pursuit 落库');
+  assert.ok(first.pursuit_since > 0);
+  f.store.enqueue('p1', 'pulse', 'b2', { beat: true }, now + 1);
+  await f.runtime.drain(15000);
+  assert.equal(pursuitInPrompt, true, '在追的事进心跳材料（renderSelfNow）');
+  assert.equal(f.store.self().pursuit_since, first.pursuit_since, '重复同一句不刷新起点');
+  f.store.enqueue('p1', 'pulse', 'b3', { beat: true }, now + 2);
+  await f.runtime.drain(15000);
+  assert.equal(f.store.self().pursuit, '', '空串放下');
+  assert.equal(f.store.self().pursuit_since, 0, '放下后起点归零');
+});
+
+test('心跳白日梦：拍内演练与情绪泛化', async (t) => {
+  const model = new FakeModel(() => completion({ action: 'nothing' }));
+  const f = fixture(t, model, { proactiveEnabled: true, sleepStart: 0, sleepEnd: 0 });
+  const now = Date.now();
+  const { message } = f.store.ingest('p1', 'e1', '我家的猫年糕上周走了', [], now - HOUR);
+  f.store.addMemory(
+    'p1',
+    {
+      content: '他的猫年糕上周走了',
+      kind: 'stated',
+      sources: [message.id],
+      emotion: -0.8,
+      emotionReason: '难过',
+    },
+    f.store.peer('p1')!.version,
+  );
+  f.store.enqueue('p1', 'pulse', 'beat', { beat: true }, now);
+  await f.runtime.drain(15000);
+  const mood = f.store.mood('p1');
+  assert.ok(mood.valence < 0, '带情绪残留的记忆在拍内泛化成此刻的低落');
+  assert.ok(mood.reason, '泛化带原因（emotionReason）');
+  const mem = f.store.memories('p1')[0]!;
+  assert.ok(mem.last_hit_at > 0, '拍内记了一次演练');
+  assert.ok(mem.hits >= 1);
+});
+
+test('夜间整理拍：相近记忆对被合并替代', async (t) => {
+  const model = new FakeModel((messages) => {
+    const raw = promptText(messages);
+    const memoryIds = [...raw.matchAll(/\[id:([0-9a-f-]{36})\]/g)].map((m) => m[1]!);
+    const sourceId = /来源：([0-9a-f-]{36})/.exec(raw)?.[1] ?? '';
+    return completion({
+      updates: [
+        {
+          content: '对方不吃香菜',
+          kind: 'stated',
+          sources: [sourceId],
+          supersedes: memoryIds,
+          importance: 0.6,
+        },
+      ],
+    });
+  });
+  const f = fixture(t, model);
+  const now = Date.now();
+  const { message } = f.store.ingest('p1', 'e1', '我不吃香菜', [], now - DAY);
+  f.store.addMemory(
+    'p1',
+    { content: '他不吃香菜', kind: 'stated', sources: [message.id] },
+    f.store.peer('p1')!.version,
+  );
+  f.store.addMemory(
+    'p1',
+    { content: '他不爱吃香菜', kind: 'interpretation', sources: [message.id] },
+    f.store.peer('p1')!.version,
+  );
+  f.store.enqueue('p1', 'consolidate', 'c1', {}, now);
+  await f.runtime.drain(15000);
+  const active = f.store.memories('p1');
+  assert.equal(active.length, 1, '整理后只剩一条');
+  assert.equal(active[0]!.content, '对方不吃香菜');
+  assert.ok(active[0]!.sources.includes(message.id), '来源随合并保留');
 });

@@ -561,6 +561,9 @@ export interface ParsedPulse {
   activity: string;
   /** 更新"此刻在做什么"。 */
   selfActivity: string;
+  /** "在追的事"：有值=开始或更新（起点随内容变化自动落到此刻）；
+   *  空串=放下；undefined=这一拍没提。 */
+  pursuit?: string;
   memories: MemoryUpdate[];
   moodPulse?: { valence: number; energy: number; patience?: number; reason?: string };
   resolveLoops: string[];
@@ -595,6 +598,9 @@ export function parsePulseOutput(raw: unknown, stickers: Sticker[]): ParsedPulse
     activity: typeof value.activity === 'string' ? value.activity.trim().slice(0, 200) : '',
     selfActivity:
       typeof value.selfActivity === 'string' ? value.selfActivity.trim().slice(0, 120) : '',
+    // 在追的事：只在字段真的出现时给出（缺席 ≠ 放下）。空串是明确的
+    // "不想追了"，与自Activity同一种"清空是真实意图"的处理。
+    ...(typeof value.pursuit === 'string' ? { pursuit: value.pursuit.trim().slice(0, 120) } : {}),
     memories: parseMemories(value.memoryUpdates),
     ...(parseMoodPulse(value.moodPulse) ? { moodPulse: parseMoodPulse(value.moodPulse) } : {}),
     resolveLoops: Array.isArray(value.resolveLoops)

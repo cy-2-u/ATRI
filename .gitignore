@@ -14,7 +14,7 @@ backups/
 *.tsbuildinfo
 restore.compose.yaml
 /sandbox/
-atri-sandbox-*/
+xing-sandbox-*/
 .idea/
 .vscode/
 .DS_Store

@@ -1,7 +1,11 @@
-/** 数据形状与库结构：类型、调节常量、建表与迁移链。Store 的方法在
- *  store.ts；这里只描述"数据长什么样、库怎么一步步长成现在这样"。 */
+/** 数据形状与库结构：类型、调节常量、建表与升级。Store 的方法在
+ *  store.ts；这里只描述"数据长什么样、库怎么打开"。
+ *
+ *  升级策略是幂等引导而不是版本链：目标形态全部用 CREATE IF NOT EXISTS
+ *  与 hasColumn 守卫的 ALTER 表达，任何旧库（含 4.0 时代的 atri.db）都
+ *  能一步到位，新库一次建到最新。 */
 
-export type TaskKind = 'chat' | 'pulse' | 'notes' | 'diary';
+export type TaskKind = 'chat' | 'pulse' | 'notes' | 'diary' | 'consolidate';
 export type SourceKind = 'message' | 'memory' | 'diary';
 
 export interface Peer {
@@ -138,13 +142,17 @@ export interface InitiativeInput {
   sources: string[];
   expectReply?: boolean;
 }
-/** 她的当下与内稳态（全局单行）：此刻在做什么、今天的打算、社交电量与
- *  表达欲（积分状态）、无聊的起算点。想念是按联系人的时间导出量，不入库。 */
+/** 她的当下与内稳态（全局单行）：此刻在做什么、今天的打算、在追什么、
+ *  社交电量与表达欲（积分状态）、无聊的起算点。想念是按联系人的时间
+ *  导出量，不入库。pursuit 是"在追的事"：她自己的 ongoing 兴趣，互惠
+ *  自我披露的材料——她有自己的世界，聊天里才有自己的事可讲。 */
 export interface SelfState {
   activity: string;
   activity_since: number;
   plan: string;
   plan_day: string;
+  pursuit: string;
+  pursuit_since: number;
   social: number;
   express: number;
   last_stimulus_at: number;
@@ -155,6 +163,10 @@ export interface SelfPatch {
   activitySince?: number;
   plan?: string;
   planDay?: string;
+  /** 设置/更新在追的事（pursuitSince 随内容变化自动落到 now）。 */
+  pursuit?: string;
+  /** 放下在追的事（pursuit 清空、pursuit_since 归零）。 */
+  pursuitClear?: boolean;
   social?: number;
   express?: number;
   lastStimulusAt?: number;
@@ -276,6 +288,38 @@ export const LIFE_LOG_KEEP = 200;
 /** 送达不明的记录暂停该联系人队列的时长；之后放行但保留在待办里。 */
 export const UNCERTAIN_HOLD_MS = 10 * 60000;
 export const NOTES_MAX_CHARS = 4000;
+/** 同一 burst（连发）内的消息间隔上限。数据层的节律统计与 core 的静默
+ *  锚点共用同一把尺子。 */
+export const BURST_WINDOW_MS = 5 * 60000;
+
+// ---------- 夜间整理（记忆巩固管线） ----------
+
+/** 语义相近记忆进入整理候选的余弦阈值（≥0.9 的纯复述已在写入路径
+ *  自动替代，这里抓的是"同一件事的两三个说法"与"互相矛盾的旧新条"。 */
+export const CONSOLIDATION_PAIR_SIMILARITY = 0.6;
+/** 无向量时的兜底：字符二元组 Jaccard 阈值（CJK 短句上三元组过稀）。 */
+export const CONSOLIDATION_PAIR_GRAM_SIMILARITY = 0.3;
+/** 每晚交给模型的记忆对上限。 */
+export const CONSOLIDATION_PAIRS_MAX = 12;
+
+/** 联系人近 N 天的节律统计（"分布像人"的在线观测）。 */
+export interface RhythmStats {
+  days: number;
+  /** 心跳拍总数与其中真开口的拍数。 */
+  beats: number;
+  beatSpeaks: number;
+  /** 全部主动消息（含心跳、承诺提醒、开场白）与对方消息条数。 */
+  proactiveMsgs: number;
+  userMsgs: number;
+  /** 气泡总量、表情数、文本气泡的平均长度与标准差、最大连发条数。 */
+  bubbles: number;
+  stickers: number;
+  avgLen: number;
+  lenStdev: number;
+  maxBurst: number;
+  /** 按本地日聚合的逐日明细（时间升序）。 */
+  perDay: { day: string; beats: number; speaks: number; userMsgs: number; bubbles: number }[];
+}
 
 export type Row = Record<string, unknown>;
 export const parse = <T>(value: unknown, fallback: T): T => {
@@ -286,10 +330,12 @@ export const parse = <T>(value: unknown, fallback: T): T => {
   }
 };
 
-export const SCHEMA_VERSION = 12;
+/** 当前数据形态版本。与 4.0 时代的 atri.db 版本号连续，旧库可直接打开。 */
+export const SCHEMA_VERSION = 13;
 
-/** 建表 + 迁移链。每个版本一个事务（PRAGMA 会自动提交，分开写会留下
- *  版本与结构不一致的库）。生产库从 v1 一路升上来，新库一次建到最新。 */
+/** 建库 + 旧库升级，幂等：任何版本的库（含 4.0 的 atri.db）都能一步到
+ *  最新形态。目标形态全部是 CREATE IF NOT EXISTS 与守卫 ALTER，历史上
+ *  每一步迁移的效果都被"最终形态 + 幂等语句"覆盖。 */
 export function migrate(sql: import('node:sqlite').DatabaseSync): void {
   const openedAt = Number(sql.prepare('PRAGMA user_version').get()?.user_version ?? 0);
   if (openedAt > SCHEMA_VERSION) throw new Error('数据库来自更新版本，不能用当前程序打开');
@@ -307,6 +353,7 @@ export function migrate(sql: import('node:sqlite').DatabaseSync): void {
         status TEXT NOT NULL, created_at INTEGER NOT NULL, UNIQUE(peer_id,event_key)
       );
       CREATE INDEX IF NOT EXISTS messages_peer ON messages(peer_id,seq);
+      CREATE INDEX IF NOT EXISTS messages_rhythm ON messages(peer_id,role,status,created_at);
       CREATE TABLE IF NOT EXISTS tasks (
         id TEXT PRIMARY KEY, peer_id TEXT NOT NULL REFERENCES peers(id), kind TEXT NOT NULL, dedupe_key TEXT NOT NULL,
         payload TEXT NOT NULL DEFAULT '{}', state TEXT NOT NULL DEFAULT 'queued', version INTEGER NOT NULL DEFAULT 0,
@@ -314,31 +361,43 @@ export function migrate(sql: import('node:sqlite').DatabaseSync): void {
         UNIQUE(peer_id,kind,dedupe_key)
       );
       CREATE INDEX IF NOT EXISTS tasks_ready ON tasks(state,run_at,peer_id);
+      CREATE INDEX IF NOT EXISTS tasks_kind ON tasks(kind);
       CREATE TABLE IF NOT EXISTS outbox (
         id TEXT PRIMARY KEY REFERENCES messages(id), task_id TEXT NOT NULL REFERENCES tasks(id), peer_id TEXT NOT NULL REFERENCES peers(id),
         ordinal INTEGER NOT NULL, part TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0,
         error TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, UNIQUE(task_id,ordinal)
       );
+      CREATE INDEX IF NOT EXISTS outbox_peer_status ON outbox(peer_id,status);
+      CREATE INDEX IF NOT EXISTS outbox_status_created ON outbox(status,created_at DESC);
       CREATE TABLE IF NOT EXISTS memories (
         id TEXT PRIMARY KEY, peer_id TEXT NOT NULL REFERENCES peers(id), content TEXT NOT NULL, kind TEXT NOT NULL,
         sources TEXT NOT NULL, source_hash TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active',
         hits INTEGER NOT NULL DEFAULT 0, last_hit_at INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL,
+        pinned INTEGER NOT NULL DEFAULT 0, invalid_at INTEGER NOT NULL DEFAULT 0,
+        importance REAL NOT NULL DEFAULT 0.5, emotion REAL NOT NULL DEFAULT 0,
+        emotion_reason TEXT NOT NULL DEFAULT '', consolidation REAL NOT NULL DEFAULT 0,
+        interference REAL NOT NULL DEFAULT 0,
         UNIQUE(peer_id,source_hash)
       );
+      CREATE INDEX IF NOT EXISTS memories_peer_status_created ON memories(peer_id,status,created_at DESC);
       CREATE TABLE IF NOT EXISTS memory_embeddings (
         id TEXT PRIMARY KEY, peer_id TEXT NOT NULL REFERENCES peers(id),
         kind TEXT NOT NULL, vector BLOB NOT NULL, dims INTEGER NOT NULL, model TEXT NOT NULL, created_at INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS memory_embeddings_peer ON memory_embeddings(peer_id);
+      CREATE INDEX IF NOT EXISTS memory_embeddings_peer_model ON memory_embeddings(peer_id,model);
       CREATE TABLE IF NOT EXISTS diary_sections (
         id TEXT PRIMARY KEY, peer_id TEXT NOT NULL REFERENCES peers(id), task_id TEXT NOT NULL REFERENCES tasks(id),
         ordinal INTEGER NOT NULL, day TEXT NOT NULL, content TEXT NOT NULL, sources TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'active', created_at INTEGER NOT NULL, UNIQUE(task_id,ordinal)
+        status TEXT NOT NULL DEFAULT 'active', emotion REAL NOT NULL DEFAULT 0, created_at INTEGER NOT NULL,
+        UNIQUE(task_id,ordinal)
       );
-      CREATE TABLE IF NOT EXISTS usage (id INTEGER PRIMARY KEY, peer_id TEXT, task_id TEXT, purpose TEXT, input_tokens INTEGER, output_tokens INTEGER, duration_ms INTEGER, created_at INTEGER);
-      CREATE TABLE IF NOT EXISTS usage_daily (purpose TEXT NOT NULL, day INTEGER NOT NULL, calls INTEGER NOT NULL, input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL, average_ms INTEGER NOT NULL, PRIMARY KEY(purpose,day));
+      CREATE INDEX IF NOT EXISTS diary_peer_status_day ON diary_sections(peer_id,status,day);
+      CREATE TABLE IF NOT EXISTS usage (id INTEGER PRIMARY KEY, peer_id TEXT, task_id TEXT, purpose TEXT, input_tokens INTEGER, output_tokens INTEGER, duration_ms INTEGER, cached_tokens INTEGER NOT NULL DEFAULT 0, created_at INTEGER);
+      CREATE INDEX IF NOT EXISTS usage_created ON usage(created_at);
+      CREATE TABLE IF NOT EXISTS usage_daily (purpose TEXT NOT NULL, day INTEGER NOT NULL, calls INTEGER NOT NULL, input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL, average_ms INTEGER NOT NULL, cached_tokens INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(purpose,day));
       -- FTS 旁的元数据镜像表：元数据列在虚拟表里是 UNINDEXED，过滤/删除
-      -- 走真索引，search_index 只答 MATCH，rowid 两边同步。
+      -- 走真索引，search_index 只答 MATCH，rowid 两边同步（见下方同步语句）。
       CREATE TABLE IF NOT EXISTS search_docs (
         id TEXT PRIMARY KEY, peer_id TEXT NOT NULL, kind TEXT NOT NULL,
         content TEXT NOT NULL, created_at INTEGER NOT NULL
@@ -360,8 +419,6 @@ export function migrate(sql: import('node:sqlite').DatabaseSync): void {
         resolved_at INTEGER NOT NULL DEFAULT 0
       );
       CREATE INDEX IF NOT EXISTS soft_threads_peer ON soft_threads(peer_id,status);
-      -- 想法：由真实来源形成、会保留/变化/消退的"还没说出的话"。
-      -- topicKey 防同一件事换句话重复立项；sourceHash 幂等同一次判断。
       CREATE TABLE IF NOT EXISTS initiatives (
         id TEXT PRIMARY KEY, peer_id TEXT NOT NULL REFERENCES peers(id),
         topic_key TEXT NOT NULL, kind TEXT NOT NULL, meaning TEXT NOT NULL,
@@ -374,123 +431,11 @@ export function migrate(sql: import('node:sqlite').DatabaseSync): void {
         UNIQUE(peer_id, topic_key)
       );
       CREATE INDEX IF NOT EXISTS initiatives_peer_state ON initiatives(peer_id,state,updated_at DESC);
-    `);
-  const hasColumn = (table: string, column: string): boolean =>
-    (sql.prepare(`PRAGMA table_info(${table})`).all() as unknown as { name: string }[]).some(
-      (row) => row.name === column,
-    );
-  if (openedAt < 2) {
-    sql.exec('BEGIN IMMEDIATE');
-    if (!hasColumn('memories', 'pinned'))
-      sql.exec('ALTER TABLE memories ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;');
-    sql.exec('PRAGMA user_version=2;');
-    sql.exec('COMMIT');
-  }
-  if (openedAt < 3) {
-    sql.exec('BEGIN IMMEDIATE');
-    if (!hasColumn('peers', 'persona_id'))
-      sql.exec('ALTER TABLE peers ADD COLUMN persona_id TEXT NOT NULL DEFAULT "";');
-    sql.exec('PRAGMA user_version=3;');
-    sql.exec('COMMIT');
-  }
-  if (openedAt < 4) {
-    sql.exec('BEGIN IMMEDIATE');
-    if (!hasColumn('memories', 'invalid_at'))
-      sql.exec('ALTER TABLE memories ADD COLUMN invalid_at INTEGER NOT NULL DEFAULT 0;');
-    if (!hasColumn('memories', 'importance'))
-      sql.exec('ALTER TABLE memories ADD COLUMN importance REAL NOT NULL DEFAULT 0.5;');
-    sql.exec('PRAGMA user_version=4;');
-    sql.exec('COMMIT');
-  }
-  if (openedAt < 5) {
-    sql.exec('BEGIN IMMEDIATE');
-    sql.exec(
-      'CREATE INDEX IF NOT EXISTS outbox_peer_status ON outbox(peer_id,status);\n' +
-        'CREATE INDEX IF NOT EXISTS usage_created ON usage(created_at);\n' +
-        'CREATE INDEX IF NOT EXISTS memory_embeddings_peer_model ON memory_embeddings(peer_id,model);',
-    );
-    sql.exec('PRAGMA user_version=5;');
-    sql.exec('COMMIT');
-  }
-  if (openedAt < 6) {
-    sql.exec('BEGIN IMMEDIATE');
-    sql.exec(
-      'CREATE INDEX IF NOT EXISTS memories_peer_status_created ON memories(peer_id,status,created_at DESC);\n' +
-        'CREATE INDEX IF NOT EXISTS messages_rhythm ON messages(peer_id,role,status,created_at);\n' +
-        'CREATE INDEX IF NOT EXISTS outbox_status_created ON outbox(status,created_at DESC);\n' +
-        'CREATE INDEX IF NOT EXISTS tasks_kind ON tasks(kind);\n' +
-        'CREATE INDEX IF NOT EXISTS diary_peer_status_day ON diary_sections(peer_id,status,day);',
-    );
-    sql.exec('PRAGMA user_version=6;');
-    sql.exec('COMMIT');
-  }
-  if (openedAt < 7) {
-    sql.exec('BEGIN IMMEDIATE');
-    // rowid 保持同步，旧库的删除仍是 O(1) 而不是虚拟表扫描。
-    sql.exec(
-      `INSERT OR REPLACE INTO search_docs(rowid,id,peer_id,kind,content,created_at)
-       SELECT rowid,id,peer_id,kind,content,created_at FROM search_index;`,
-    );
-    sql.exec('PRAGMA user_version=7;');
-    sql.exec('COMMIT');
-  }
-  if (openedAt < 8) {
-    // 六变量列：S/D/R/E 现算不存列，旧行按中性速率从 created_at 开始遗忘。
-    sql.exec('BEGIN IMMEDIATE');
-    if (!hasColumn('memories', 'emotion'))
-      sql.exec('ALTER TABLE memories ADD COLUMN emotion REAL NOT NULL DEFAULT 0;');
-    if (!hasColumn('memories', 'emotion_reason'))
-      sql.exec("ALTER TABLE memories ADD COLUMN emotion_reason TEXT NOT NULL DEFAULT '';");
-    if (!hasColumn('memories', 'consolidation'))
-      sql.exec('ALTER TABLE memories ADD COLUMN consolidation REAL NOT NULL DEFAULT 0;');
-    if (!hasColumn('memories', 'interference'))
-      sql.exec('ALTER TABLE memories ADD COLUMN interference REAL NOT NULL DEFAULT 0;');
-    if (!hasColumn('diary_sections', 'emotion'))
-      sql.exec('ALTER TABLE diary_sections ADD COLUMN emotion REAL NOT NULL DEFAULT 0;');
-    sql.exec('PRAGMA user_version=8;');
-    sql.exec('COMMIT');
-  }
-  if (openedAt < 9) {
-    // 用量表补充缓存命中列：供应商的前缀缓存命中 token 单独记录，
-    // 调试页据此展示渠道缓存是否实际生效（旧数据按 0 处理）。
-    sql.exec('BEGIN IMMEDIATE');
-    if (!hasColumn('usage', 'cached_tokens'))
-      sql.exec('ALTER TABLE usage ADD COLUMN cached_tokens INTEGER NOT NULL DEFAULT 0;');
-    if (!hasColumn('usage_daily', 'cached_tokens'))
-      sql.exec('ALTER TABLE usage_daily ADD COLUMN cached_tokens INTEGER NOT NULL DEFAULT 0;');
-    sql.exec('PRAGMA user_version=9;');
-    sql.exec('COMMIT');
-  }
-  if (openedAt < 10) {
-    // 主动 v2：想法表。旧 impulse 探询的设置键在启动时清掉。
-    sql.exec('BEGIN IMMEDIATE');
-    sql.exec(
-      `CREATE TABLE IF NOT EXISTS initiatives (
-        id TEXT PRIMARY KEY, peer_id TEXT NOT NULL REFERENCES peers(id),
-        topic_key TEXT NOT NULL, kind TEXT NOT NULL, meaning TEXT NOT NULL,
-        sources TEXT NOT NULL, source_hash TEXT NOT NULL,
-        expect_reply INTEGER NOT NULL DEFAULT 0,
-        state TEXT NOT NULL DEFAULT 'idle', origin TEXT NOT NULL DEFAULT '',
-        version INTEGER NOT NULL DEFAULT 1,
-        created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
-        released_at INTEGER NOT NULL DEFAULT 0, dropped_at INTEGER NOT NULL DEFAULT 0,
-        UNIQUE(peer_id, topic_key)
-      );
-      CREATE INDEX IF NOT EXISTS initiatives_peer_state ON initiatives(peer_id,state,updated_at DESC);
-      DELETE FROM settings WHERE key LIKE 'impulse_at:%';`,
-    );
-    sql.exec('PRAGMA user_version=10;');
-    sql.exec('COMMIT');
-  }
-  if (openedAt < 11) {
-    // 主动 v3：她的当下（全局单行）与生活流水。旧的 proactive 任务类型
-    // 更名 pulse，旧键的静默冷却设置不再使用，启动时清掉。
-    sql.exec('BEGIN IMMEDIATE');
-    sql.exec(
-      `CREATE TABLE IF NOT EXISTS self (
+      CREATE TABLE IF NOT EXISTS self (
         id INTEGER PRIMARY KEY CHECK(id=1),
         activity TEXT NOT NULL DEFAULT '', activity_since INTEGER NOT NULL DEFAULT 0,
         plan TEXT NOT NULL DEFAULT '', plan_day TEXT NOT NULL DEFAULT '',
+        pursuit TEXT NOT NULL DEFAULT '', pursuit_since INTEGER NOT NULL DEFAULT 0,
         social REAL NOT NULL DEFAULT 1, express REAL NOT NULL DEFAULT 0,
         last_stimulus_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0
       );
@@ -500,31 +445,56 @@ export function migrate(sql: import('node:sqlite').DatabaseSync): void {
         text TEXT NOT NULL, artifact TEXT NOT NULL DEFAULT ''
       );
       CREATE INDEX IF NOT EXISTS life_log_at ON life_log(at DESC);
-      DELETE FROM settings WHERE key LIKE 'silence_cooldown:%' OR key LIKE 'muse_seeded_at:%';`,
+  `);
+
+  // 旧库补列（新库的 DDL 已含全部列，hasColumn 守卫让这些成为空操作）。
+  const hasColumn = (table: string, column: string): boolean =>
+    (sql.prepare(`PRAGMA table_info(${table})`).all() as unknown as { name: string }[]).some(
+      (row) => row.name === column,
     );
-    sql.exec('PRAGMA user_version=11;');
-    sql.exec('COMMIT');
-  }
-  if (openedAt < 12) {
-    // 她只属于一个人：本地试聊（preview 渠道）整体退场，心跳/日记不再漏进
-    // 无人渠道。子表按 deletePeer 的同一依赖序删（outbox 引用 messages 与
-    // tasks，必须最先；search_index 按 search_docs 的 rowid 删）。
-    sql.exec('BEGIN IMMEDIATE');
-    sql.exec(
-      `DELETE FROM outbox WHERE peer_id IN (SELECT id FROM peers WHERE channel='preview');
-      DELETE FROM diary_sections WHERE peer_id IN (SELECT id FROM peers WHERE channel='preview');
-      DELETE FROM tasks WHERE peer_id IN (SELECT id FROM peers WHERE channel='preview');
-      DELETE FROM memory_embeddings WHERE peer_id IN (SELECT id FROM peers WHERE channel='preview');
-      DELETE FROM memories WHERE peer_id IN (SELECT id FROM peers WHERE channel='preview');
-      DELETE FROM open_loops WHERE peer_id IN (SELECT id FROM peers WHERE channel='preview');
-      DELETE FROM soft_threads WHERE peer_id IN (SELECT id FROM peers WHERE channel='preview');
-      DELETE FROM initiatives WHERE peer_id IN (SELECT id FROM peers WHERE channel='preview');
-      DELETE FROM messages WHERE peer_id IN (SELECT id FROM peers WHERE channel='preview');
-      DELETE FROM search_index WHERE rowid IN (SELECT rowid FROM search_docs WHERE peer_id IN (SELECT id FROM peers WHERE channel='preview'));
-      DELETE FROM search_docs WHERE peer_id IN (SELECT id FROM peers WHERE channel='preview');
-      DELETE FROM peers WHERE channel='preview';`,
-    );
-    sql.exec('PRAGMA user_version=12;');
-    sql.exec('COMMIT');
-  }
+  const legacyColumns: [string, string, string][] = [
+    ['memories', 'pinned', 'INTEGER NOT NULL DEFAULT 0'],
+    ['peers', 'persona_id', 'TEXT NOT NULL DEFAULT ""'],
+    ['memories', 'invalid_at', 'INTEGER NOT NULL DEFAULT 0'],
+    ['memories', 'importance', 'REAL NOT NULL DEFAULT 0.5'],
+    ['memories', 'emotion', 'REAL NOT NULL DEFAULT 0'],
+    ['memories', 'emotion_reason', "TEXT NOT NULL DEFAULT ''"],
+    ['memories', 'consolidation', 'REAL NOT NULL DEFAULT 0'],
+    ['memories', 'interference', 'REAL NOT NULL DEFAULT 0'],
+    ['diary_sections', 'emotion', 'REAL NOT NULL DEFAULT 0'],
+    ['usage', 'cached_tokens', 'INTEGER NOT NULL DEFAULT 0'],
+    ['usage_daily', 'cached_tokens', 'INTEGER NOT NULL DEFAULT 0'],
+    ['self', 'pursuit', "TEXT NOT NULL DEFAULT ''"],
+    ['self', 'pursuit_since', 'INTEGER NOT NULL DEFAULT 0'],
+  ];
+  for (const [table, column, decl] of legacyColumns)
+    if (!hasColumn(table, column)) sql.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${decl};`);
+
+  // rowid 保持同步：镜像表与 FTS 表的删除都靠它 O(1)。每次启动重放一次
+  // 同步（INSERT OR REPLACE），旧库漏行、历史中断的升级都能自愈。
+  sql.exec(
+    `INSERT OR REPLACE INTO search_docs(rowid,id,peer_id,kind,content,created_at)
+     SELECT rowid,id,peer_id,kind,content,created_at FROM search_index;`,
+  );
+
+  // 旧时代的遗留：本地试聊渠道整体退场（她只属于一个人）；早已停用的
+  // 设置键清掉。语句对新库是空操作。
+  sql.exec(
+    `DELETE FROM outbox WHERE peer_id IN (SELECT id FROM peers WHERE channel='preview');
+     DELETE FROM diary_sections WHERE peer_id IN (SELECT id FROM peers WHERE channel='preview');
+     DELETE FROM tasks WHERE peer_id IN (SELECT id FROM peers WHERE channel='preview');
+     DELETE FROM memory_embeddings WHERE peer_id IN (SELECT id FROM peers WHERE channel='preview');
+     DELETE FROM memories WHERE peer_id IN (SELECT id FROM peers WHERE channel='preview');
+     DELETE FROM open_loops WHERE peer_id IN (SELECT id FROM peers WHERE channel='preview');
+     DELETE FROM soft_threads WHERE peer_id IN (SELECT id FROM peers WHERE channel='preview');
+     DELETE FROM initiatives WHERE peer_id IN (SELECT id FROM peers WHERE channel='preview');
+     DELETE FROM messages WHERE peer_id IN (SELECT id FROM peers WHERE channel='preview');
+     DELETE FROM search_index WHERE rowid IN (SELECT rowid FROM search_docs WHERE peer_id IN (SELECT id FROM peers WHERE channel='preview'));
+     DELETE FROM search_docs WHERE peer_id IN (SELECT id FROM peers WHERE channel='preview');
+     DELETE FROM peers WHERE channel='preview';
+     DELETE FROM settings WHERE key LIKE 'impulse_at:%' OR key LIKE 'silence_cooldown:%'
+       OR key LIKE 'muse_seeded_at:%';`,
+  );
+
+  sql.exec(`PRAGMA user_version=${SCHEMA_VERSION};`);
 }

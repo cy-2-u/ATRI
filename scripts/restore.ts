@@ -1,5 +1,6 @@
 import { resolve } from 'node:path';
 import { restoreBackup } from '../src/db/index.js';
+
 if (!process.argv[2]) throw new Error('用法：node dist/restore.js <备份目录>；DATA_DIR 指向空目录');
 const dataDir = resolve(process.env.DATA_DIR || 'data');
 const manifest = restoreBackup(resolve(process.argv[2]), dataDir);

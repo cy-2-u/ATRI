@@ -14,14 +14,55 @@ export interface MotiveFeel {
   express: number;
 }
 
-/** 她的睡眠窗口（配置语义：她真的在睡，不是"拦截时段"）。
- *  start === end 表示整日不眠（不推荐）。 */
-export function inSleepHours(hour: number, start: number, end: number): boolean {
-  return start === end
+const minuteFormatters = new Map<string, Intl.DateTimeFormat>();
+/** 本地时钟的当天分钟数（0–1439）：抖动后的睡眠窗不再是整点，判定要用分。 */
+export function minutesOfDay(at: number, timeZone: string): number {
+  let formatter = minuteFormatters.get(timeZone);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat('en-GB', {
+      timeZone,
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+    });
+    minuteFormatters.set(timeZone, formatter);
+  }
+  const [h, m] = formatter.format(new Date(at)).split(':');
+  return Number(h) * 60 + Number(m);
+}
+
+/** 当天睡眠窗口的生理抖动：按本地日期哈希把入睡与醒来时刻各平移
+ *  ±45 分钟。同一天内稳定（每分钟的调度检查得到同一结果），跨天缓慢
+ *  变化——她不会每天在同一分钟睡着、同一分钟醒来。start===end 仍表示
+ *  整日不眠，抖动不得凭空造出睡眠窗。
+ *
+ *  边界说明：睡眠窗是她的身体（睡着时没有"她"在做决定），不是对表达
+ *  的拦截；醒着的每一拍，说不说、说几次，都由她自己定。 */
+export function jitteredSleepWindow(
+  day: string,
+  startHour: number,
+  endHour: number,
+): { startMin: number; endMin: number } {
+  if (startHour === endHour) return { startMin: startHour * 60, endMin: endHour * 60 };
+  let hash = 2166136261;
+  for (let i = 0; i < day.length; i++) {
+    hash ^= day.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  const unsigned = hash >>> 0;
+  const offsetStart = (unsigned % 91) - 45;
+  const offsetEnd = (Math.floor(unsigned / 91) % 91) - 45;
+  return { startMin: startHour * 60 + offsetStart, endMin: endHour * 60 + offsetEnd };
+}
+
+/** 分钟版的睡眠判定（抖动后窗口带小数时刻，整点判定会漏边缘）。
+ *  startMin === endMin 仍为不眠；跨午夜窗口与整数版同规则。 */
+export function inSleepMinutes(minute: number, startMin: number, endMin: number): boolean {
+  return startMin === endMin
     ? false
-    : start < end
-      ? hour >= start && hour < end
-      : hour >= start || hour < end;
+    : startMin < endMin
+      ? minute >= startMin && minute < endMin
+      : minute >= startMin || minute < endMin;
 }
 
 /** 判断是否对方的惯常活跃时段（作息数据 24 桶）。 */

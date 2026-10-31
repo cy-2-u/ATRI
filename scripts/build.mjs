@@ -1,4 +1,5 @@
 import { build } from 'esbuild';
+
 await build({
   entryPoints: {
     server: 'src/index.ts',

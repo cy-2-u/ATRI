@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { Store } from './db/index.js';
 import { HttpModel, EmbeddingClient } from './llm.js';
@@ -13,7 +14,13 @@ import { createServer } from './api/server.js';
 process.umask(0o077);
 const root = resolve(process.env.APP_ROOT || process.cwd());
 const dataDir = resolve(process.env.DATA_DIR || join(root, 'data'));
-const store = new Store(join(dataDir, 'atri.db'));
+// 数据库文件：新库叫 xing.db；数据目录里是 4.0 时代的 atri.db 时直接
+// 就地打开并升级（幂等引导），她的记忆不换地方。
+const dbFile =
+  existsSync(join(dataDir, 'xing.db')) || !existsSync(join(dataDir, 'atri.db'))
+    ? 'xing.db'
+    : 'atri.db';
+const store = new Store(join(dataDir, dbFile));
 const settings = new Settings(store, root);
 const stickers = new Stickers(root, dataDir, store);
 const bridge = new WeChatBridge(store, settings, stickers, (message) => console.warn(message));
@@ -98,6 +105,6 @@ process.on('SIGTERM', () => void shutdown());
 const address = await app.listen({ host: settings.host, port: settings.port });
 runtime.start();
 bridge.start(runtime);
-console.log(`ATRI 已启动：${address}`);
+console.log(`xing 已启动（${dbFile}）：${address}`);
 if (!process.env.ADMIN_PASSWORD)
   console.log(`首次管理密码保存在 ${join(dataDir, 'admin-secret.txt')}，请在服务器上读取。`);
