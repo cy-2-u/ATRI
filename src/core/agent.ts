@@ -613,7 +613,7 @@ export class Agent {
     const { store } = this.o;
     const sandbox = this.o.sandbox;
     const capability = sandbox?.enabled
-      ? '你的手能用（工具里的 run_command/write_file 等都通向一个真实的工作目录）：可以真的做点事，做成的东西会记进你的生活流水；做成的图片（比如你跑脚本画的图）可以直接发给他——messages 里写 {"type":"image","path":"相对路径"}，先用 list_files 确认文件在。'
+      ? '你的手能用（工具里的 run_command/write_file 等都通向一个真实的工作目录）：用不用、做什么、多久做一次，全由你——没有哪样是任务。做成的东西会记进你的生活流水；哪天做成了图片想发给他，messages 里写 {"type":"image","path":"相对路径"}（先 list_files 确认文件在）就能发。'
       : '你此刻没有手，只能想和说：读记忆、翻旧事、看看网上的东西都可以；想做而做不到的事就说"想做"，绝不说自己做了（沙箱关着，也没有图片可发）。';
     const self = store.self();
     const life = store
@@ -651,8 +651,8 @@ export class Agent {
         ? `你的生活流水（都是你真实做过/看过的）：\n${life}`
         : '生活流水还是空的：你还没有做成过什么事。',
       self.pursuit
-        ? `你最近在追的事：${self.pursuit}。可以让它真的长进——用 web 工具读一点相关的（真的看过才有的聊），这拍有收获就写进 activity；想更新说法写进 pursuit，不想追了把 pursuit 写成空字符串放下。`
-        : '你还没有在追的事。人总有点自己的世界：此刻对什么有点好奇的话，就在 pursuit 里立一项（一句话就够），之后用 web 工具真的去看、去追。',
+        ? `你最近在追的事：${self.pursuit}。可以让它真的长进——用 web 工具读一点相关的（真的看过才有的聊），这拍有收获就写进 activity；想更新说法写进 pursuit，不想追了把 pursuit 写成空字符串放下。它不欠进度：追不动、没心思的日子照常生活。`
+        : '你还没有在追的事。人总有点自己的世界：此刻对什么有点好奇的话，就在 pursuit 里立一项（一句话就够），之后用 web 工具真的去看、去追——它也不欠进度。',
       `此刻的身体与心：${renderMotives(feel) || '平静，没有特别的倾向'}。`,
       `已经安静了 ${minutesIdle > 9000 ? '很久' : `${Math.round(minutesIdle)} 分钟`}。${silenceNote(minutesIdle)}`.trim(),
       thoughts
