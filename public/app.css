@@ -1135,55 +1135,6 @@ svg {
   }
 }
 
-.composer {
-  display: flex;
-  align-items: flex-end;
-  gap: 10px;
-  padding: 12px 16px;
-  border-top: 1px solid var(--border-soft);
-  background: var(--bg-soft);
-}
-
-.composer textarea {
-  flex: 1;
-  resize: none;
-  max-height: 160px;
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  color: var(--text);
-  padding: 10px 14px;
-  font: inherit;
-  font-size: 14.5px;
-  line-height: 1.5;
-}
-
-.composer textarea:focus:not(:focus-visible) {
-  outline: none;
-  border-color: var(--accent);
-}
-
-/* Restore the global focus ring for keyboard users: the rule above outranks
-   :focus-visible (0,2,1 vs 0,1,0), so tabbing into the composer left the accent
-   border as the only cue at 2.73:1 — effectively invisible. */
-.composer textarea:focus-visible {
-  outline: 2px solid var(--accent-ink);
-  outline-offset: 1px;
-  border-color: var(--accent);
-}
-
-.composer .send {
-  width: 42px;
-  height: 42px;
-  padding: 0;
-  border-radius: 12px;
-}
-
-.composer .send svg {
-  width: 18px;
-  height: 18px;
-}
-
 .chat-hint {
   padding: 6px 18px 12px;
   background: var(--bg-soft);
@@ -2021,7 +1972,6 @@ dialog .row {
   .field input,
   .field textarea,
   .dropdown-host .dropdown-toggle,
-  .composer textarea,
   .model-filter,
   #model-filter {
     font-size: 16px;
