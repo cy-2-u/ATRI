@@ -861,9 +861,13 @@ export class Runtime {
       .filter((m) => force || dayAt(m.created_at, this.options.config().timeZone) < today);
     const size = records.reduce((n, m) => n + estimateTextTokens(renderMessage(m)), 0);
     if (!records.length || (!force && size < DIARY_MAX_CHARS * 0.05)) return;
+    // 分块从最旧的未处理消息开始（records 已按 seq 升序），through 是块内
+    // 最新一条——游标一次推进一整块。曾按"最新优先"切块再取 picked.at(-1)，
+    // 结果 through 退化成 after+1：一条消息烧一次完整模型调用，一夜磨出
+    // 几十个微型日记任务。
     const picked: typeof records = [];
     let chars = 0;
-    for (const m of [...records].reverse()) {
+    for (const m of records) {
       const size = renderMessage(m).length;
       if (picked.length && chars + size > DIARY_MAX_CHARS) break;
       picked.push(m);

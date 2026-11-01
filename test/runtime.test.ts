@@ -58,6 +58,46 @@ test('回复解析：非 JSON 的纯文本放行，失败的 JSON 走修复', ()
   assert.throws(() => parseReply('{"messages": broken}', stickers), /格式/);
 });
 
+test('图片部件：真实路径放行，穿越与伪装拒绝', () => {
+  const stickers = [{ slug: 'happy', description: '开心', tags: ['开心'], file: 'x' }];
+  const parsed = parseReply(
+    JSON.stringify({
+      messages: [
+        '给你看个好东西',
+        { type: 'image', path: 'out\\plot.png' },
+        { type: 'image', path: 'notes.txt' },
+        { type: 'image', path: '../secret.png' },
+        { type: 'image', path: '/abs/x.png' },
+        { type: 'image' },
+      ],
+    }),
+    stickers,
+  );
+  assert.equal(parsed.parts.length, 2, '只有文字和合法图片通过');
+  assert.equal(parsed.parts[1]!.type, 'image');
+  assert.equal(parsed.parts[1]!.path, 'out/plot.png', '反斜杠归一化为正斜杠');
+});
+
+test('图片发送：契约解析、落库标记、投递同一通道', async (t) => {
+  const model = new FakeModel(() =>
+    completion({
+      messages: ['画好了，你看', { type: 'image', path: 'out/plot.png' }],
+    }),
+  );
+  const f = fixture(t, model);
+  f.runtime.accept('p1', 'e1', '画个图看看', [], Date.now());
+  await f.runtime.drain(15000);
+  const history = f.store.history('p1');
+  assert.ok(
+    history.some((m) => m.role === 'assistant' && m.content === '[图片：out/plot.png]'),
+    '图片气泡落库带标记',
+  );
+  assert.ok(
+    f.delivered.some((d) => d.part.type === 'image' && d.part.path === 'out/plot.png'),
+    '投递层收到图片部件（真实字节由桥接读取沙箱）',
+  );
+});
+
 test('聊天端到端：回复落库、心情脉冲、想法入库不触发评估', async (t) => {
   const model = new FakeModel((messages) => {
     // 模型从最后一条用户消息里取真实的来源锚点（与生产一致）。
@@ -337,4 +377,31 @@ test('夜间整理拍：相近记忆对被合并替代', async (t) => {
   assert.equal(active.length, 1, '整理后只剩一条');
   assert.equal(active[0]!.content, '对方不吃香菜');
   assert.ok(active[0]!.sources.includes(message.id), '来源随合并保留');
+});
+
+test('queueDiary：一块覆盖全部积压，游标整块推进而不是一条一任务', async (t) => {
+  const model = new FakeModel((messages) => {
+    const raw = promptText(messages);
+    const sources = [...new Set([...raw.matchAll(/\[来源 ([^\s|]+) \|/g)].map((m) => m[1]!))];
+    return completion({
+      sections: [{ content: '这一天聊了很多', sources: sources.slice(-1), emotion: 0 }],
+      memoryUpdates: [],
+    });
+  });
+  const f = fixture(t, model);
+  const yesterday = Date.now() - DAY;
+  for (let i = 0; i < 15; i++)
+    f.store.ingest('p1', 'e' + i, '她今天说了不少话'.repeat(6) + i, [], yesterday + i * 60000);
+  const taskId = f.runtime.queueDiary('p1', false, Date.now());
+  assert.ok(taskId, '积压超过阈值应入队');
+  const task = f.store.taskById(taskId!)!;
+  const maxSeq = f.store.sql.prepare('SELECT MAX(seq) n FROM messages').get()!.n;
+  assert.equal(
+    task.payload.through,
+    maxSeq,
+    '一块覆盖全部积压（through=最新一条，而不是 after+1）',
+  );
+  assert.equal((task.payload.ids as string[]).length, 15, '15 条全部进同一块');
+  await f.runtime.drain(15000);
+  assert.equal(f.runtime.queueDiary('p1', false, Date.now()), undefined, '游标已到末尾，不再入队');
 });
