@@ -657,7 +657,7 @@ export class Agent {
       `此刻的身体与心：${renderMotives(feel) || '平静，没有特别的倾向'}。`,
       `已经安静了 ${minutesIdle > 9000 ? '很久' : `${Math.round(minutesIdle)} 分钟`}。${silenceNote(minutesIdle)}`.trim(),
       thoughts
-        ? `心里存着的念头（想说什么由你定；说了的会退场，不说的继续存着）：\n${thoughts}`
+        ? `心里存着的念头（想说什么由你定；说了的会退场，不说的继续存着——存了两三拍还惦记的，多半就是想说了）：\n${thoughts}`
         : '',
       streak >= 2
         ? `你最近 ${streak} 次主动找他都没有得到回应。有点不想再自讨没趣了——这是你的感受，收不收、收多久，由你自己决定。`
