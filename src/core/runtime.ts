@@ -98,6 +98,9 @@ export function taskBackoffMs(attempts: number): number {
 }
 /** 单联系人单泵周期的工作预算（含投递轮）。 */
 const MAX_WORK_ITERATIONS = 12;
+/** 例行维护的间隔：清理/日记检查/过期/整理候选都是"天级"粒度的事，
+ *  每分钟付一遍写事务与 200 行读是空转；到点约定与心跳不在此列。 */
+const HOUSEKEEPING_INTERVAL_MS = 10 * 60000;
 /** 可中断的暂停：shutdown/supersede 不用陪完剩余延迟。 */
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   if (signal?.aborted) return Promise.resolve();
@@ -143,6 +146,8 @@ export class Runtime {
   /** 进程启动时刻：首拍宽限的起点（0 = 未启动，宽限不生效——测试直接
    *  new Runtime 不经 start()，不受宽限影响）。 */
   private startedAt = 0;
+  /** 上次例行维护的时刻；0 = 启动后第一次 tick 立即做一轮。 */
+  private lastHousekeeping = 0;
 
   constructor(private readonly options: RuntimeOptions) {
     this.agent = new Agent(options);
@@ -895,14 +900,19 @@ export class Runtime {
     if (this.stopped) return;
     const c = this.options.config(),
       hour = hourAt(now, c.timeZone);
-    // 例行清理搭每分钟调度 tick 的便车；单个坏联系人不能让后面的全部饿死。
-    try {
-      this.store.pruneTasks(now);
-      this.store.pruneInitiatives(now);
-    } catch (error) {
-      this.options.log?.('清理旧任务失败，本轮跳过', {
-        error: error instanceof Error ? error.message : String(error),
-      });
+    // 例行清理是 7 天保留期的事，降频到 10 分钟足够；写事务别每分钟
+    // 空转一遍。单个坏联系人不能让后面的全部饿死。
+    const housekeeping = now - this.lastHousekeeping >= HOUSEKEEPING_INTERVAL_MS;
+    if (housekeeping) this.lastHousekeeping = now;
+    if (housekeeping) {
+      try {
+        this.store.pruneTasks(now);
+        this.store.pruneInitiatives(now);
+      } catch (error) {
+        this.options.log?.('清理旧任务失败，本轮跳过', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
     // 睡眠窗带生理抖动（按本地日期稳定）：她不会每天在同一分钟睡着、
     // 同一分钟醒来。窗口算一次，本 tick 内所有联系人共用。
@@ -910,19 +920,25 @@ export class Runtime {
     const asleep = inSleepMinutes(minutesOfDay(now, c.timeZone), window.startMin, window.endMin);
     for (const peer of this.store.peers().filter((p) => p.approved)) {
       try {
-        if (hour >= c.diaryHour) this.queueDiary(peer.id, false, now);
+        // 维护类检查（日记/整理/过期）是天级粒度，随 housekeeping 降频；
+        // 到期承诺与心跳时间敏感，保持每分钟。
+        if (housekeeping && hour >= c.diaryHour) this.queueDiary(peer.id, false, now);
         // 夜间整理拍：日记写完后的两小时窗里，把相近/矛盾的记忆对交给
-        // 模型理顺。只在有候选时入队，去重键按天（done 行占键，天然幂等）。
-        if (hour >= c.diaryHour && hour < c.diaryHour + 2) {
+        // 模型理顺。只在有候选时入队，去重键按天；当天已成功过的不再重算
+        // 候选——那要全量取向量并做 O(n²) 配对。
+        if (housekeeping && hour >= c.diaryHour && hour < c.diaryHour + 2) {
           const consolidateKey = `consolidate:${dayAt(now, c.timeZone)}`;
           if (
             !this.store.hasPendingTask(peer.id, 'consolidate', consolidateKey) &&
+            !this.store.hasSettledTask(peer.id, 'consolidate', consolidateKey) &&
             this.store.consolidationCandidates(peer.id, 1).length
           )
             this.store.enqueue(peer.id, 'consolidate', consolidateKey, {}, now);
         }
-        this.store.expireOpenLoops(peer.id, now, c.timeZone);
-        this.store.expireSoftThreads(peer.id, now);
+        if (housekeeping) {
+          this.store.expireOpenLoops(peer.id, now, c.timeZone);
+          this.store.expireSoftThreads(peer.id, now);
+        }
         // 到期承诺：她自己的记性，不等心跳碰运气。
         if (c.proactiveEnabled) {
           const dueLoops = this.store.dueOpenLoops(peer.id, now);

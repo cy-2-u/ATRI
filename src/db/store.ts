@@ -142,20 +142,19 @@ export type {
 const sha = (s: string) => createHash('sha256').update(s).digest('hex');
 
 /** 字符二元组 Jaccard：CJK 短句的廉价相似度。三元组在中文短句上太稀，
- *  二元组能抓住"同一件事的两个说法"的共享字对；无向量渠道的整理兜底。 */
-const gramJaccard = (a: string, b: string): number => {
-  const grams = (text: string) => {
-    const clean = text.replace(/\s+/g, '');
-    const out = new Set<string>();
-    for (let i = 0; i < clean.length - 1; i++) out.add(clean.slice(i, i + 2));
-    return out;
-  };
-  const ga = grams(a),
-    gb = grams(b);
-  if (!ga.size || !gb.size) return 0;
+ *  二元组能抓住"同一件事的两个说法"的共享字对；无向量渠道的整理兜底。
+ *  集合构建与相似度分开：O(n²) 配对时每行的集合只建一次。 */
+const bigrams = (text: string): Set<string> => {
+  const clean = text.replace(/\s+/g, '');
+  const out = new Set<string>();
+  for (let i = 0; i < clean.length - 1; i++) out.add(clean.slice(i, i + 2));
+  return out;
+};
+const jaccard = (a: Set<string>, b: Set<string>): number => {
+  if (!a.size || !b.size) return 0;
   let shared = 0;
-  for (const g of ga) if (gb.has(g)) shared++;
-  return shared / (ga.size + gb.size - shared);
+  for (const g of a) if (b.has(g)) shared++;
+  return shared / (a.size + b.size - shared);
 };
 
 export class Store {
@@ -168,6 +167,10 @@ export class Store {
   private statsCache = new Map<string, { at: number; data: RhythmStats }>();
   private lastUsageRollup = 0;
   private usageCache?: { at: number; rows: Row[] };
+  /** 解码后的向量缓存：召回/去重/整理每次都全量重解码 12KB/条的 BLOB，
+   *  纯浪费。写路径全部经过 index/setEmbedding/dropEmbeddings/supersede，
+   *  失效点集中在这几处；容量按条数封顶（2048 条 ≈ 24MB）。 */
+  private vectorCache = new Map<string, Float32Array>();
 
   constructor(readonly path: string) {
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
@@ -176,6 +179,20 @@ export class Store {
   }
   close() {
     this.sql.close();
+  }
+  /** 取缓存向量，缺则从 BLOB 解码入缓存（Map 插入序近似 LRU，容量满逐出最老）。 */
+  private cachedVector(id: string, buf?: Buffer): Float32Array | undefined {
+    let vector = this.vectorCache.get(id);
+    if (!vector && buf) {
+      vector = new Float32Array(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
+      if (this.vectorCache.size >= 2048)
+        this.vectorCache.delete(this.vectorCache.keys().next().value!);
+      this.vectorCache.set(id, vector);
+    }
+    return vector;
+  }
+  private dropCachedVector(id: string) {
+    this.vectorCache.delete(id);
   }
   transaction<T>(fn: () => T): T {
     if (this.transactionDepth) return fn();
@@ -515,6 +532,17 @@ export class Store {
         .get(peer, kind, key),
     );
   }
+  /** 同键任务已成功完成：调度器据此跳过昂贵的重复计算（如夜间整理候选
+   *  的全量向量解码与 O(n²) 配对）。failed 不算——还要靠重排复活重试。 */
+  hasSettledTask(peer: string, kind: TaskKind, key: string): boolean {
+    return Boolean(
+      this.sql
+        .prepare(
+          "SELECT 1 FROM tasks WHERE peer_id=? AND kind=? AND dedupe_key=? AND state IN ('done','ready') LIMIT 1",
+        )
+        .get(peer, kind, key),
+    );
+  }
   /** 心跳拍是否有在途任务：beat 键是一次性的（beat:时间戳），同键精确
    *  匹配防不了"上拍已完成、新拍要排"——done 行不算 pending，但它的键
    *  仍占着唯一索引。前缀匹配挡住拍与拍的连发。 */
@@ -793,6 +821,7 @@ export class Store {
     this.unindex(id);
     // 内容变了，旧向量不能存活。
     this.sql.prepare('DELETE FROM memory_embeddings WHERE id=?').run(id);
+    this.dropCachedVector(id);
     const inserted = this.sql
       .prepare('INSERT INTO search_docs(id,peer_id,kind,content,created_at) VALUES(?,?,?,?,?)')
       .run(id, peer, kind, content, at);
@@ -1069,6 +1098,8 @@ export class Store {
       .filter((m) => !m.pinned && !isForgotten(traceOf(m), now))
       .slice(0, 120);
     if (rows.length < 2) return [];
+    // 每行的二元组集只建一次：O(n²) 配对里重建集合是 7200×2 次字符串扫描。
+    const gramSets = rows.map((m) => bigrams(m.content));
     const vectors = new Map<string, { vector: Float32Array; dims: number; model: string }>();
     for (const e of this.embeddings(peer, 'memory'))
       vectors.set(e.id, { vector: e.vector, dims: e.dims, model: e.model });
@@ -1077,7 +1108,7 @@ export class Store {
       for (let j = i + 1; j < rows.length; j++) {
         const a = rows[i]!,
           b = rows[j]!;
-        const gram = gramJaccard(a.content, b.content);
+        const gram = jaccard(gramSets[i]!, gramSets[j]!);
         const va = vectors.get(a.id),
           vb = vectors.get(b.id);
         const cosine =
@@ -1104,6 +1135,7 @@ export class Store {
         this.sql
           .prepare('DELETE FROM memory_embeddings WHERE peer_id=? AND id=?')
           .run(peer, previous);
+        this.dropCachedVector(previous);
       }
     }
   }
@@ -1552,23 +1584,23 @@ export class Store {
           .map((r) => r as Row),
       );
     }
-    // 一次查询取全部向量，代替逐行 prepare+get。
+    // 一次查询取全部向量（缓存未命中的才查库），代替逐行 prepare+get。
     const vectors = new Map<string, Float32Array>();
     if (queryVector) {
-      const ids = [...new Set(rows.map((r) => String(r.id)))];
-      for (let i = 0; i < ids.length; i += 400) {
-        const slice = ids.slice(i, i + 400);
+      const all = [...new Set(rows.map((r) => String(r.id)))];
+      const missingIds = all.filter((id) => !this.vectorCache.has(id));
+      for (let i = 0; i < missingIds.length; i += 400) {
+        const slice = missingIds.slice(i, i + 400);
         for (const row of this.sql
           .prepare(
             `SELECT id,vector FROM memory_embeddings WHERE id IN (${slice.map(() => '?').join(',')})`,
           )
-          .all(...slice) as Row[]) {
-          const buf = row.vector as Buffer;
-          vectors.set(
-            String(row.id),
-            new Float32Array(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength)),
-          );
-        }
+          .all(...slice) as Row[])
+          this.cachedVector(String(row.id), row.vector as Buffer);
+      }
+      for (const id of all) {
+        const vector = this.vectorCache.get(id);
+        if (vector) vectors.set(id, vector);
       }
     }
     const now = Date.now();
@@ -2490,20 +2522,15 @@ export class Store {
     model: string,
     now = Date.now(),
   ) {
+    const bytes = Buffer.from(vector.buffer, vector.byteOffset, vector.byteLength);
     this.sql
       .prepare(
         'INSERT INTO memory_embeddings(id,peer_id,kind,vector,dims,model,created_at) VALUES(?,?,?,?,?,?,?) ' +
           'ON CONFLICT(id) DO UPDATE SET vector=excluded.vector,dims=excluded.dims,model=excluded.model,created_at=excluded.created_at',
       )
-      .run(
-        id,
-        peer,
-        kind,
-        Buffer.from(vector.buffer, vector.byteOffset, vector.byteLength),
-        vector.length,
-        model,
-        now,
-      );
+      .run(id, peer, kind, bytes, vector.length, model, now);
+    // 解码结果直接进缓存：下一次召回/整理/去重不再重付 12KB/条 的传输与解码。
+    this.cachedVector(id, bytes);
   }
   setEmbeddings(
     items: { id: string; peer: string; kind: SourceKind; vector: Float32Array; model: string }[],
@@ -2515,38 +2542,53 @@ export class Store {
     });
   }
   embeddings(peer: string, kind?: SourceKind): EmbeddingVector[] {
-    return this.sql
+    const rows = this.sql
       .prepare(
-        `SELECT id,peer_id,kind,vector,dims,model FROM memory_embeddings WHERE peer_id=?${kind ? ' AND kind=?' : ''}`,
+        `SELECT id,peer_id,kind,dims,model FROM memory_embeddings WHERE peer_id=?${kind ? ' AND kind=?' : ''}`,
       )
-      .all(...(kind ? [peer, kind] : [peer]))
-      .map((r) => ({
-        id: String(r.id),
-        peer_id: String(r.peer_id),
-        kind: String(r.kind) as SourceKind,
-        vector: new Float32Array(
-          (r.vector as Buffer).buffer.slice(
-            (r.vector as Buffer).byteOffset,
-            (r.vector as Buffer).byteOffset + (r.vector as Buffer).byteLength,
-          ),
-        ),
-        dims: Number(r.dims),
-        model: String(r.model),
-      }));
+      .all(...(kind ? [peer, kind] : [peer])) as Row[];
+    // 只为缓存未命中的行取 BLOB：命中时省掉整段 12KB/条 的传输与解码。
+    const missing = rows.map((r) => String(r.id)).filter((id) => !this.vectorCache.has(id));
+    for (let i = 0; i < missing.length; i += 400) {
+      const slice = missing.slice(i, i + 400);
+      for (const row of this.sql
+        .prepare(
+          `SELECT id,vector FROM memory_embeddings WHERE id IN (${slice.map(() => '?').join(',')})`,
+        )
+        .all(...slice) as Row[])
+        this.cachedVector(String(row.id), row.vector as Buffer);
+    }
+    return rows.map((r) => ({
+      id: String(r.id),
+      peer_id: String(r.peer_id),
+      kind: String(r.kind) as SourceKind,
+      vector: this.vectorCache.get(String(r.id))!,
+      dims: Number(r.dims),
+      model: String(r.model),
+    }));
   }
   dropEmbeddings(peer: string, ids?: string[]) {
     if (ids) {
       const del = this.sql.prepare('DELETE FROM memory_embeddings WHERE peer_id=? AND id=?');
       this.transaction(() => {
-        for (const id of [...new Set(ids)]) del.run(peer, id);
+        for (const id of [...new Set(ids)]) {
+          del.run(peer, id);
+          this.dropCachedVector(id);
+        }
       });
-    } else this.sql.prepare('DELETE FROM memory_embeddings WHERE peer_id=?').run(peer);
+    } else {
+      this.sql.prepare('DELETE FROM memory_embeddings WHERE peer_id=?').run(peer);
+      // 不知道具体 id：整缓存清空（整联系人删除/换账号是罕见操作）。
+      this.vectorCache.clear();
+    }
   }
   /** 换模型后清掉旧向量：既省空间也不再污染余弦召回，由正常回填补齐。 */
   dropEmbeddingsOfModel(model: string): number {
-    return Number(
+    const changes = Number(
       this.sql.prepare('DELETE FROM memory_embeddings WHERE model=?').run(model).changes,
     );
+    this.vectorCache.clear();
+    return changes;
   }
   staleEmbeddingModels(peer: string, current: string): string[] {
     return this.sql
