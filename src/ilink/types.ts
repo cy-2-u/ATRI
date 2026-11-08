@@ -174,8 +174,6 @@ export interface ILinkClientOptions {
   timeoutMs?: number;
   longPollTimeoutMs?: number;
   cdnBaseUrl?: string;
-  typingTicketTtlMs?: number;
-  typingTicketMaxEntries?: number;
   mediaMaxBytes?: number;
   /** 入站 full_url 之外额外放行的主机（默认仅微信/QQ CDN 域）。 */
   mediaHostAllowlist?: string[];

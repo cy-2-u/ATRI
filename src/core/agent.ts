@@ -647,7 +647,7 @@ export class Agent {
       .map((h) => h.slice(0, 40));
     return [
       capability,
-      renderSelfNow(self, now, this.o.timeZone()),
+      renderSelfNow(self, this.o.timeZone()),
       life
         ? `你的生活流水（都是你真实做过/看过的）：\n${life}`
         : '生活流水还是空的：你还没有做成过什么事。',

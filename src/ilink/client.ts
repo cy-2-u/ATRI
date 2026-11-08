@@ -18,8 +18,8 @@ import { ITEM_TYPE, UPLOAD_MEDIA_TYPE } from './types.js';
 
 const DEFAULT_BASE = 'https://ilinkai.weixin.qq.com';
 const DEFAULT_CDN = 'https://novac2c.cdn.weixin.qq.com/c2c';
-const DEFAULT_TYPING_TICKET_TTL_MS = 20 * 60 * 60 * 1000;
-const DEFAULT_TYPING_TICKET_MAX_ENTRIES = 5000;
+/** typing_ticket 约 24 小时有效，取 20 小时留余量。 */
+const TYPING_TICKET_TTL_MS = 20 * 60 * 60 * 1000;
 const DEFAULT_MEDIA_MAX_BYTES = 12 * 1024 * 1024;
 
 // ---------- CDN 媒体加密 ----------
@@ -111,10 +111,8 @@ export class ILinkClient {
   private timeoutMs: number;
   private longPollTimeoutMs: number;
   private cdnBaseUrl: string;
+  /** 按用户的 typing_ticket 缓存（TTL 读时判定；联系人是个位数，无需淘汰）。 */
   private typingTickets = new Map<string, TypingTicketEntry>();
-  private typingTicketInflight = new Map<string, Promise<string | null>>();
-  private typingTicketTtlMs: number;
-  private typingTicketMaxEntries: number;
   private mediaMaxBytes: number;
   private mediaHostAllowlist: string[];
 
@@ -125,14 +123,6 @@ export class ILinkClient {
     this.timeoutMs = opts.timeoutMs ?? 30_000;
     this.longPollTimeoutMs = opts.longPollTimeoutMs ?? 40_000;
     this.cdnBaseUrl = (opts.cdnBaseUrl ?? DEFAULT_CDN).replace(/\/$/, '');
-    this.typingTicketTtlMs = Math.max(
-      60_000,
-      opts.typingTicketTtlMs ?? DEFAULT_TYPING_TICKET_TTL_MS,
-    );
-    this.typingTicketMaxEntries = Math.max(
-      64,
-      opts.typingTicketMaxEntries ?? DEFAULT_TYPING_TICKET_MAX_ENTRIES,
-    );
     this.mediaMaxBytes = Math.max(1024, opts.mediaMaxBytes ?? DEFAULT_MEDIA_MAX_BYTES);
     this.mediaHostAllowlist = (opts.mediaHostAllowlist ?? []).map((h) => h.trim()).filter(Boolean);
   }
@@ -218,32 +208,24 @@ export class ILinkClient {
     contextToken: string;
     force?: boolean;
   }): Promise<string | null> {
-    const key = params.toUserId;
     if (!params.force) {
-      const cached = this.getCachedTypingTicket(key);
+      const cached = this.getCachedTypingTicket(params.toUserId);
       if (cached) return cached;
-      const inflight = this.typingTicketInflight.get(key);
-      if (inflight) return inflight;
     }
-    const pending = (async (): Promise<string | null> => {
-      try {
-        const res = await this.getConfig({
-          toUserId: params.toUserId,
-          contextToken: params.contextToken,
-        });
-        const ticket = typeof res.typing_ticket === 'string' ? res.typing_ticket.trim() : '';
-        if (!ticket) return null;
-        this.rememberTypingTicket(key, ticket);
-        return ticket;
-      } catch {
-        return null;
-      }
-    })();
-    this.typingTicketInflight.set(key, pending);
     try {
-      return await pending;
-    } finally {
-      if (this.typingTicketInflight.get(key) === pending) this.typingTicketInflight.delete(key);
+      const res = await this.getConfig({
+        toUserId: params.toUserId,
+        contextToken: params.contextToken,
+      });
+      const ticket = typeof res.typing_ticket === 'string' ? res.typing_ticket.trim() : '';
+      if (!ticket) return null;
+      this.typingTickets.set(params.toUserId, {
+        ticket,
+        expiresAt: Date.now() + TYPING_TICKET_TTL_MS,
+      });
+      return ticket;
+    } catch {
+      return null;
     }
   }
 
@@ -303,20 +285,6 @@ export class ILinkClient {
     };
     if (ticket) body.typing_ticket = ticket;
     return this.postJson('/ilink/bot/sendtyping', body);
-  }
-  private rememberTypingTicket(toUserId: string, ticket: string) {
-    const now = Date.now();
-    if (this.typingTickets.size >= this.typingTicketMaxEntries) {
-      for (const [k, v] of this.typingTickets) if (v.expiresAt <= now) this.typingTickets.delete(k);
-      let toDrop = this.typingTickets.size - this.typingTicketMaxEntries + 1;
-      if (toDrop > 0)
-        for (const k of this.typingTickets.keys()) {
-          this.typingTickets.delete(k);
-          if (--toDrop <= 0) break;
-        }
-    }
-    this.typingTickets.delete(toUserId);
-    this.typingTickets.set(toUserId, { ticket, expiresAt: now + this.typingTicketTtlMs });
   }
 
   async getUploadUrl(params: {

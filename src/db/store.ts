@@ -2017,8 +2017,6 @@ export class Store {
     return {
       activity: String(row?.activity ?? ''),
       activity_since: Number(row?.activity_since ?? 0),
-      plan: String(row?.plan ?? ''),
-      plan_day: String(row?.plan_day ?? ''),
       pursuit: String(row?.pursuit ?? ''),
       pursuit_since: Number(row?.pursuit_since ?? 0),
       social: Number(row?.social ?? 1),
@@ -2040,14 +2038,12 @@ export class Store {
     const pursuitSince = pursuit !== current.pursuit ? (pursuit ? now : 0) : current.pursuit_since;
     this.sql
       .prepare(
-        `UPDATE self SET activity=?,activity_since=?,plan=?,plan_day=?,
-         pursuit=?,pursuit_since=?,social=?,express=?,last_stimulus_at=?,updated_at=? WHERE id=1`,
+        `UPDATE self SET activity=?,activity_since=?,pursuit=?,pursuit_since=?,
+         social=?,express=?,last_stimulus_at=?,updated_at=? WHERE id=1`,
       )
       .run(
         patch.activity !== undefined ? patch.activity.slice(0, 120) : current.activity,
         patch.activitySince !== undefined ? patch.activitySince : current.activity_since,
-        patch.plan !== undefined ? patch.plan.slice(0, 300) : current.plan,
-        patch.planDay !== undefined ? patch.planDay : current.plan_day,
         pursuit,
         pursuitSince,
         patch.social !== undefined ? Math.max(0, Math.min(1, patch.social)) : current.social,

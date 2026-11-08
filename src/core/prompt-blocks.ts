@@ -89,12 +89,9 @@ export function renderSelfNow(
   self: {
     activity: string;
     activity_since: number;
-    plan: string;
-    plan_day: string;
     pursuit?: string;
     pursuit_since?: number;
   },
-  now: number,
   timeZone: string,
 ): string {
   const parts: string[] = [];
@@ -104,8 +101,6 @@ export function renderSelfNow(
       : '';
     parts.push(`此刻在做：${self.activity}${since}`);
   }
-  if (self.plan && self.plan_day === sourceFormatter(timeZone).format(new Date(now)).slice(0, 5))
-    parts.push(`今天的打算：${self.plan}`);
   if (self.pursuit) {
     const since = self.pursuit_since
       ? `（从 ${sourceFormatter(timeZone).format(new Date(self.pursuit_since))} 开始）`

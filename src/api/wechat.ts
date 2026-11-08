@@ -307,15 +307,14 @@ export class WeChatBridge implements Transport {
       if (error instanceof ILinkError) {
         const status = error.httpStatus;
         // 408/429 明确可重试：把一切 4xx 当确定性失败会让被限流的气泡
-        // 直接判死并卡住队列。
+        // 直接判死并卡住队列。非零 ret/errcode 是协议拒绝（重试无意义）。
         const permanentStatus =
           status !== undefined && status >= 400 && status < 500 && status !== 408 && status !== 429;
         throw new DeliveryError(
           error.message,
           (error.ret !== undefined && error.ret !== 0) ||
             (error.errcode !== undefined && error.errcode !== 0) ||
-            permanentStatus ||
-            /^HTTP (?!408|429)4\d\d$/.test(error.message),
+            permanentStatus,
         );
       }
       throw error;

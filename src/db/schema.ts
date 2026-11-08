@@ -149,8 +149,6 @@ export interface InitiativeInput {
 export interface SelfState {
   activity: string;
   activity_since: number;
-  plan: string;
-  plan_day: string;
   pursuit: string;
   pursuit_since: number;
   social: number;
@@ -161,8 +159,6 @@ export interface SelfState {
 export interface SelfPatch {
   activity?: string;
   activitySince?: number;
-  plan?: string;
-  planDay?: string;
   /** 设置/更新在追的事（pursuitSince 随内容变化自动落到 now）。 */
   pursuit?: string;
   /** 放下在追的事（pursuit 清空、pursuit_since 归零）。 */
@@ -175,7 +171,7 @@ export interface SelfPatch {
 export interface LifeEntry {
   id: number;
   at: number;
-  /** did=做成了事 saw=看了什么 said=说了什么（主动消息由头） plan=今日打算 */
+  /** did=做成了事 saw=看了什么 said=说了什么（主动消息由头） */
   kind: string;
   text: string;
   artifact: string;
@@ -334,7 +330,7 @@ export const parse = <T>(value: unknown, fallback: T): T => {
 };
 
 /** 当前数据形态版本。与 4.0 时代的 atri.db 版本号连续，旧库可直接打开。 */
-export const SCHEMA_VERSION = 13;
+export const SCHEMA_VERSION = 14;
 
 /** 建库 + 旧库升级，幂等：任何版本的库（含 4.0 的 atri.db）都能一步到
  *  最新形态。目标形态全部是 CREATE IF NOT EXISTS 与守卫 ALTER，历史上
@@ -437,7 +433,6 @@ export function migrate(sql: import('node:sqlite').DatabaseSync): void {
       CREATE TABLE IF NOT EXISTS self (
         id INTEGER PRIMARY KEY CHECK(id=1),
         activity TEXT NOT NULL DEFAULT '', activity_since INTEGER NOT NULL DEFAULT 0,
-        plan TEXT NOT NULL DEFAULT '', plan_day TEXT NOT NULL DEFAULT '',
         pursuit TEXT NOT NULL DEFAULT '', pursuit_since INTEGER NOT NULL DEFAULT 0,
         social REAL NOT NULL DEFAULT 1, express REAL NOT NULL DEFAULT 0,
         last_stimulus_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0
