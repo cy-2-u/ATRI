@@ -13,6 +13,8 @@ backups/
 *.log
 *.tsbuildinfo
 restore.compose.yaml
+# simulate-month.ts 的转写输出（每次运行都变，是证据不是源码）。
+/simulation-month-transcript.md
 /sandbox/
 xing-sandbox-*/
 .idea/

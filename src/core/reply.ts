@@ -602,6 +602,7 @@ export function parsePulseOutput(raw: unknown, stickers: Sticker[]): ParsedPulse
   if (action === 'muse' && !thought) throw new Error('muse 没有念头内容');
   if (action !== 'speak' && Array.isArray(value.messages) && value.messages.length)
     throw new Error('非 speak 的心跳不应携带 messages');
+  const moodPulse = parseMoodPulse(value.moodPulse);
   return {
     action: action as PulseAction,
     parts,
@@ -613,7 +614,7 @@ export function parsePulseOutput(raw: unknown, stickers: Sticker[]): ParsedPulse
     // "不想追了"，与自Activity同一种"清空是真实意图"的处理。
     ...(typeof value.pursuit === 'string' ? { pursuit: value.pursuit.trim().slice(0, 120) } : {}),
     memories: parseMemories(value.memoryUpdates),
-    ...(parseMoodPulse(value.moodPulse) ? { moodPulse: parseMoodPulse(value.moodPulse) } : {}),
+    ...(moodPulse ? { moodPulse } : {}),
     resolveLoops: Array.isArray(value.resolveLoops)
       ? value.resolveLoops
           .filter((s: unknown): s is string => typeof s === 'string')
