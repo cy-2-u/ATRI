@@ -9,9 +9,8 @@
     "noEmit": true,
     "skipLibCheck": true,
     "esModuleInterop": true,
-    "resolveJsonModule": true,
     "types": ["node"],
     "lib": ["ES2023", "DOM", "DOM.Iterable"]
   },
-  "include": ["src/**/*.ts", "scripts/**/*.ts", "test/**/*.ts"]
+  "include": ["src/**/*.ts", "test/**/*.ts", "scripts/**/*.ts"]
 }

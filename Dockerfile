@@ -19,7 +19,7 @@ RUN npm run typecheck && npm run build && npm prune --omit=dev --no-audit --no-f
 
 FROM node:24-bookworm-slim
 WORKDIR /app
-ENV NODE_ENV=production HOST=0.0.0.0 PORT=3000 DATA_DIR=/data
+ENV NODE_ENV=production XING_PORT=3000
 COPY --from=nsjail /src/nsjail/nsjail /usr/local/bin/nsjail
 RUN apt-get update && apt-get install -y --no-install-recommends \
       libprotobuf32 libnl-route-3-200 \
@@ -37,5 +37,5 @@ USER node
 VOLUME ["/data", "/sandbox"]
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s \
-  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
-CMD ["node", "dist/server.js"]
+  CMD node -e "fetch('http://127.0.0.1:'+(process.env.XING_PORT||3000)+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+CMD ["node", "dist/index.js"]

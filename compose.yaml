@@ -1,7 +1,7 @@
 services:
-  xing:
+  atri:
     build: .
-    image: xing:local
+    image: atri:local
     restart: unless-stopped
     # nsjail 需要在容器内建挂载树，Docker 默认安全配置不给这个权限，
     # 必须 privileged；模型能触达的范围仍被命名空间收窄（系统目录只读、
@@ -10,15 +10,16 @@ services:
     privileged: true
     env_file: .env
     environment:
-      DATA_DIR: /data
-      HOST: 0.0.0.0
-      PORT: 3000
+      XING_DATA_DIR: /data
+      XING_SANDBOX_DIR: /sandbox
+      XING_BIND: 0.0.0.0
+      XING_PORT: 3000
     ports:
       - '${XING_BIND:-127.0.0.1}:${XING_PORT:-3000}:3000'
     volumes:
-      - xing-data:/data
+      - atri-data:/data
       # 她的工作目录必须在 /data 之外：nsjail 会把 /data 遮蔽成空 tmpfs。
-      - xing-sandbox:/sandbox
+      - atri-sandbox:/sandbox
     logging:
       driver: json-file
       options:
@@ -26,5 +27,5 @@ services:
         max-file: '3'
     stop_grace_period: 45s
 volumes:
-  xing-data:
-  xing-sandbox:
+  atri-data:
+  atri-sandbox:

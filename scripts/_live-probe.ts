@@ -1,113 +1,62 @@
-/** 模型管线探针：用真实模型走完整对话管线（提示词组装→解析→投递），
- *  打印模型原始输出与实际投递的差异，用于更换渠道/模型后的实测。
- *  密钥与端点只从环境变量读（XING_LIVE_URL / XING_LIVE_KEY / XING_LIVE_MODEL），
- *  不进仓库。运行：npx tsx scripts/_live-probe.ts <要说的第几句>...（默认三句固定台词） */
-import { mkdtempSync, readFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { Store } from '../src/db/index.js';
-import { HttpModel, type Completion } from '../src/llm.js';
-import { Runtime, type Sticker } from '../src/core/index.js';
+import { ModelRouter } from '../src/model/router.js';
+import { httpTransport } from '../src/model/http.js';
+import type { Endpoint } from '../src/model/types.js';
 
-const url = process.env.XING_LIVE_URL ?? '';
-const key = process.env.XING_LIVE_KEY ?? '';
-const modelName = process.env.XING_LIVE_MODEL ?? '';
-if (!url || !key || !modelName)
-  throw new Error('需要环境变量 XING_LIVE_URL / XING_LIVE_KEY / XING_LIVE_MODEL');
+/** 真机管线探针：换渠道/模型后手动跑一次，验证主渠道与备用渠道都能
+ *  完成“编码→请求→解码→工具契约”的整条链路。密钥只走环境变量。
+ *
+ *  XING_LIVE_URL / XING_LIVE_KEY / XING_LIVE_MODEL 必填；
+ *  XING_LIVE_FORMAT=openai|anthropic|gemini（默认 openai）；
+ *  XING_LIVE_FALLBACK_URL/KEY/MODEL 可选，同时验证备用。 */
 
-const stickers: Sticker[] = JSON.parse(
-  readFileSync(join(process.cwd(), 'assets', 'stickers', 'catalog.json'), 'utf8'),
+const required = (name: string): string => {
+  const value = process.env[name];
+  if (!value) {
+    console.error(`缺少环境变量 ${name}`);
+    process.exit(1);
+  }
+  return value;
+};
+
+const endpoint = (prefix: string): Endpoint => ({
+  format: (process.env[`${prefix}_FORMAT`] || 'openai') as Endpoint['format'],
+  baseUrl: required(`${prefix}_URL`),
+  apiKey: required(`${prefix}_KEY`),
+  model: required(`${prefix}_MODEL`),
+  vision: false,
+  timeoutMs: 60_000,
+  maxTokens: 300,
+  inputTokens: 8000,
+  retries: 1,
+});
+
+const router = new ModelRouter(
+  () => ({
+    primary: endpoint('XING_LIVE'),
+    ...(process.env.XING_LIVE_FALLBACK_MODEL ? { fallback: endpoint('XING_LIVE_FALLBACK') } : {}),
+  }),
+  httpTransport,
 );
 
-let rawDump = '';
-class LoggingModel extends HttpModel {
-  async complete(...args: Parameters<typeof HttpModel.prototype.complete>): Promise<Completion> {
-    const result = await super.complete(...args);
-    rawDump = result.text;
-    return result;
-  }
-}
+const messages = [
+  { role: 'system' as const, content: '你是管线探针。收到任何输入都只返回 JSON：{"ok":true}。' },
+  { role: 'user' as const, content: '探针测试。' },
+];
 
-const model = new LoggingModel({
-  baseUrl: url,
-  apiKey: key,
-  model: modelName,
-  format: 'openai',
-  vision: false,
-  maxTokens: 800, // 省钱：聊天回复用不了多少
-  timeoutMs: 90000,
-  contextWindowTokens: 65536,
-  inputBudgetTokens: 24000,
-});
-
-const store = new Store(join(mkdtempSync(join(tmpdir(), 'xing-live-')), 'xing.db'));
-const delivered: { kind: string; text: string; slug?: string }[] = [];
-const runtime = new Runtime({
-  store,
-  model: () => model,
-  prompt: (name) => readFileSync(join(process.cwd(), 'shared', 'prompts', `${name}.md`), 'utf8'),
-  stickers: () => stickers,
-  web: {
-    search: async () => {
-      throw new Error('探针不联网');
-    },
-    open: async (u) => ({ url: u, content: '', fetchedAt: '' }),
-  },
-  config: () => ({
-    timeZone: 'Asia/Shanghai',
-    diaryHour: 3,
-    proactiveEnabled: false,
-    sleepStart: 1,
-    sleepEnd: 7,
-    clinginess: 50,
-    debounceMs: 0,
-    maxConcurrentPeers: 1,
-    turnTimeoutMs: 120000,
-    contextTokens: 24000,
-  }),
-  timeZone: () => 'Asia/Shanghai',
-  contextTokens: () => 24000,
-  turnTimeoutMs: () => 120000,
-  transport: {
-    send: async (_peer, part) => {
-      delivered.push(
-        part.type === 'text'
-          ? { kind: 'text', text: part.text ?? '' }
-          : { kind: 'sticker', text: '', slug: part.slug },
-      );
-    },
-  },
-  log: (m, d) => console.warn('[runtime]', m, d ?? ''),
-});
-const PEER = 'wechat:probe:user';
-store.ensurePeer(PEER, 'wechat', '探针', '', true);
-
-const lines = process.argv.slice(2);
-const turns = lines.length
-  ? lines
-  : ['在吗？随便聊聊', '发个表情包看看嘛', '你就当我刚甩过来一个沙雕猫猫头吧'];
-
-for (const [i, text] of turns.entries()) {
-  console.log(`\n===== 第 ${i + 1} 轮 =====\n我：${text}`);
-  rawDump = '';
-  runtime.accept(PEER, `probe-${i}`, text);
-  await runtime.drain(120000);
-  console.log(`--- 模型原始输出（前 600 字） ---\n${rawDump.slice(0, 600)}`);
-  console.log('--- 实际投递 ---');
-  if (!delivered.length) console.log('（无——解析失败或被过滤）');
-  for (const d of delivered)
-    console.log(
-      d.kind === 'sticker' ? `  [表情图片] slug=${d.slug}` : `  [文字] ${JSON.stringify(d.text)}`,
-    );
-  delivered.length = 0;
-}
-console.log('\n===== 落库状态 =====');
-console.log(`心情：${JSON.stringify(store.mood(PEER))}`);
-for (const m of store.memories(PEER))
+const started = Date.now();
+try {
+  const completion = await router.complete(messages, [], { deadlineAt: Date.now() + 120_000 });
   console.log(
-    `记忆[${m.kind}]：${m.content.slice(0, 40)}（importance=${m.importance}${m.emotion ? ` emotion=${m.emotion}` : ''}）`,
+    `✅ 完成（${Date.now() - started}ms，渠道=${completion.channel}，模型=${completion.model}）`,
   );
-for (const l of store.openLoops(PEER, true))
-  console.log(`开环：${l.content}（due=${new Date(l.due_at).toLocaleString('zh-CN')}）`);
-await runtime.stop();
-store.close();
+  console.log(
+    `   usage: in=${completion.usage.input} out=${completion.usage.output} cached=${completion.usage.cached}`,
+  );
+  console.log(`   回复：${completion.message.content.slice(0, 120)}`);
+} catch (error) {
+  console.error(
+    `❌ 失败（${Date.now() - started}ms）：`,
+    error instanceof AggregateError ? error.errors : error,
+  );
+  process.exit(1);
+}

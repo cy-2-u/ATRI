@@ -1,6 +1,6 @@
 {
   "name": "xing",
-  "version": "5.0.0",
+  "version": "6.0.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -9,13 +9,15 @@
   "scripts": {
     "dev": "node --env-file-if-exists=.env --import tsx src/index.ts",
     "build": "node scripts/build.mjs",
-    "start": "node --env-file-if-exists=.env dist/server.js",
+    "start": "node --env-file-if-exists=.env dist/index.js",
     "typecheck": "tsc --noEmit",
-    "test": "node test/run.mjs",
+    "test": "node --import tsx --test test/*.test.ts",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "check": "npm run typecheck && npm run format:check && npm test && npm run build",
-    "backup": "node --env-file-if-exists=.env dist/backup.js"
+    "backup": "node --env-file-if-exists=.env dist/backup.js",
+    "restore": "node --env-file-if-exists=.env dist/restore.js",
+    "migrate": "node --env-file-if-exists=.env dist/migrate.js"
   },
   "dependencies": {
     "fastify": "^5.6.0",
