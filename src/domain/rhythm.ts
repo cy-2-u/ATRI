@@ -60,35 +60,77 @@ export function dayKeyOf(at: number, timeZone: string): string {
 }
 
 const sleepWindowCache = new Map<string, { startMin: number; endMin: number }>();
-/** 抖动后的当日睡眠窗（按天缓存：同一天内每次询问得到同一结果）。 */
+/** 某一天的睡眠窗：日期抖动 + 当晚唤醒度推迟入睡。arousalMin 是纯代码
+ *  从当天晚间经历算出的推迟分钟数（封顶 60）——热闹的夜晚睡得晚，这
+ *  仍是身体，不是模型说了算。startMin === endMin 仍表示整日不眠。 */
 export function sleepWindow(
-  at: number,
-  timeZone: string,
+  day: string,
   startMin: number,
   endMin: number,
+  arousalMin = 0,
 ): { startMin: number; endMin: number } {
-  const day = dayKeyOf(at, timeZone);
-  const key = `${day}|${startMin}|${endMin}`;
+  const key = `${day}|${startMin}|${endMin}|${arousalMin}`;
   let window = sleepWindowCache.get(key);
   if (!window) {
-    window = jitteredSleepWindow(day, startMin, endMin);
+    const jittered = jitteredSleepWindow(day, startMin, endMin);
+    const start = (((jittered.startMin + Math.max(0, arousalMin)) % 1440) + 1440) % 1440;
+    window = { startMin: start, endMin: jittered.endMin };
     if (sleepWindowCache.size > 64) sleepWindowCache.clear();
     sleepWindowCache.set(key, window);
   }
   return window;
 }
 
+/** 唤醒度的事件日归属：此刻的睡眠若在"夜尾段"（本地分钟早于当天抖动
+ *  后的醒来时刻），入睡发生在当天凌晨——那份热闹属于**前一晚**；否则
+ *  属于当天晚上。归属边界必须用抖动后的实际终点：配置值 420 的早晨
+ *  6:00–7:45 段会跨过它，用配置值切会把"昨晚的入睡"算到今晚头上。 */
+export function sleepDayKeyOf(
+  at: number,
+  timeZone: string,
+  startMin: number,
+  endMin: number,
+): string {
+  const day = dayKeyOf(at, timeZone);
+  const end = jitteredSleepWindow(day, startMin, endMin).endMin;
+  return minutesOfDay(at, timeZone) < end ? dayKeyOf(at - 12 * 3600000, timeZone) : day;
+}
+
+/** 当晚唤醒度 → 入睡推迟分钟：18 点后的每段经历（说话、做事）都让身体
+ *  多清醒一会儿。封顶一小时——熬夜有代价，但兴奋的夜晚确实睡不着。 */
+export function eveningArousalMinutes(
+  events: { kind: string; created_at: number }[],
+  day: string,
+  timeZone: string,
+): number {
+  let lively = 0;
+  for (const event of events)
+    if (
+      dayKeyOf(event.created_at, timeZone) === day &&
+      minutesOfDay(event.created_at, timeZone) >= 1080
+    )
+      lively++;
+  return Math.min(60, lively * 6);
+}
+
 /** 给定时刻之后最近的"醒来"时刻：due 落在睡眠窗内就推到窗结束。
- *  分钟加法对时刻戳成立（比较都用 minutesOfDay），跨午夜窗两个时段
- *  （尾段到今日 e 点、首段到明日 e 点）统一由 delta 覆盖。 */
+ *  判定窗就是 due 所在日历日的窗——睡眠段（夜里入睡段与凌晨尾段）
+ *  完整落在同一天，不存在跨归属问题；arousalMin 是调用方按
+ *  sleepDayKeyOf 归属好的"今晚"推迟量。 */
 export function nextWakeAfter(
   due: number,
   timeZone: string,
   startMin: number,
   endMin: number,
+  arousalMin = 0,
 ): number {
   if (startMin === endMin) return due;
-  const { startMin: s, endMin: e } = sleepWindow(due, timeZone, startMin, endMin);
+  const { startMin: s, endMin: e } = sleepWindow(
+    dayKeyOf(due, timeZone),
+    startMin,
+    endMin,
+    arousalMin,
+  );
   const minute = minutesOfDay(due, timeZone);
   if (!inSleepMinutes(minute, s, e)) return due;
   let delta = e - minute;

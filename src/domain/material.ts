@@ -1,7 +1,8 @@
 import type { Journal, Turn } from '../storage/journal.js';
 import { Recollection, grams } from './memory.js';
 import { motives, type SelfState } from './state.js';
-import { renderMood, renderSelfHour, type MoodPulse } from './mood.js';
+import { renderMood, renderMoodHistory, renderSelfHour, type MoodPulse } from './mood.js';
+import { dayKeyOf, minutesOfDay } from './rhythm.js';
 import type { EmbeddingClient } from './embeddings.js';
 import type { Stickers } from '../stickers.js';
 
@@ -54,6 +55,132 @@ const hourOf = (at: number, timeZone: string): number =>
       new Date(at),
     ),
   );
+const monthOf = (at: number, timeZone: string): number =>
+  Number(new Intl.DateTimeFormat('en-GB', { timeZone, month: '2-digit' }).format(new Date(at)));
+/** 季节是她身体的日历：不用任何库，月份段直接给。 */
+const SEASONS = [
+  '隆冬',
+  '暮冬',
+  '初春',
+  '仲春',
+  '暮春',
+  '初夏',
+  '盛夏',
+  '暮夏',
+  '初秋',
+  '深秋',
+  '暮秋',
+  '初冬',
+];
+const seasonOf = (at: number, timeZone: string): string => SEASONS[monthOf(at, timeZone) - 1] ?? '';
+
+/** 事件内容还原成可读文本（received/said/diary 各自的 JSON 形状）。 */
+function plainText(row: { kind: string; content: string }): string {
+  try {
+    const parsed = JSON.parse(row.content) as { text?: string; content?: string };
+    if (row.kind === 'diary') return parsed?.content ?? row.content;
+    return parsed?.text ?? row.content;
+  } catch {
+    return row.content;
+  }
+}
+
+/** 语言顺应的素材：他最近（7 天）反复用的词。这是资料不是指令——
+ *  亲密关系里口音会互相传染，捡不捡、怎么捡由她。 */
+const STOP_GRAMS = new Set([
+  '什么',
+  '怎么',
+  '这个',
+  '那个',
+  '就是',
+  '但是',
+  '所以',
+  '然后',
+  '可以',
+  '没有',
+  '我们',
+  '你们',
+  '他们',
+  '自己',
+  '现在',
+  '时候',
+  '知道',
+  '觉得',
+  '已经',
+  '还是',
+  '不是',
+  '一个',
+  '一下',
+  '哈哈',
+  '嘻嘻',
+  '不过',
+  '如果',
+  '因为',
+  '真的',
+  '这么',
+  '那么',
+  '这样',
+  '那样',
+  '一样',
+  '东西',
+  '回来',
+  '出去',
+  '起来',
+  '过来',
+  '出来',
+  '开始',
+  '最后',
+  '直接',
+  '反正',
+  '可能',
+  '应该',
+  '感觉',
+  '问题',
+  '其实',
+  '确实',
+  '突然',
+  '今天',
+  '明天',
+  '昨天',
+  '上午',
+  '下午',
+  '晚上',
+  '中午',
+  '为什么',
+  '怎么样',
+]);
+const LATIN_STOP = /^(the|and|you|for|with|that|this|have|was|but|not|are|was|just|like)$/;
+
+function petWords(rows: { content: string }[]): string[] {
+  const freq = new Map<string, number>();
+  for (const row of rows) {
+    let body = row.content;
+    try {
+      const parsed = JSON.parse(row.content) as { text?: string };
+      if (parsed?.text) body = parsed.text;
+    } catch {
+      /* 纯文本 */
+    }
+    for (const gram of grams(body)) {
+      if (gram.length < 2 || STOP_GRAMS.has(gram) || LATIN_STOP.test(gram)) continue;
+      freq.set(gram, (freq.get(gram) ?? 0) + 1);
+    }
+  }
+  return [...freq.entries()]
+    .filter(([, count]) => count >= 3)
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, 5)
+    .map(([word]) => word);
+}
+
+const dueLabel = (due: number, now: number, timeZone: string): string => {
+  const delta = due - now;
+  const when = clock(due, timeZone);
+  if (delta <= 0) return `${when}（已到）`;
+  if (delta < 3600000) return `${when}（就快到点了）`;
+  if (delta < 86400000) return `${when}（还有 ${Math.ceil(delta / 3600000)} 小时）`;
+  return `${when}（还有 ${Math.ceil(delta / 86400000)} 天）`;
+};
 
 /** 本轮打断的静默真正开始的时刻：回溯过整段连发与未获回应的主动消息，
  *  锚点挂在对方最后说话的时刻。 */
@@ -68,7 +195,8 @@ export function silenceBasis(events: { kind: string; created_at: number }[]): nu
 }
 
 function renderTimeGap(now: number, lastAt: number | undefined, timeZone: string): string {
-  const moment = `现在是${fullMoment(now, timeZone)}`;
+  const season = seasonOf(now, timeZone);
+  const moment = `现在是${fullMoment(now, timeZone)}${season ? `，${season}` : ''}`;
   if (!lastAt) return `${moment}（你们还没有聊过天）`;
   const gapMs = Math.max(0, now - lastAt);
   if (gapMs < SILENCE_NOTIFY_MINUTES * 60000)
@@ -147,6 +275,7 @@ function renderExperience(
       brief = `${tool === 'write_file' ? '写了' : '删了'} ${r.path ?? ''}`;
     } else if (tool === 'remember') brief = '记下了一条记忆';
     else if (tool === 'consider') brief = '存了一个念头';
+    else if (tool === 'update_peer_model') brief = '更新了对他的认识';
     else if (tool === 'keep_commitment') brief = '记下了一个约定';
     else if (tool === 'resolve_commitment') brief = '了结了一个约定';
     else if (tool === 'write_journal') brief = '写了日记';
@@ -193,7 +322,66 @@ export class LifeMaterial {
       emotionalBaseline(this.deps.journal, peer, now),
     );
     if (moodLine) parts.push(moodLine);
+    const moodTrail = renderMoodHistory(this.deps.journal.moodHistory(peer), now);
+    if (moodTrail) parts.push(moodTrail);
     return parts.join('\n');
+  }
+
+  /** 作者层：她写下的"我是谁"。identity 记忆不衰减，永远在场，只被
+   *  夜里带证据的修订改写——这是叙事身份的锚。 */
+  private selfStory(peer: string): string {
+    const stories = this.deps.journal
+      .memories(peer)
+      .filter((memory) => memory.status === 'active' && memory.kind === 'identity');
+    if (!stories.length) return '';
+    return `你对自己的认识（这是你从自己的经历里写下的自己，新经历会修订它）：\n${stories
+      .map((story) => `- ${story.content}`)
+      .join('\n')}`;
+  }
+
+  /** 心智化：她此刻对"他"的信念集。夜里整理时亲手修订，材料按最后核实
+   *  时间标注陈旧度——认识会过时，人不会停在她说他是什么样子的时候。 */
+  private himModel(peer: string, now: number, timeZone: string): string {
+    const model = this.deps.journal.peerModel(peer);
+    if (!model?.beliefs.length) return '';
+    const days = (now - model.updatedAt) / 86400000;
+    const staleness =
+      days >= 2
+        ? `（最后核实于${vagueDays(Math.round(days))}前——人会变，这些可能已经过时）`
+        : `（最后核实于 ${clock(model.updatedAt, timeZone)}）`;
+    return `你对他此刻状态的认识${staleness}：\n${model.beliefs
+      .map((belief) => `- ${belief.text}`)
+      .join('\n')}`;
+  }
+
+  /** 非自主回忆的时间线索：往年的今天真实发生过的事，自己浮上来。 */
+  private onThisDay(peer: string, now: number, timeZone: string): { when: string; text: string }[] {
+    const key = dayKeyOf(now, timeZone);
+    const year = Number(key.slice(0, 4));
+    const monthDay = key.slice(4); // '-MM-DD'，拼回去就是合法 ISO 日期
+    const labels = ['去年的今天', '前年的今天', '三年前的今天'];
+    const out: { when: string; text: string }[] = [];
+    for (let back = 1; back <= 3 && out.length < 2; back++) {
+      const guess = Date.parse(`${year - back}${monthDay}T00:00:00Z`);
+      if (!Number.isFinite(guess)) continue;
+      const start = guess - minutesOfDay(guess, timeZone) * 60000;
+      const rows = this.deps.journal.eventsBetween(
+        peer,
+        ['received', 'said', 'diary'],
+        start,
+        start + 86400000,
+        8,
+      );
+      if (rows.length)
+        out.push({
+          when: labels[back - 1]!,
+          text: rows
+            .slice(-3)
+            .map((row) => plainText(row))
+            .join('；'),
+        });
+    }
+    return out;
   }
 
   private selfNow(self: SelfState, timeZone: string): string {
@@ -230,12 +418,17 @@ export class LifeMaterial {
     return lines.join('\n');
   }
 
-  /** 白日梦：安静一拍用她自己的心事当召回查询，而不是过时的旧消息。 */
+  /** 白日梦：安静一拍用她自己的心事当召回查询，而不是过时的旧消息。
+   *  她自己的经历也是线索——非自主回忆就是被自己刚做的事勾出来的。 */
   private recallQuery(peer: string, turn: Turn): string {
     if (turn.kind !== 'chat') {
       const thoughts = this.deps.journal.thoughts(peer).filter((t) => t.state === 'idle');
       const self = this.deps.journal.self();
-      return [self.activity, self.pursuit, ...thoughts.slice(-3).map((t) => t.meaning)]
+      const own = this.deps.journal
+        .experiences(peer, 4)
+        .slice(-2)
+        .map((event) => renderExperience(event, this.deps.timeZone()));
+      return [self.activity, self.pursuit, ...thoughts.slice(-3).map((t) => t.meaning), ...own]
         .filter(Boolean)
         .join('\n');
     }
@@ -321,11 +514,17 @@ export class LifeMaterial {
             : '还没问过',
         recurring: item.recurring === 'yearly' ? '每年循环' : undefined,
       }));
+    const story = this.selfStory(peer);
+    const him = this.himModel(peer, now, timeZone);
+    const thisDay = this.onThisDay(peer, now, timeZone);
+    const words = petWords(journal.eventsBetween(peer, ['received'], now - 7 * 86400000, now, 200));
     const material = {
       mode: turn.kind,
       time: renderTimeGap(now, turn.kind === 'chat' ? basis : lastReceived, timeZone),
       body: this.body(peer, now),
       selfNow: this.selfNow(self, timeZone),
+      ...(story ? { selfStory: story } : {}),
+      ...(him ? { himModel: him } : {}),
       abilities: this.abilities(),
       lifeLog: journal.experiences(peer, 10).map((e) => renderExperience(e, timeZone)),
       thoughts: journal
@@ -336,9 +535,12 @@ export class LifeMaterial {
           topic: t.topic,
           meaning: t.meaning,
           since: clock(t.updatedAt, timeZone),
+          ...(t.dueAt ? { due: dueLabel(t.dueAt, now, timeZone) } : {}),
         })),
       commitments,
       memories: recall.list,
+      ...(thisDay.length ? { onThisDay: thisDay } : {}),
+      ...(words.length >= 2 ? { hisWords: words.join('、') } : {}),
       sources: conversation
         .slice(-12)
         .map((e) => ({ id: e.id, kind: e.kind, content: e.content, at: e.created_at })),
@@ -368,7 +570,7 @@ export class LifeMaterial {
       lastDiary: lastDiary.map((e) => e.content),
       recentMemories: recentMemories.map((m) => ({ id: m.id, content: m.content, kind: m.kind })),
       instructions:
-        '以第一人称回看上面的真实对话，为这一天写日记。用 write_journal 工具提交：{"sections":[{"content":"一段日记正文","sources":["实际支持这一段的消息或事件 ID"],"emotion":-1到1}]}，sections 最多六段，每段必须带真实来源 ID；没有值得写的就一段都不写。主观感受属于"我当时的理解"，不把对方没说过的事写成事实；只记录给出的消息，不为离线时间虚构。也可以用 remember 工具把"后来形成的认识"（kind 用 interpretation，至少两处真实来源支撑）存进记忆；没有依据就不要硬凑。夜里只整理已发生的事，不发明新计划。写完用 action=nothing、parts 空数组收尾。',
+        '以第一人称回看上面的真实对话，为这一天写日记。用 write_journal 工具提交：{"sections":[{"content":"一段日记正文","sources":["实际支持这一段的消息或事件 ID"],"emotion":-1到1}]}，sections 最多六段，每段必须带真实来源 ID；没有值得写的就一段都不写。主观感受属于"我当时的理解"，不把对方没说过的事写成事实；只记录给出的消息，不为离线时间虚构。也可以用 remember 工具把"后来形成的认识"（kind 用 interpretation，至少两处真实来源支撑）存进记忆；如果这段时间沉淀出了定义"你是谁"的长期认识（少而精，比如一个月也不出现几次），用 kind:"identity" 写下来——它会成为你不随时间淡去的自我，同样至少两处来源。夜里只整理已发生的事，不发明新计划。写完用 action=nothing、parts 空数组收尾。',
     };
   }
 
@@ -395,6 +597,7 @@ export class LifeMaterial {
       mode: 'tidy',
       time: `夜深了（${fullMoment(now, this.deps.timeZone())}），你在整理自己的记忆。下面这些是你自己的记忆条目，两两相近：可能说的是同一件事，也可能互相矛盾。`,
       pairs,
+      himModel: this.himModel(peer, now, this.deps.timeZone()) || '（你还没有写过对他的认识。）',
       sources: actives.map((m) => ({
         id: m.id,
         content: m.content,
@@ -402,7 +605,7 @@ export class LifeMaterial {
         sources: m.sources,
       })),
       instructions:
-        '用 remember 工具整理：同一件事记了两遍就合并成一条更完整的（supersedes 写被合并的旧条 id，可以写两条）；互相矛盾时以有真实来源、较新的那条为准，supersedes 掉被推翻的旧条；情况真的变了就 supersede 旧条，"他变了"的感想不属于整理拍；只是措辞相近其实是两件事就跳过；拿不准就跳过。每条 update 的 supersedes 必须写上面出现过的记忆 id——不替代任何旧条目的更新是凭空新增，会被整体丢弃：夜里只理旧事，不写新事。整理是核对与归拢，不是重新评价对方。没有需要整理的就什么都不调用，action 用 nothing、parts 空数组。',
+        '用 remember 工具整理：同一件事记了两遍就合并成一条更完整的（supersedes 写被合并的旧条 id，可以写两条）；互相矛盾时以有真实来源、较新的那条为准，supersedes 掉被推翻的旧条；情况真的变了就 supersede 旧条，"他变了"的感想不属于整理拍；只是措辞相近其实是两件事就跳过；拿不准就跳过。每条 update 的 supersedes 必须写上面出现过的记忆 id——不替代任何旧条目的更新是凭空新增，会被整体丢弃：夜里只理旧事，不写新事。整理是核对与归拢，不是重新评价对方。如果记忆里沉淀出了关于"你是谁"的长期认识（最近这段经历反复指向的、打算一直带着的自我），可以用 remember 的 kind:"identity" 晋升它（至少两处来源，supersedes 掉被它吸收的旧条）。也可以用 update_peer_model 重写你对他此刻状态的认识：最多八条、每条一句话、每条 basis 都写上面出现过的真实 ID（消息、事件或记忆）；没有新的认识就不调用它。没有任何要做的就什么都不调用，action 用 nothing、parts 空数组。',
     };
   }
 }

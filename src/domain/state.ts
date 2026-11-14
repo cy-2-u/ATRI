@@ -9,6 +9,10 @@ export interface SelfState {
   activitySince: number;
   pursuit: string;
   pursuitSince: number;
+  /** 黏人度是她自己的属性：从相处里长出来（relation.ts 每天一小步），
+   *  配置里的数值只是第一次的种子。0–1。 */
+  closeness: number;
+  closenessDay: string;
 }
 
 export interface Mood {
@@ -18,7 +22,8 @@ export interface Mood {
   at: number;
 }
 
-const clamp = (value: number, min = 0, max = 1): number => Math.min(max, Math.max(min, value));
+export const clamp = (value: number, min = 0, max = 1): number =>
+  Math.min(max, Math.max(min, value));
 
 export function initialSelf(now: number): SelfState {
   return {
@@ -32,10 +37,13 @@ export function initialSelf(now: number): SelfState {
     activitySince: now,
     pursuit: '',
     pursuitSince: now,
+    closeness: 0.5,
+    closenessDay: '',
   };
 }
 
 // 时间积分只依赖 integratedAt；修改正在做的事不会吞掉这段时间。
+// 旧库存档没有 closeness/closenessDay：补默认值，让升级无缝。
 export function projectSelf(state: SelfState, now: number): SelfState {
   const hours = Math.max(0, now - state.integratedAt) / 3_600_000;
   return {
@@ -43,6 +51,8 @@ export function projectSelf(state: SelfState, now: number): SelfState {
     social: clamp(state.social + hours / 6),
     expression: state.expression * 2 ** (-hours / 2),
     integratedAt: Math.max(now, state.integratedAt),
+    closeness: clamp(state.closeness ?? 0.5),
+    closenessDay: state.closenessDay ?? '',
   };
 }
 
@@ -166,7 +176,7 @@ export function beatDelay(
   random = Math.random(),
 ): number {
   const needs = motives(state, now);
-  let minutes = 90 - 72 * clamp(closeness / 100);
+  let minutes = 90 - 72 * clamp(closeness);
   if (state.lastReceivedAt && now - state.lastReceivedAt < 15 * 60_000)
     minutes = Math.min(minutes, 5);
   if (Math.max(needs.boredom, needs.longing, state.expression) > 0.75) minutes *= 0.55;

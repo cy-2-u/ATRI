@@ -216,7 +216,7 @@ function renderSelfChips(status, config) {
     ['状态', self.activity || '没有在做特定的事'],
     ['在追', self.pursuit || '—'],
     ['心情', mood ? `愉悦 ${mood.valence.toFixed(2)} / 精力 ${mood.energy.toFixed(2)}${mood.reason ? `（${mood.reason}）` : ''}` : '平静'],
-    ['心跳', config.heartbeat ? `开（黏人度 ${config.closeness}）` : '关', config.heartbeat],
+    ['心跳', config.heartbeat ? `开（黏人度 ${Math.round(((status.self?.closeness ?? 0.5) * 100))}，由相处自己长）` : '关', config.heartbeat],
     ['渠道', channel.cooldownUntil > Date.now() ? `主渠道冷却至 ${timeText(channel.cooldownUntil)}` : channel.probing ? '主渠道恢复探测中' : channel.failures ? `主渠道连续失败 ${channel.failures} 次` : '正常', !channel.failures],
     ['队列', jobs.length ? jobs.map(j => `${j.kind}@${timeText(j.due_at)}`).join('、') : '空'],
   ];
@@ -281,7 +281,7 @@ async function refreshJournal() {
     if (journalSub === 'memories') {
       const memories = await api('/api/memories');
       return memories.filter(m => m.status === 'active').map(m => ({
-        id: m.id, at: m.createdAt, title: `${m.kind === 'stated' ? '他说的' : '我的理解'} · 清晰度 ${(m.detail * 100).toFixed(0)}%${m.pinned ? ' · 钉住' : ''}`,
+        id: m.id, at: m.createdAt, title: `${m.kind === 'stated' ? '他说的' : m.kind === 'identity' ? '我是谁' : '我的理解'} · 清晰度 ${(m.detail * 100).toFixed(0)}%${m.pinned ? ' · 钉住' : ''}`,
         body: m.detail >= 0.75 ? m.content : m.gist, badge: m.detail < 0.5 ? '细节已模糊' : '',
       }));
     }

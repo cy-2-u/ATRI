@@ -1,5 +1,5 @@
 import type { Journal } from '../storage/journal.js';
-import { Recollection } from './memory.js';
+import { Recollection, type PeerBelief } from './memory.js';
 import type { ToolHandler } from './mind.js';
 import type { Sandbox } from '../sandbox.js';
 import type { WebTools } from '../web.js';
@@ -65,13 +65,13 @@ export function lifeTools(
       definition: {
         name: 'remember',
         description:
-          '从真实来源记住事实或自己的理解。相近不等于重复；更正旧事实必须显式给 supersedes。',
+          '从真实来源记住事实或自己的理解。相近不等于重复；更正旧事实必须显式给 supersedes。identity（我是谁的长期认识）只在夜里可用，且至少两处来源。',
         parameters: {
           type: 'object',
           properties: {
             content: { type: 'string' },
             gist: { type: 'string' },
-            kind: { type: 'string', enum: ['stated', 'interpretation'] },
+            kind: { type: 'string', enum: ['stated', 'interpretation', 'identity'] },
             sources: { type: 'array', items: { type: 'string' } },
             importance: { type: 'number', minimum: 0, maximum: 1 },
             emotion: { type: 'number', minimum: -1, maximum: 1 },
@@ -82,8 +82,10 @@ export function lifeTools(
         },
       },
       async execute(args, _options, turn) {
-        if (args.kind !== 'stated' && args.kind !== 'interpretation')
+        if (args.kind !== 'stated' && args.kind !== 'interpretation' && args.kind !== 'identity')
           throw new TypeError('kind 无效');
+        if (args.kind === 'identity' && turn.kind !== 'diary' && turn.kind !== 'tidy')
+          throw new TypeError('对自己的认识只在夜里的日记拍和整理拍写');
         const memory = recollection.remember(turn.peer, {
           content: text(args.content, 'content'),
           gist: text(args.gist, 'gist'),
@@ -164,26 +166,79 @@ export function lifeTools(
     {
       definition: {
         name: 'consider',
-        description: '保留尚未表达的念头。相同主题和证据不会反复重新激活已表达念头。',
+        description:
+          '保留尚未表达的念头；带 dueAt（未来的 Unix 毫秒）就是你在期待的事，材料里会有倒计时。相同主题和证据不会反复重新激活已表达念头。',
         parameters: {
           type: 'object',
           properties: {
             topic: { type: 'string' },
             meaning: { type: 'string' },
             sources: { type: 'array', items: { type: 'string' } },
+            dueAt: { type: 'integer', minimum: 0 },
           },
           required: ['topic', 'meaning', 'sources'],
           additionalProperties: false,
         },
       },
       async execute(args, _options, turn) {
+        let dueAt: number | undefined;
+        if (args.dueAt !== undefined) {
+          if (typeof args.dueAt !== 'number' || !Number.isSafeInteger(args.dueAt) || args.dueAt < 0)
+            throw new TypeError('dueAt 必须是有效 Unix 毫秒');
+          dueAt = args.dueAt;
+        }
         const thought = recollection.consider(
           turn.peer,
           text(args.topic, 'topic'),
           text(args.meaning, 'meaning'),
           ids(args.sources),
+          dueAt,
         );
-        return { id: thought.id, state: thought.state };
+        return { id: thought.id, state: thought.state, dueAt: thought.dueAt ?? 0 };
+      },
+    },
+    {
+      definition: {
+        name: 'update_peer_model',
+        description:
+          '把你此刻对"他"的认识整批重写（最多八条，每条一句话、带真实依据：消息/事件/记忆 ID）。夜里整理时用；写下的东西会带着"最后核实时间"出现在你之后的资料里。',
+        parameters: {
+          type: 'object',
+          properties: {
+            beliefs: {
+              type: 'array',
+              maxItems: 8,
+              items: {
+                type: 'object',
+                properties: {
+                  text: { type: 'string' },
+                  basis: { type: 'array', items: { type: 'string' } },
+                },
+                required: ['text', 'basis'],
+                additionalProperties: false,
+              },
+            },
+          },
+          required: ['beliefs'],
+          additionalProperties: false,
+        },
+      },
+      async execute(args, _options, turn) {
+        if (turn.kind !== 'tidy') throw new TypeError('心智模型只在夜里的整理拍修订');
+        if (!Array.isArray(args.beliefs)) throw new TypeError('beliefs 必须是数组');
+        const beliefs: PeerBelief[] = [];
+        for (const raw of args.beliefs.slice(0, 8)) {
+          if (!raw || typeof raw !== 'object') throw new TypeError('信念必须是对象');
+          const item = raw as { text?: unknown; basis?: unknown };
+          const content = text(item.text, 'text').slice(0, 160);
+          const basis = ids(item.basis);
+          if (!basis.length || journal.supports(turn.peer, basis) !== basis.length)
+            throw new TypeError('每一条认识都必须有真实依据（消息、事件或记忆 ID）');
+          beliefs.push({ text: content, basis: [...new Set(basis)] });
+        }
+        const model = { beliefs, updatedAt: Date.now() };
+        journal.savePeerModel(turn.peer, model);
+        return { beliefs: beliefs.length };
       },
     },
     {
@@ -417,5 +472,5 @@ export const TOOL_SETS = {
     'open_page',
   ],
   diary: ['search_memory', 'read_history', 'remember', 'write_journal'],
-  tidy: ['remember', 'search_memory'],
+  tidy: ['remember', 'search_memory', 'update_peer_model'],
 } as const;

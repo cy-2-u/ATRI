@@ -11,7 +11,14 @@ import { LifeMaterial } from './domain/material.js';
 import { lifeTools, TOOL_SETS } from './domain/tools.js';
 import { EmbeddingClient, dripBackfill } from './domain/embeddings.js';
 import { beatDelay } from './domain/state.js';
-import { dayKeyOf, minutesOfDay, nextWakeAfter } from './domain/rhythm.js';
+import {
+  dayKeyOf,
+  eveningArousalMinutes,
+  minutesOfDay,
+  nextWakeAfter,
+  sleepDayKeyOf,
+} from './domain/rhythm.js';
+import { evolveCloseness, seedCloseness } from './domain/relation.js';
 import { Runtime } from './runtime/runtime.js';
 import { WechatBridge } from './wechat/bridge.js';
 import { Stickers } from './stickers.js';
@@ -23,7 +30,7 @@ import { createServer } from './server.js';
  *  她的一切都在这里获得宿主：数据库、人格、心跳、夜与手眼。 */
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
-const dataDir = resolve(process.env.XING_DATA_DIR || join(root, 'data'));
+const dataDir = resolve(process.env.ATRI_DATA_DIR || join(root, 'data'));
 mkdirSync(dataDir, { recursive: true });
 
 const readPrompt = (name: string, fallback: string): string => {
@@ -43,7 +50,7 @@ const config = () => settings.get();
 const stickers = new Stickers(root, dataDir, journal);
 // 沙箱目录独立于数据目录：nsjail 会把 /data 遮蔽成空 tmpfs，她的工作
 // 目录必须活在遮蔽之外，否则命令 cwd 直接消失。
-const sandboxDir = process.env.XING_SANDBOX_DIR || join(dataDir, 'sandbox');
+const sandboxDir = process.env.ATRI_SANDBOX_DIR || join(dataDir, 'sandbox');
 const sandbox = config().sandbox.enabled
   ? new Sandbox(sandboxDir, {
       enabled: () => config().sandbox.enabled,
@@ -62,7 +69,7 @@ const embeddings = new EmbeddingClient(() => ({
 }));
 
 const onError = (error: unknown): void => {
-  console.error('[xing]', error instanceof Error ? error.message : error);
+  console.error('[atri]', error instanceof Error ? error.message : error);
 };
 
 const router = new ModelRouter(() => settings.routes(), httpTransport, {
@@ -106,12 +113,38 @@ const bridge = new WechatBridge(journal, onError, {
   vision: () => config().primary.vision,
 });
 
+// 黏人度是她自己的属性：配置值只种一次，之后由相处自己长（夜间维护）。
+seedCloseness(journal, config().closeness);
+
 // 下一拍：人格节拍 + 抖动 + 睡眠窗。心跳关掉就不再排拍。
+// 当晚热闹会推迟入睡（eveningArousal，纯身体数学）；唤醒度的事件日
+// 归属用抖动后的实际醒来时刻切分（sleepDayKeyOf）。
 const nextBeat = (): number | undefined => {
   const c = config();
   if (!c.heartbeat) return undefined;
-  const due = Date.now() + beatDelay(journal.self(), Date.now(), c.closeness);
-  return nextWakeAfter(due, c.timezone, c.sleepStart, c.sleepEnd);
+  const self = journal.self();
+  const due = Date.now() + beatDelay(self, Date.now(), self.closeness);
+  const day = sleepDayKeyOf(Date.now(), c.timezone, c.sleepStart, c.sleepEnd);
+  const midnightGuess = Date.parse(`${day}T00:00:00Z`);
+  const midnight = midnightGuess - minutesOfDay(midnightGuess, c.timezone) * 60000;
+  const evening = journal
+    .peers()
+    .flatMap((peer) =>
+      journal.eventsBetween(
+        peer,
+        ['received', 'said', 'experienced'],
+        midnight,
+        midnight + 86400000,
+        300,
+      ),
+    );
+  return nextWakeAfter(
+    due,
+    c.timezone,
+    c.sleepStart,
+    c.sleepEnd,
+    eveningArousalMinutes(evening, day, c.timezone),
+  );
 };
 
 const runtime = new Runtime(journal, mind, {
@@ -183,13 +216,17 @@ const app = createServer({
   assetsRoot: join(root, 'assets', 'stickers'),
 });
 
-const port = Number(process.env.XING_PORT || 3000);
-const host = process.env.XING_BIND || '127.0.0.1';
+const port = Number(process.env.ATRI_PORT || 3000);
+const host = process.env.ATRI_BIND || '127.0.0.1';
 
 function startBackgroundMaintenance(): void {
-  // 夜间排期与向量滴灌都是分钟级维护：低频定时器，空闲时零开销。
-  const night = setInterval(ensureNightJobs, 10 * 60_000);
+  // 夜间排期、关系演化与向量滴灌都是分钟级维护：低频定时器，空闲时零开销。
+  const night = setInterval(() => {
+    evolveCloseness(journal, Date.now(), config().timezone);
+    ensureNightJobs();
+  }, 10 * 60_000);
   night.unref();
+  evolveCloseness(journal, Date.now(), config().timezone);
   ensureNightJobs();
   const drip = setInterval(() => {
     const client = config().embedding ? embeddings : undefined;
@@ -202,7 +239,7 @@ function startBackgroundMaintenance(): void {
 app
   .listen({ port, host })
   .then(() => {
-    console.log(`xing listening on http://${host}:${port}`);
+    console.log(`atri listening on http://${host}:${port}`);
     bridge.start(runtime);
     runtime.start();
     startBackgroundMaintenance();

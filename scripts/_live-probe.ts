@@ -5,9 +5,9 @@ import type { Endpoint } from '../src/model/types.js';
 /** 真机管线探针：换渠道/模型后手动跑一次，验证主渠道与备用渠道都能
  *  完成“编码→请求→解码→工具契约”的整条链路。密钥只走环境变量。
  *
- *  XING_LIVE_URL / XING_LIVE_KEY / XING_LIVE_MODEL 必填；
- *  XING_LIVE_FORMAT=openai|anthropic|gemini（默认 openai）；
- *  XING_LIVE_FALLBACK_URL/KEY/MODEL 可选，同时验证备用。 */
+ *  ATRI_LIVE_URL / ATRI_LIVE_KEY / ATRI_LIVE_MODEL 必填；
+ *  ATRI_LIVE_FORMAT=openai|anthropic|gemini（默认 openai）；
+ *  ATRI_LIVE_FALLBACK_URL/KEY/MODEL 可选，同时验证备用。 */
 
 const required = (name: string): string => {
   const value = process.env[name];
@@ -32,8 +32,8 @@ const endpoint = (prefix: string): Endpoint => ({
 
 const router = new ModelRouter(
   () => ({
-    primary: endpoint('XING_LIVE'),
-    ...(process.env.XING_LIVE_FALLBACK_MODEL ? { fallback: endpoint('XING_LIVE_FALLBACK') } : {}),
+    primary: endpoint('ATRI_LIVE'),
+    ...(process.env.ATRI_LIVE_FALLBACK_MODEL ? { fallback: endpoint('ATRI_LIVE_FALLBACK') } : {}),
   }),
   httpTransport,
 );

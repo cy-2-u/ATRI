@@ -12,6 +12,7 @@ import {
   jitteredSleepWindow,
   minutesOfDay,
   nextWakeAfter,
+  sleepDayKeyOf,
 } from '../src/domain/rhythm.js';
 import { Runtime } from '../src/runtime/runtime.js';
 import type { Model } from '../src/model/types.js';
@@ -184,7 +185,7 @@ test('多气泡按长度节奏投递，被打断时保持待发', async () => {
 
 test('材料：beat 白日梦查询用她的心事，diary/tidy 各自成形', async () => {
   const journal = new Journal(':memory:');
-  const root = mkdtempSync(join(tmpdir(), 'xing-life-'));
+  const root = mkdtempSync(join(tmpdir(), 'atri-life-'));
   const stickers = {
     list: () => [{ slug: 's1', description: '笑', tags: [], file: 'x', disabled: false }],
   } as unknown as Stickers;
@@ -269,7 +270,11 @@ test('睡眠窗：按日期抖动稳定、分钟判定与醒来时刻', () => {
   const tz = 'Asia/Shanghai';
   const now = Date.parse('2026-11-14T15:00:00+08:00'); // 当地 15:00，分钟 900
   assert.equal(minutesOfDay(now, tz), 900);
-  // 深夜 03:00 必落在抖动窗（最晚 01:45 入睡、最早 06:15 醒）内 → 推到窗结束。
+  // 唤醒度的事件日归属：凌晨 03:00 的入睡发生在当天 1:00±45，那份热闹
+  // 属于前一晚（11-13）——sleepDayKeyOf 只管 arousal 取哪天的事件。
+  assert.equal(sleepDayKeyOf(Date.parse('2026-11-14T03:00:00+08:00'), tz, 60, 420), '2026-11-13');
+  // 深夜 03:00 必落在抖动窗（最晚 01:45 入睡、最早 06:15 醒）内 → 推到窗
+  // 结束。判定窗是 due 所在日历日的窗（睡眠段全在同一天）。
   const night = Date.parse('2026-11-14T03:00:00+08:00');
   const wake = nextWakeAfter(night, tz, 60, 420);
   const window = jitteredSleepWindow('2026-11-14', 60, 420);

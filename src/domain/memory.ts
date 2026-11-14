@@ -7,7 +7,9 @@ export interface Memory extends MemoryStrength {
   id: string;
   content: string;
   gist: string;
-  kind: 'stated' | 'interpretation';
+  /** identity 是作者层的自我叙事：定义"我是谁"的长期认识。不随时间
+   *  衰减，只被新证据修订（supersede）；夜里整理时少而精地写。 */
+  kind: 'stated' | 'interpretation' | 'identity';
   sources: string[];
   status: 'active' | 'superseded' | 'forgotten';
   pinned: boolean;
@@ -29,8 +31,20 @@ export interface ThoughtEntry {
   meaning: string;
   sources: string[];
   evidence: string;
+  /** 期待中的事带一个未来时刻：材料里呈现倒计时，靠近时自然想提。 */
+  dueAt?: number;
   state: 'idle' | 'expressed' | 'dropped';
   createdAt: number;
+  updatedAt: number;
+}
+
+/** 她对"他"的心智模型：一小束当前信念，整批修订、整体带最后核实时间。 */
+export interface PeerBelief {
+  text: string;
+  basis: string[];
+}
+export interface PeerModel {
+  beliefs: PeerBelief[];
   updatedAt: number;
 }
 
@@ -53,7 +67,7 @@ export class Recollection {
     )
       throw new TypeError('记忆必须有内容和简短要旨');
     if (
-      !['stated', 'interpretation'].includes(input.kind) ||
+      !['stated', 'interpretation', 'identity'].includes(input.kind) ||
       !finite(input.importance, 0, 1) ||
       !finite(input.emotion, -1, 1)
     )
@@ -66,6 +80,10 @@ export class Recollection {
       throw new TypeError('记忆只能来自确实发生的经历');
     if (input.kind === 'stated' && !evidence.some((event) => event.kind === 'received'))
       throw new TypeError('对方陈述必须有对方消息作为来源');
+    // identity 是"我是谁"：必须立在至少两段真实经历上，防止一次性情绪
+    // 被升格成自我定义；修订走 supersedes，不是随手新增。
+    if (input.kind === 'identity' && new Set(sources).size < 2)
+      throw new TypeError('对自己的认识至少要有两处真实来源支撑');
     const existing = this.journal
       .memories(peer)
       .find(
@@ -130,7 +148,7 @@ export class Recollection {
       : undefined;
     return this.journal
       .memories(peer)
-      .filter((memory) => memory.status === 'active')
+      .filter((memory) => memory.status === 'active' && memory.kind !== 'identity')
       .map((memory) => {
         const projected = { ...memory, ...projectMemory(memory, now) };
         const forgotten = projected.detail < 0.35 && projected.importance < 0.2 && !memory.pinned;
@@ -163,13 +181,26 @@ export class Recollection {
   rehearse(peer: string, ids: string[]): void {
     const allowed = new Set(ids);
     for (const memory of this.journal.memories(peer))
-      if (allowed.has(memory.id) && memory.status === 'active')
+      if (
+        allowed.has(memory.id) &&
+        memory.status === 'active' &&
+        // identity 不衰减也就不巩固：它是被修订的，不是被复述的。
+        memory.kind !== 'identity'
+      )
         this.journal.saveMemory(peer, { ...memory, ...rehearseMemory(memory, this.now()) });
   }
 
-  consider(peer: string, topic: string, meaning: string, sourceIds: string[]): ThoughtEntry {
+  consider(
+    peer: string,
+    topic: string,
+    meaning: string,
+    sourceIds: string[],
+    dueAt?: number,
+  ): ThoughtEntry {
     if (!topic.trim() || topic.length > 100 || !meaning.trim() || meaning.length > 1000)
       throw new TypeError('念头主题和含义无效');
+    if (dueAt !== undefined && (!Number.isFinite(dueAt) || dueAt <= this.now()))
+      throw new TypeError('期待的时间必须是未来时刻');
     const sources = [...new Set(sourceIds)].sort();
     const events = this.journal.evidence(peer, sources);
     if (
@@ -188,6 +219,7 @@ export class Recollection {
       meaning: meaning.trim(),
       sources,
       evidence,
+      ...(dueAt !== undefined ? { dueAt } : previous?.dueAt ? { dueAt: previous.dueAt } : {}),
       state: 'idle',
       createdAt: previous?.createdAt ?? now,
       updatedAt: now,

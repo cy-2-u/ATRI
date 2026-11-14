@@ -72,8 +72,8 @@ export function createServer(options: ServerOptions) {
       return;
     const cookies = (request.headers.cookie ?? '').split(';').map((part) => part.trim());
     const token = cookies
-      .find((part) => part.startsWith('xing_session='))
-      ?.slice('xing_session='.length);
+      .find((part) => part.startsWith('atri_session='))
+      ?.slice('atri_session='.length);
     if (!token || (sessions.get(token) ?? 0) <= Date.now())
       return reply.code(401).send({ error: '请先登录' });
   });
@@ -138,7 +138,7 @@ export function createServer(options: ServerOptions) {
     sessions.set(token, now + 12 * 3_600_000);
     reply.header(
       'set-cookie',
-      `xing_session=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=43200${options.secureCookie ? '; Secure' : ''}`,
+      `atri_session=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=43200${options.secureCookie ? '; Secure' : ''}`,
     );
     return { ok: true };
   });
@@ -146,10 +146,10 @@ export function createServer(options: ServerOptions) {
     const token = (request.headers.cookie ?? '')
       .split(';')
       .map((part) => part.trim())
-      .find((part) => part.startsWith('xing_session='))
+      .find((part) => part.startsWith('atri_session='))
       ?.slice(13);
     if (token) sessions.delete(token);
-    reply.header('set-cookie', 'xing_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0');
+    reply.header('set-cookie', 'atri_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0');
     return { ok: true };
   });
 

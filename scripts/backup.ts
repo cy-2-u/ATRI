@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
  *  恢复见 restore.ts。 */
 
 const dataDir = resolve(
-  process.env.XING_DATA_DIR || join(resolve(dirname(fileURLToPath(import.meta.url))), '..', 'data'),
+  process.env.ATRI_DATA_DIR || join(resolve(dirname(fileURLToPath(import.meta.url))), '..', 'data'),
 );
 const stamp = new Date().toISOString().replace(/[:.]/g, '-');
 const outDir = resolve(process.argv[2] || join(dataDir, 'backups', stamp));

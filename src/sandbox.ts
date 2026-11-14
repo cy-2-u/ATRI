@@ -96,7 +96,7 @@ export class Sandbox {
     mkdirSync(this.root, { recursive: true });
     // 只有沙箱根可写：工具链的暂存文件（npm _cacache、git objects）放
     // 外面，不占运维配额、不混进 list_files。
-    this.tmpDir = mkdirTemp(join(tmpdir(), 'xing-sandbox-'));
+    this.tmpDir = mkdirTemp(join(tmpdir(), 'atri-sandbox-'));
     this.outputLimit = Math.max(0, options.outputLimit ?? SANDBOX_OUTPUT_LIMIT);
     this.allowDirectoryFallback = options.allowDirectoryFallback === true;
   }

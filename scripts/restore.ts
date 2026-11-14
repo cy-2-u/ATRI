@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 /** 从 backup.ts 产物恢复数据目录：目标必须是空库（避免覆盖更活的现在）。 */
 
 const dataDir = resolve(
-  process.env.XING_DATA_DIR || join(resolve(dirname(fileURLToPath(import.meta.url))), '..', 'data'),
+  process.env.ATRI_DATA_DIR || join(resolve(dirname(fileURLToPath(import.meta.url))), '..', 'data'),
 );
 const fromDir = resolve(process.argv[2] || '');
 if (!fromDir || statSync(fromDir, { throwIfNoEntry: false })?.isDirectory() !== true) {

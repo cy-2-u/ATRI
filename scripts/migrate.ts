@@ -331,6 +331,17 @@ export function migrate(oldPath: string, newPath: string): MigrationSummary {
           .prepare(`SELECT max(created_at) AS at FROM kernel_events WHERE peer=? AND kind='said'`)
           .get(peer)?.at ?? 0,
       );
+      // 黏人度是她自己的属性：旧配置若有就当种子带过来（只种这一次），
+      // 没有就默认 50；closenessDay 留空让新内核当天就演化一步。
+      const oldConfig = (() => {
+        try {
+          const row = old.prepare(`SELECT value FROM settings WHERE key='config'`).get() as
+            { value: string } | undefined;
+          return row ? (JSON.parse(String(row.value)) as { closeness?: number }) : undefined;
+        } catch {
+          return undefined;
+        }
+      })();
       const value = {
         social: Math.max(0, Math.min(1, self.social)),
         expression: Math.max(0, Math.min(1, self.express)),
@@ -342,6 +353,8 @@ export function migrate(oldPath: string, newPath: string): MigrationSummary {
         activitySince: self.activity_since || now,
         pursuit: self.pursuit,
         pursuitSince: self.pursuit_since || now,
+        closeness: Math.max(0, Math.min(1, Number(oldConfig?.closeness ?? 50) / 100)),
+        closenessDay: '',
       };
       fresh
         .prepare('INSERT OR REPLACE INTO kernel_settings(key,value) VALUES(?,?)')

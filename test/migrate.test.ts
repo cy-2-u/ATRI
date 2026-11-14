@@ -177,7 +177,7 @@ export function buildOldDb(path: string): void {
 }
 
 test('老库 → 新内核：ID 对齐、六变量投影、会话凭据保留', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'xing-mig-'));
+  const dir = mkdtempSync(join(tmpdir(), 'atri-mig-'));
   const oldPath = join(dir, 'old.db');
   const newPath = join(dir, 'new.db');
   try {

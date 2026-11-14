@@ -221,7 +221,7 @@ export class WechatClient {
         msg: {
           from_user_id: '',
           to_user_id: address,
-          client_id: `xing-${randomUUID()}`,
+          client_id: `atri-${randomUUID()}`,
           message_type: 2,
           message_state: 2,
           context_token: context,
@@ -405,7 +405,7 @@ export class WechatClient {
         msg: {
           from_user_id: '',
           to_user_id: address,
-          client_id: `xing-${randomUUID()}`,
+          client_id: `atri-${randomUUID()}`,
           message_type: 2,
           message_state: 2,
           context_token: context,

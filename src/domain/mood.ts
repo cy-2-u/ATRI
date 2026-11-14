@@ -71,6 +71,22 @@ export function renderMood(mood: MoodPulse, now: number, baseline = 0): string {
   return parts.length ? `你当前的状态：${parts.join('；')}。这影响语气，但不要主动报数值。` : '';
 }
 
+/** 她最近的心情轨迹：reason 是她自己写的原话，原样浮回来（情绪粒度
+ *  就藏在她的措辞里），带陈旧度——三小时前的"有点委屈"不是现在。 */
+export function renderMoodHistory(history: MoodPulse[], now: number): string {
+  const parts: string[] = [];
+  for (const entry of [...history].reverse()) {
+    if (!entry.reason?.trim()) continue;
+    const hours = (now - entry.at) / 3600000;
+    if (hours >= 18 || hours < 0) continue;
+    const age = hours < 1 ? '刚才' : hours < 3 ? '个把小时前' : `${Math.floor(hours)} 小时前`;
+    parts.push(`${age}你${entry.reason.trim()}`);
+    if (parts.length >= 2) break;
+  }
+  if (!parts.length) return '';
+  return `你最近的心情轨迹（这是资料：感觉还在就自然带着，不必解释它从哪来）：${parts.join('；')}。`;
+}
+
 /** 她自己此刻的身体状态：深夜与清晨人本来就困，电量不足时回复自然变短
  *  变糙。这不是对对方状态的判断，是给她自己的一个可以表演"没电"的合法
  *  通道——回复质量有方差才是人。 */

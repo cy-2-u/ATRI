@@ -11,10 +11,12 @@ import { Stickers } from '../src/stickers.js';
 import { beatDelay } from '../src/domain/state.js';
 import {
   dayKeyOf,
+  eveningArousalMinutes,
   inSleepMinutes,
-  jitteredSleepWindow,
   minutesOfDay,
   nextWakeAfter,
+  sleepDayKeyOf,
+  sleepWindow,
 } from '../src/domain/rhythm.js';
 import type { Model, Message } from '../src/model/types.js';
 
@@ -208,9 +210,29 @@ const runtime = new Runtime(
       if (part.text) said.push({ at: now, text: part.text });
       return Promise.resolve('sent');
     },
-    // 与生产完全同源的下一拍数学：人格节拍 + 睡眠窗推送。
-    nextBeat: () =>
-      nextWakeAfter(now + beatDelay(journal.self(), now, 50), 'Asia/Shanghai', 60, 420),
+    // 与生产完全同源的下一拍数学：人格节拍（她的黏人度属性）+ 当晚唤醒
+    // 度推迟入睡 + 睡眠窗推送。
+    nextBeat: () => {
+      const self = journal.self();
+      const day = sleepDayKeyOf(now, 'Asia/Shanghai', 60, 420);
+      const midnightGuess = Date.parse(`${day}T00:00:00Z`);
+      const midnight = midnightGuess - minutesOfDay(midnightGuess, 'Asia/Shanghai') * 60000;
+      const evening = journal.eventsBetween(
+        PEER,
+        ['received', 'said', 'experienced'],
+        midnight,
+        midnight + 86400000,
+        300,
+      );
+      const due = now + beatDelay(self, now, self.closeness);
+      return nextWakeAfter(
+        due,
+        'Asia/Shanghai',
+        60,
+        420,
+        eveningArousalMinutes(evening, day, 'Asia/Shanghai'),
+      );
+    },
     onError: (error) =>
       console.error('sim runtime error:', error instanceof Error ? error.message : error),
     timeoutMs: 6 * 3600000,
@@ -289,16 +311,32 @@ for (const s of said) {
   );
   byHour.set(h, (byHour.get(h) ?? 0) + 1);
 }
-// 深夜静：判定用抖动后的真实睡眠窗（1:00±45 入睡），不是死板的钟点。
+// 深夜静：判定用生产同款睡眠窗（due 所在日历日的窗，日期抖动 + 唤醒度
+// 推迟入睡），唤醒度的事件日归属也用生产同款 sleepDayKeyOf。
+const arousalFor = (at: number): number => {
+  const day = sleepDayKeyOf(at, 'Asia/Shanghai', 60, 420);
+  const midnightGuess = Date.parse(`${day}T00:00:00Z`);
+  const midnight = midnightGuess - minutesOfDay(midnightGuess, 'Asia/Shanghai') * 60000;
+  const evening = journal.eventsBetween(
+    PEER,
+    ['received', 'said', 'experienced'],
+    midnight,
+    midnight + 86400000,
+    300,
+  );
+  return eveningArousalMinutes(evening, day, 'Asia/Shanghai');
+};
 const inSleepAt = (at: number): boolean => {
-  const window = jitteredSleepWindow(dayKeyOf(at, 'Asia/Shanghai'), 60, 420);
+  const window = sleepWindow(dayKeyOf(at, 'Asia/Shanghai'), 60, 420, arousalFor(at));
   return inSleepMinutes(minutesOfDay(at, 'Asia/Shanghai'), window.startMin, window.endMin);
 };
 const deepNight = said.filter((s) => inSleepAt(s.at)).length;
-for (const s of said.filter((s) => inSleepAt(s.at)))
+for (const s of said.filter((s) => inSleepAt(s.at))) {
+  const w = sleepWindow(dayKeyOf(s.at, 'Asia/Shanghai'), 60, 420, arousalFor(s.at));
   console.log(
-    `[睡眠窗样本] ${new Date(s.at).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })} → ${s.text.slice(0, 30)}`,
+    `[睡眠窗样本] ${new Date(s.at).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })} → ${s.text.slice(0, 30)} | 窗 ${dayKeyOf(s.at, 'Asia/Shanghai')} ${w.startMin}-${w.endMin} 分钟 ${minutesOfDay(s.at, 'Asia/Shanghai')} arousal ${arousalFor(s.at)}`,
   );
+}
 const lens = said.map((s) => s.text.length);
 const mean = lens.reduce((a, b) => a + b, 0) / Math.max(1, lens.length);
 const stdev = Math.sqrt(lens.reduce((a, b) => a + (b - mean) ** 2, 0) / Math.max(1, lens.length));

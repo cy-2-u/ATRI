@@ -1,6 +1,6 @@
 import { DatabaseSync, type StatementSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
-import type { Memory, ThoughtEntry } from '../domain/memory.js';
+import type { Memory, PeerModel, ThoughtEntry } from '../domain/memory.js';
 import { evolveSelf, initialSelf, projectSelf, type SelfState } from '../domain/state.js';
 import { nextYearAfter, type Commitment } from '../domain/commitment.js';
 import type { MoodPulse } from '../domain/mood.js';
@@ -404,6 +404,31 @@ export class Journal {
 
   setMood(peer: string, mood: MoodPulse): void {
     this.setSetting(`mood:${peer}`, mood);
+    // 心情轨迹：她自己的 reason 原文是情绪粒度的载体，留着让它浮回材料。
+    const history = this.moodHistory(peer);
+    const last = history.at(-1);
+    const duplicate = last && last.reason === mood.reason && mood.at - last.at < 10 * 60000;
+    if (!duplicate) {
+      history.push(mood);
+      this.setSetting(
+        `mood-history:${peer}`,
+        history.slice(-24).filter((entry) => mood.at - entry.at < 48 * 3600000),
+      );
+    }
+  }
+
+  moodHistory(peer: string): MoodPulse[] {
+    return this.setting<MoodPulse[]>(`mood-history:${peer}`, []);
+  }
+
+  /** 她对"他"的心智模型：夜间整理时由她亲手修订的当前信念集，带最后
+   *  核实时间——材料里按陈旧度呈现，提醒她这些是会过时的认识。 */
+  peerModel(peer: string): PeerModel | undefined {
+    return this.setting<PeerModel | undefined>(`peer-model:${peer}`, undefined);
+  }
+
+  savePeerModel(peer: string, model: PeerModel): void {
+    this.setSetting(`peer-model:${peer}`, model);
   }
 
   /** 日夜共用的事件读取（日记、整理材料的取材来源）。 */
@@ -575,6 +600,50 @@ export class Journal {
       );
       return row ? [{ id: String(row.id), kind: String(row.kind) }] : [];
     });
+  }
+
+  /** 时间窗内的事件（往年今天、当晚唤醒度统计都用它）。 */
+  eventsBetween(
+    peer: string,
+    kinds: string[],
+    from: number,
+    to: number,
+    limit = 100,
+  ): { id: string; kind: string; content: string; created_at: number }[] {
+    if (!kinds.length || from >= to) return [];
+    const placeholders = kinds.map(() => '?').join(',');
+    return (
+      this.statement(
+        `SELECT id,kind,content,created_at FROM kernel_events
+         WHERE peer=? AND kind IN (${placeholders}) AND created_at>=? AND created_at<?
+         ORDER BY seq LIMIT ?`,
+      ).all(peer, ...kinds, from, to, Math.max(1, Math.min(500, Math.floor(limit)))) as unknown as {
+        id: string;
+        kind: string;
+        content: string;
+        created_at: number;
+      }[]
+    ).filter((row) => row.created_at < to);
+  }
+
+  /** 信念与认识的依据可以是事件，也可以是已立住的记忆（心智模型的整理
+   *  发生在夜里，那时候模型手里是记忆条目而不是原始事件）。 */
+  supports(peer: string, ids: string[]): number {
+    const wanted = [...new Set(ids)];
+    let found = 0;
+    for (const id of wanted) {
+      if (this.statement('SELECT id FROM kernel_events WHERE peer=? AND id=?').get(peer, id)) {
+        found++;
+        continue;
+      }
+      if (
+        this.statement(
+          "SELECT id FROM kernel_memories WHERE peer=? AND id=? AND status='active'",
+        ).get(peer, id)
+      )
+        found++;
+    }
+    return found;
   }
 
   memories(peer: string): Memory[] {

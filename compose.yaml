@@ -10,12 +10,12 @@ services:
     privileged: true
     env_file: .env
     environment:
-      XING_DATA_DIR: /data
-      XING_SANDBOX_DIR: /sandbox
-      XING_BIND: 0.0.0.0
-      XING_PORT: 3000
+      ATRI_DATA_DIR: /data
+      ATRI_SANDBOX_DIR: /sandbox
+      ATRI_BIND: 0.0.0.0
+      ATRI_PORT: 3000
     ports:
-      - '${XING_BIND:-127.0.0.1}:${XING_PORT:-3000}:3000'
+      - '${ATRI_BIND:-127.0.0.1}:${ATRI_PORT:-3000}:3000'
     volumes:
       - atri-data:/data
       # 她的工作目录必须在 /data 之外：nsjail 会把 /data 遮蔽成空 tmpfs。

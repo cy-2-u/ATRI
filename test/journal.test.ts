@@ -8,7 +8,7 @@ import { Recollection } from '../src/domain/memory.js';
 
 function fixture() {
   let now = 1000;
-  const directory = mkdtempSync(join(tmpdir(), 'xing-journal-'));
+  const directory = mkdtempSync(join(tmpdir(), 'atri-journal-'));
   const path = join(directory, 'test.db');
   let journal = new Journal(path, () => now);
   return {
