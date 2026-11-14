@@ -95,35 +95,13 @@ const mind = new Mind(
   TOOL_SETS,
 );
 
-const material = new LifeMaterial({
-  journal,
-  stickers,
-  timeZone: () => config().timezone,
-  sandboxEnabled: () => Boolean(sandbox?.enabled),
-  webConfigured: () => Boolean(config().webSearchKey),
-  vision: () => config().primary.vision,
-  embeddings: config().embedding ? embeddings : undefined,
-  now: Date.now,
-});
-
-const bridge = new WechatBridge(journal, onError, {
-  stickers,
-  sandbox,
-  dataDir,
-  vision: () => config().primary.vision,
-});
-
 // 黏人度是她自己的属性：配置值只种一次，之后由相处自己长（夜间维护）。
 seedCloseness(journal, config().closeness);
 
-// 下一拍：人格节拍 + 抖动 + 睡眠窗。心跳关掉就不再排拍。
-// 当晚热闹会推迟入睡（eveningArousal，纯身体数学）；唤醒度的事件日
-// 归属用抖动后的实际醒来时刻切分（sleepDayKeyOf）。
-const nextBeat = (): number | undefined => {
+// 今晚的入睡推迟分钟数：18 点后的每段热闹（说话、做事）都让身体多清醒
+// 一会儿（封顶 60，纯身体数学）。心跳排拍与深夜材料共用同一份数据。
+const tonightArousal = (): number => {
   const c = config();
-  if (!c.heartbeat) return undefined;
-  const self = journal.self();
-  const due = Date.now() + beatDelay(self, Date.now(), self.closeness);
   const day = sleepDayKeyOf(Date.now(), c.timezone, c.sleepStart, c.sleepEnd);
   const midnightGuess = Date.parse(`${day}T00:00:00Z`);
   const midnight = midnightGuess - minutesOfDay(midnightGuess, c.timezone) * 60000;
@@ -138,13 +116,35 @@ const nextBeat = (): number | undefined => {
         300,
       ),
     );
-  return nextWakeAfter(
-    due,
-    c.timezone,
-    c.sleepStart,
-    c.sleepEnd,
-    eveningArousalMinutes(evening, day, c.timezone),
-  );
+  return eveningArousalMinutes(evening, day, c.timezone);
+};
+
+const material = new LifeMaterial({
+  journal,
+  stickers,
+  timeZone: () => config().timezone,
+  sandboxEnabled: () => Boolean(sandbox?.enabled),
+  webConfigured: () => Boolean(config().webSearchKey),
+  vision: () => config().primary.vision,
+  embeddings: config().embedding ? embeddings : undefined,
+  sleepDelay: tonightArousal,
+  now: Date.now,
+});
+
+const bridge = new WechatBridge(journal, onError, {
+  stickers,
+  sandbox,
+  dataDir,
+  vision: () => config().primary.vision,
+});
+
+// 下一拍：人格节拍 + 抖动 + 睡眠窗。心跳关掉就不再排拍。
+const nextBeat = (): number | undefined => {
+  const c = config();
+  if (!c.heartbeat) return undefined;
+  const self = journal.self();
+  const due = Date.now() + beatDelay(self, Date.now(), self.closeness);
+  return nextWakeAfter(due, c.timezone, c.sleepStart, c.sleepEnd, tonightArousal());
 };
 
 const runtime = new Runtime(journal, mind, {

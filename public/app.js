@@ -85,7 +85,7 @@ function confirmButton(label, message, handler, classes = 'ghost small danger') 
 }
 function timeText(at) {
   if (!at) return '';
-  return new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCase: undefined, hourCycle: 'h23' }).format(new Date(at));
+  return new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date(at));
 }
 function bubbleText(content, isShe) {
   // said 事件存的是 Bubble JSON；旧数据可能已是纯文本。

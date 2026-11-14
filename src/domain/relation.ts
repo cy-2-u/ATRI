@@ -9,7 +9,7 @@ import { dayKeyOf, minutesOfDay } from './rhythm.js';
  *  她在意他这个事实不随安静消失。 */
 
 const BURST_MS = 5 * 60000; // 与材料层的连发判定同窗：连发的"说"算一次开口。
-const ANSWER_MS = 6 * 3600000; // 开口后 6 小时内有回应才算被接住。
+const ANSWER_MS = 12 * 3600000; // 开口后半天内有回应都算被接住——隔夜回复是常态。
 const DRIFT = 0.06; // 每天最多走目标差距的 6%：急不来的东西才像关系。
 const FLOOR = 0.15;
 

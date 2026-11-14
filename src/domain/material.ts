@@ -295,6 +295,8 @@ export interface MaterialDeps {
   webConfigured(): boolean;
   vision(): boolean;
   embeddings?: EmbeddingClient;
+  /** 身体今晚的入睡推迟分钟数（熬夜的夜 > 0）：深夜材料据此不再硬说"很困"。 */
+  sleepDelay?(): number;
   now(): number;
 }
 
@@ -314,7 +316,10 @@ export class LifeMaterial {
     const parts: string[] = [];
     const motivesLine = renderMotives(self, now);
     if (motivesLine) parts.push(motivesLine);
-    const hourLine = renderSelfHour(hourOf(now, this.deps.timeZone()));
+    const hourLine = renderSelfHour(
+      hourOf(now, this.deps.timeZone()),
+      this.deps.sleepDelay?.() ?? 0,
+    );
     if (hourLine) parts.push(hourLine);
     const moodLine = renderMood(
       (mood ?? { valence: 0, energy: 0, patience: 0, at: 0 }) as MoodPulse,
@@ -322,7 +327,7 @@ export class LifeMaterial {
       emotionalBaseline(this.deps.journal, peer, now),
     );
     if (moodLine) parts.push(moodLine);
-    const moodTrail = renderMoodHistory(this.deps.journal.moodHistory(peer), now);
+    const moodTrail = renderMoodHistory(this.deps.journal.moodHistory(peer), now, mood);
     if (moodTrail) parts.push(moodTrail);
     return parts.join('\n');
   }
@@ -540,7 +545,7 @@ export class LifeMaterial {
       commitments,
       memories: recall.list,
       ...(thisDay.length ? { onThisDay: thisDay } : {}),
-      ...(words.length >= 2 ? { hisWords: words.join('、') } : {}),
+      ...(words.length >= 2 ? { hisWords: `他最近常说的词：${words.join('、')}` } : {}),
       sources: conversation
         .slice(-12)
         .map((e) => ({ id: e.id, kind: e.kind, content: e.content, at: e.created_at })),

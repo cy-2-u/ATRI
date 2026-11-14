@@ -4,6 +4,7 @@ import { Journal } from '../src/storage/journal.js';
 import { Recollection } from '../src/domain/memory.js';
 import { LifeMaterial } from '../src/domain/material.js';
 import { lifeTools } from '../src/domain/tools.js';
+import { renderSelfHour } from '../src/domain/mood.js';
 import { evolveCloseness, seedCloseness } from '../src/domain/relation.js';
 import { beatDelay, initialSelf, type SelfState } from '../src/domain/state.js';
 import {
@@ -362,6 +363,8 @@ test('心情轨迹用她自己的原话，带陈旧度，旧的不翻出来', as
       reason: '他把写好的东西发我了',
       at: now - 3600000,
     });
+    // 旧情绪先写；最新一拍是负面：同一段心情的 reason 由脉冲行带
+    // "（因为…）"，轨迹不再复述同一句。
     journal.setMood('peer', {
       valence: 0,
       energy: 0,
@@ -369,14 +372,29 @@ test('心情轨迹用她自己的原话，带陈旧度，旧的不翻出来', as
       reason: '早上的旧情绪不该翻出来',
       at: now - 20 * 3600000,
     });
-    assert.equal(journal.moodHistory('peer').length, 3);
+    journal.setMood('peer', {
+      valence: -0.5,
+      energy: -0.1,
+      patience: 0,
+      reason: '等到现在也没回，有点失落',
+      at: now - 1800000,
+    });
+    assert.equal(journal.moodHistory('peer').length, 4);
     const life = materialDeps(journal, () => now);
     const built = (await life.build('peer', { id: 't', peer: 'peer', version: 0, kind: 'chat' }))
       .material as { body: string };
     assert.ok(built.body.includes('被晾了半天有点委屈'));
     assert.ok(built.body.includes('他把写好的东西发我了'));
     assert.ok(!built.body.includes('早上的旧情绪'));
+    assert.equal(built.body.split('等到现在也没回，有点失落').length - 1, 1);
   } finally {
     journal.close();
   }
+});
+
+test('熬夜的深夜：身体推迟入睡时，材料不再硬说"人很困"', () => {
+  assert.match(renderSelfHour(1, 0), /人很困/);
+  assert.match(renderSelfHour(1, 60), /推迟|兴奋/);
+  assert.match(renderSelfHour(23, 60), /晚点睡/);
+  assert.match(renderSelfHour(3, 0), /人很困/);
 });

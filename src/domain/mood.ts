@@ -73,10 +73,15 @@ export function renderMood(mood: MoodPulse, now: number, baseline = 0): string {
 
 /** 她最近的心情轨迹：reason 是她自己写的原话，原样浮回来（情绪粒度
  *  就藏在她的措辞里），带陈旧度——三小时前的"有点委屈"不是现在。 */
-export function renderMoodHistory(history: MoodPulse[], now: number): string {
+/** 她最近的心情轨迹：reason 是她自己写的原话，原样浮回来（情绪粒度
+ *  就藏在她的措辞里），带陈旧度——三小时前的"有点委屈"不是现在。
+ *  与当前脉冲同一拍写下的负面 reason 已由脉冲行带"（因为…）"，跳过
+ *  避免同一段材料里说两遍；正面/中性的 reason 脉冲行不带，保留。 */
+export function renderMoodHistory(history: MoodPulse[], now: number, current?: MoodPulse): string {
   const parts: string[] = [];
   for (const entry of [...history].reverse()) {
     if (!entry.reason?.trim()) continue;
+    if (current && entry.at === current.at && (current.valence ?? 0) <= -0.3) continue;
     const hours = (now - entry.at) / 3600000;
     if (hours >= 18 || hours < 0) continue;
     const age = hours < 1 ? '刚才' : hours < 3 ? '个把小时前' : `${Math.floor(hours)} 小时前`;
@@ -89,12 +94,18 @@ export function renderMoodHistory(history: MoodPulse[], now: number): string {
 
 /** 她自己此刻的身体状态：深夜与清晨人本来就困，电量不足时回复自然变短
  *  变糙。这不是对对方状态的判断，是给她自己的一个可以表演"没电"的合法
- *  通道——回复质量有方差才是人。 */
-export function renderSelfHour(hour: number): string {
-  if (hour >= 1 && hour < 7)
+ *  通道——回复质量有方差才是人。bedtimeDelayMinutes 是身体今晚的入睡
+ *  推迟量（熬夜的夜）：还醒着与"人很困"不打架，身体自己说了算。 */
+export function renderSelfHour(hour: number, bedtimeDelayMinutes = 0): string {
+  if (hour >= 1 && hour < 7) {
+    if (bedtimeDelayMinutes > 0 && hour < 2 + bedtimeDelayMinutes / 60)
+      return '今晚你的身体把入睡往后推了（兴奋的夜）：这个点还醒着是正常的，按此刻真实的困意说话，困了就自然收尾。';
     return '现在是你的深夜，人很困：回复可以短、可以糊、可以只打几个字，也允许明早再回的语气。不必完整接住对方每个话题。';
+  }
   if (hour >= 23)
-    return '已经很晚了，你有点困了：话可以少一点，收尾自然一点（"我先睡了"是合法回复）。';
+    return bedtimeDelayMinutes > 0
+      ? '已经很晚了；今晚你多半会晚点睡（身体还兴奋着）：话可以少一点，收尾自然一点（"我先睡了"是合法回复）。'
+      : '已经很晚了，你有点困了：话可以少一点，收尾自然一点（"我先睡了"是合法回复）。';
   if (hour >= 12 && hour < 14) return '是中午，你可能正吃饭或想歇一会儿：忙的话回短一点没关系。';
   return '';
 }

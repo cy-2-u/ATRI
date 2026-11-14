@@ -21,6 +21,7 @@ export interface Config {
   fallback?: Endpoint;
   embedding?: EmbeddingConfig;
   heartbeat: boolean;
+  /** 黏人度种子：只在第一次启动时种进她的自我，此后由相处演化（relation.ts）。 */
   closeness: number;
   timezone: string;
   sleepStart: number;

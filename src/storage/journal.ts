@@ -602,7 +602,7 @@ export class Journal {
     });
   }
 
-  /** 时间窗内的事件（往年今天、当晚唤醒度统计都用它）。 */
+  /** 时间窗内的事件（往年今天、当晚唤醒度统计都用它）。半开区间 [from, to)。 */
   eventsBetween(
     peer: string,
     kinds: string[],
@@ -612,18 +612,16 @@ export class Journal {
   ): { id: string; kind: string; content: string; created_at: number }[] {
     if (!kinds.length || from >= to) return [];
     const placeholders = kinds.map(() => '?').join(',');
-    return (
-      this.statement(
-        `SELECT id,kind,content,created_at FROM kernel_events
-         WHERE peer=? AND kind IN (${placeholders}) AND created_at>=? AND created_at<?
-         ORDER BY seq LIMIT ?`,
-      ).all(peer, ...kinds, from, to, Math.max(1, Math.min(500, Math.floor(limit)))) as unknown as {
-        id: string;
-        kind: string;
-        content: string;
-        created_at: number;
-      }[]
-    ).filter((row) => row.created_at < to);
+    return this.statement(
+      `SELECT id,kind,content,created_at FROM kernel_events
+       WHERE peer=? AND kind IN (${placeholders}) AND created_at>=? AND created_at<?
+       ORDER BY seq LIMIT ?`,
+    ).all(peer, ...kinds, from, to, Math.max(1, Math.min(500, Math.floor(limit)))) as unknown as {
+      id: string;
+      kind: string;
+      content: string;
+      created_at: number;
+    }[];
   }
 
   /** 信念与认识的依据可以是事件，也可以是已立住的记忆（心智模型的整理
