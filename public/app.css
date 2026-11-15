@@ -866,6 +866,22 @@ input.check,
   gap: 12px;
 }
 
+/* 横排字段格：格内字段下外边距归零——此前 .card .field 的 16px margin
+   在部分格子上（带 field-with-action 的格子被包了一层）缺失，grid stretch
+   下同一行错位 16px。放在 .card .field 之后以特异性 (0,3,0) 压过它，
+   对齐交给 grid stretch，行间距由 .card .grid-* 的整体外边距与 row-gap 管。 */
+.card .grid-2 .field,
+.card .grid-3 .field,
+.card .grid-4 .field {
+  margin-bottom: 0;
+}
+
+.grid-2,
+.grid-3,
+.grid-4 {
+  row-gap: 16px;
+}
+
 .inline-form {
   display: grid;
   gap: 12px;
