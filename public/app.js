@@ -364,11 +364,14 @@ async function refreshJournal() {
   const load = async () => {
     if (journalSub === 'diary') {
       const events = (await api('/api/events')).filter(e => e.kind === 'diary');
-      return events.map(e => {
-        let content = e.content, emotion = null;
-        try { const parsed = JSON.parse(e.content); content = parsed.content; emotion = parsed.emotion; } catch { /* 原样 */ }
-        return { id: e.id, at: e.created_at, title: entryDate(e.created_at), body: content, badge: emotion !== null && Math.abs(emotion) >= 0.2 ? (emotion > 0 ? '开心的' : '难过的') : '' };
-      });
+      // 日记从新到旧：夜里的她最先想被读到的是昨天的自己。
+      return events
+        .sort((a, b) => b.created_at - a.created_at)
+        .map(e => {
+          let content = e.content, emotion = null;
+          try { const parsed = JSON.parse(e.content); content = parsed.content; emotion = parsed.emotion; } catch { /* 原样 */ }
+          return { id: e.id, at: e.created_at, title: entryDate(e.created_at), body: content, badge: emotion !== null && Math.abs(emotion) >= 0.2 ? (emotion > 0 ? '开心的' : '难过的') : '' };
+        });
     }
     if (journalSub === 'memories') {
       const memories = await api('/api/memories');
