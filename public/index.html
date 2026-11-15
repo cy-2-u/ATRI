@@ -107,7 +107,7 @@
 
       <div id="views" class="main">
         <!-- 对话 -->
-        <section id="view-chat" class="view chat-view" role="tabpanel" aria-labelledby="tab-chat" hidden>
+        <section id="view-chat" class="view chat-view" data-panel="chat" role="tabpanel" aria-labelledby="tab-chat" hidden>
           <div class="chat-main">
             <div id="chat-head" class="chat-head">
               <span id="chat-head-name" class="chat-head-name">她</span>
@@ -122,7 +122,7 @@
         </section>
 
         <!-- 内心 -->
-        <section id="view-journal" class="view" role="tabpanel" aria-labelledby="tab-journal" hidden>
+        <section id="view-journal" class="view" data-panel="journal" role="tabpanel" aria-labelledby="tab-journal" hidden>
           <div class="subtabs" role="tablist" aria-label="内心分区">
             <button class="subtab selected" data-journal="diary" role="tab" aria-selected="true">日记</button>
             <button class="subtab" data-journal="memories" role="tab" aria-selected="false">记忆</button>
@@ -133,7 +133,7 @@
         </section>
 
         <!-- 人设 -->
-        <section id="view-persona" class="view" role="tabpanel" aria-labelledby="tab-persona" hidden>
+        <section id="view-persona" class="view" data-panel="persona" role="tabpanel" aria-labelledby="tab-persona" hidden>
           <div class="settings-columns">
             <div class="settings-col">
               <div class="card">
@@ -198,7 +198,7 @@
         </section>
 
         <!-- 表情 -->
-        <section id="view-stickers" class="view" role="tabpanel" aria-labelledby="tab-stickers" hidden>
+        <section id="view-stickers" class="view" data-panel="stickers" role="tabpanel" aria-labelledby="tab-stickers" hidden>
           <div class="card">
             <h2>她的表情</h2>
             <p class="hint">最多启用 32 个；停用的不再进提示词目录。</p>
@@ -217,7 +217,7 @@
         </section>
 
         <!-- 系统 -->
-        <section id="view-system" class="view" role="tabpanel" aria-labelledby="tab-system" hidden>
+        <section id="view-system" class="view" data-panel="settings" role="tabpanel" aria-labelledby="tab-system" hidden>
           <div class="settings-columns">
             <div class="settings-col">
               <div class="card">

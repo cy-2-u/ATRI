@@ -350,6 +350,13 @@ svg {
   width: auto;
 }
 
+/* 日记列不随内容伸缩（单条时 735px、写多了又变宽——阅读宽度不稳定）：
+   固定 860px 居中，长文与单行都在同一条阅读线上。 */
+.view[data-panel='journal'] > .journal-list {
+  width: 100%;
+  max-width: 860px;
+}
+
 /* ---------- 通用组件 ---------- */
 
 .btn {
@@ -740,16 +747,23 @@ svg {
   cursor: pointer;
 }
 
-/* 断线横幅：安静的一行，不抢戏——她只是暂时联系不上。 */
+/* 断线横幅：顶部悬浮——它是 .app 网格外来客，塞进网格会被自动布局挤成
+   角落竖条；固定顶条不打断布局，任何页签下都看得见。 */
 .offline-banner {
-  margin: 0 0 10px;
-  padding: 9px 14px;
+  position: fixed;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 90;
+  max-width: min(480px, calc(100vw - 32px));
+  padding: 9px 16px;
   border: 1px solid var(--border);
   border-left: 3px solid var(--accent);
   border-radius: var(--radius-sm);
   background: var(--surface-2);
   color: var(--text-dim);
   font-size: 13px;
+  box-shadow: var(--shadow-xs);
 }
 
 /* checkbox 不吃 .field input 的 width:100%——否则复选框被拉满一行，
@@ -1753,9 +1767,15 @@ input.check,
   display: none;
 }
 
+/* 抽屉外层：HTML 结构是 .drawer 包 backdrop 与 body（与 CSS 最初设想的
+   "backdrop 包 drawer"相反），此前外层无定位被文档流塞进左下角。fixed
+   右侧全高，backdrop（fixed inset 0, z 60）垫底、抽屉本体 z 70。 */
 .drawer {
+  position: fixed;
+  inset: 0 0 0 auto;
   width: min(430px, 100%);
   height: 100%;
+  z-index: 70;
   background: var(--bg-soft);
   border-left: 1px solid var(--border);
   display: flex;
@@ -1948,6 +1968,23 @@ dialog .row {
     display: none;
   }
 
+  /* "她此刻"的状态条移动端单行横滑：六个 chip 折行会吃掉 200px+ 的
+     消息高度——横滑保住聊天区，细节左滑即得。 */
+  .chat-side .stack {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: nowrap;
+    gap: 6px;
+    overflow-x: auto;
+    min-width: 0;
+  }
+
+  .chat-side .status-chip {
+    flex: none;
+    margin: 0;
+    max-width: none;
+  }
+
   .peer-list {
     flex-direction: row;
   }
@@ -2017,6 +2054,7 @@ dialog .row {
   }
 
   .drawer {
+    inset: auto 0 0 auto;
     width: 100%;
     max-height: 88%;
     height: auto;

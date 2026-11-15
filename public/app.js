@@ -271,12 +271,13 @@ async function refreshChat() {
       list.append(el('div', day, 'date-sep'));
     }
     const she = event.kind === 'said';
-    const bubble = el('div', undefined, 'bubble' + (she ? ' she' : ''));
-    bubble.append(
-      el('div', bubbleText(event.content, she), 'bubble-text'),
-      el('div', timeText(event.created_at), 'bubble-meta'),
-    );
-    list.append(bubble);
+    // 消息结构 = .msg（方向与宽度）> .bubble（底色圆角）+ 时间戳——
+    // 此前把方向类压在 bubble 上、缺 .msg 层，气泡底色与左右对齐全丢。
+    const msg = el('div', undefined, 'msg ' + (she ? 'her' : 'mine'));
+    const bubble = el('div', undefined, 'bubble');
+    bubble.append(el('div', bubbleText(event.content, she), 'bubble-text'));
+    msg.append(bubble, el('div', timeText(event.created_at), 'bubble-meta'));
+    list.append(msg);
   }
   if (!visible.length)
     empty(list, '还没有对话。她的第一句话会出现在这里——这里只读：她聊天的对象在微信那头，不在管理页里。');

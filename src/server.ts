@@ -99,7 +99,12 @@ export function createServer(options: ServerOptions) {
     if (request.url.startsWith('/api/') || request.url === '/healthz') return reply.callNotFound();
     const raw = request.url.split('?')[0]!;
     if (raw.startsWith('/assets/stickers/')) {
-      const target = resolve(options.assetsRoot, raw.slice('/assets/'.length));
+      // assetsRoot 本身就是 assets/stickers：剥壳必须剥到同层——只剥
+      // '/assets/' 会多拼一层 stickers，全部表情图 404 成"（自定义文件）"。
+      // 前端把 file 编码为 memes%2F002.jpg：resolve 前先解码（解码后的
+      // 路径仍要过下面的越界检查，%2e%2e 同样被拦）。
+      const rel = decodeURIComponent(raw.slice('/assets/stickers/'.length));
+      const target = resolve(options.assetsRoot, rel);
       if (!target.startsWith(resolve(options.assetsRoot) + sep))
         return reply.code(403).send({ error: '路径无效' });
       if (!existsSync(target) || !statSync(target).isFile())
