@@ -177,20 +177,25 @@ export class Runtime {
 
   private async work(peer: string, signal: AbortSignal): Promise<void> {
     const envelopes = this.journal.blocked(peer) ? [] : this.journal.pending(peer);
+    // "输入中"的生命周期 = 从她开始想到气泡说出口：思考（含主动拍）一
+    // 开始就显示——想的时候就是在打字（v3 语义）；气泡到达前清除；多气
+    // 泡之间重新显示并按长度停顿。夜里独处的 diary/tidy 不显示。
+    const composing = (active: boolean): Promise<void> =>
+      Promise.resolve(this.options.onComposing?.(peer, active)).catch(() => undefined);
     const pacingOn =
       typeof this.options.pacing === 'function' ? this.options.pacing() : this.options.pacing;
+    let first = true;
     for (const envelope of envelopes) {
       if (signal.aborted || this.stopped) return;
-      // 每条气泡都先"输入中"再按长度打字：第一条也一样——秒回是机器，
-      // 打字是人；指示消失与气泡到达之间的那半拍就是她真实存在的时间。
-      // 间隔在占用发送位之前进行：被取消就保持待发，下次接着发。
-      if (pacingOn) {
-        await this.options.onComposing?.(peer, true).catch(() => undefined);
+      if (pacingOn && !first) {
+        // 气泡间隔在占用发送位之前进行：被取消就保持待发，下次接着发。
+        await composing(true);
         await delay(pacingMs(envelope.part), signal);
-        await this.options.onComposing?.(peer, false).catch(() => undefined);
         if (signal.aborted || this.stopped) return;
       }
+      await composing(false);
       if (!this.journal.startDelivery(envelope.id)) return;
+      first = false;
       let status: 'sent' | 'unknown' | 'failed';
       try {
         status = await this.options.send(peer, envelope.part);
@@ -205,7 +210,15 @@ export class Runtime {
     if (!job) return;
     const turn = this.journal.claim(peer, job.kind);
     if (!turn) return;
-    await this.think(turn, signal);
+    const showsTyping = turn.kind !== 'diary' && turn.kind !== 'tidy';
+    if (showsTyping) void composing(true);
+    try {
+      await this.think(turn, signal);
+    } finally {
+      // 没有就绪气泡（决定不说/失败/被打断）时把指示收掉，别让"输入中"
+      // 挂死；有气泡则由下一轮投递在到达前清除。
+      if (showsTyping && !this.journal.pending(peer).length) await composing(false);
+    }
   }
 
   /** 思考产出落库：心情、在做、在追先记账（她此刻的状态），然后草稿。
