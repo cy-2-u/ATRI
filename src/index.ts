@@ -323,6 +323,7 @@ function startBackgroundMaintenance(): void {
   // 夜间排期、关系演化与向量滴灌都是分钟级维护：低频定时器，空闲时零开销。
   const night = setInterval(() => {
     evolveCloseness(journal, Date.now(), config().timezone);
+    journal.expireUnknown(24 * 3_600_000);
     ensureRecurringJobs();
   }, 10 * 60_000);
   night.unref();

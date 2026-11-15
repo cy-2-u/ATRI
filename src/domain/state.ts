@@ -177,8 +177,13 @@ export function beatDelay(
 ): number {
   const needs = motives(state, now);
   let minutes = 90 - 72 * clamp(closeness);
-  if (state.lastReceivedAt && now - state.lastReceivedAt < 15 * 60_000)
+  // 他刚开口而她还没接住（最近一次收到晚于最近一次送达）：短拍警觉。
+  // 接完就回正常节拍——回复完还五分钟一醒，是闹钟不是人。
+  if (state.lastReceivedAt > state.lastDeliveredAt && now - state.lastReceivedAt < 15 * 60_000)
     minutes = Math.min(minutes, 5);
+  // 刚主动开过口还没等到回应：收敛，别追问——连着发主动消息是轰炸。
+  if (state.lastDeliveredAt > state.lastReceivedAt && now - state.lastDeliveredAt < 2 * 3_600_000)
+    minutes *= 1.35;
   if (Math.max(needs.boredom, needs.longing, state.expression) > 0.75) minutes *= 0.55;
   if (state.social < 0.3) minutes *= 1.6;
   return clamp(minutes * (0.75 + clamp(random) * 0.5), 3, 240) * 60_000;

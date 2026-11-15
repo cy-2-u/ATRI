@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   affect,
+  beatDelay,
   evolveSelf,
   initialSelf,
   motives,
@@ -76,4 +77,37 @@ test('睡眠窗支持负起点及跨午夜抖动，结束边界不算睡眠', ()
   assert.equal(sleepContains(700, -20, 400), false);
   assert.equal(sleepContains(60, 1380, 420), true);
   assert.equal(sleepContains(60, 60, 60), false);
+});
+
+test('警觉窗只在他说话而她未接时生效，接完即回正常节拍', () => {
+  const now = 100 * hour;
+  // 他刚开口、她还没接：短拍警觉（≤5 分钟，抖动后仍在 15 分钟窗内）。
+  const waiting = { ...initialSelf(now), lastReceivedAt: now - 60_000, lastDeliveredAt: 0 };
+  const alerted = beatDelay(waiting, now, 0.5, 0);
+  const normal = beatDelay({ ...initialSelf(now) }, now, 0.5, 0);
+  assert.ok(alerted < normal, '未接住时应当比正常节拍更密');
+  assert.ok(alerted <= 5 * 60_000 * 1.25 + 60_000, '警觉拍不超过 5 分钟档');
+  // 她已经接住（送达晚于收到）：即使收到的消息还在 15 分钟内，也不再警觉。
+  const answered = {
+    ...initialSelf(now),
+    lastReceivedAt: now - 60_000,
+    lastDeliveredAt: now - 30_000,
+  };
+  assert.ok(beatDelay(answered, now, 0.5, 0) >= normal);
+});
+
+test('刚主动开过口还没等到回应时收敛，防止连发轰炸', () => {
+  const now = 100 * hour;
+  // 他两小时前说过话，她三十秒前主动回了——此刻该收敛，不是更急。
+  const calm = {
+    ...initialSelf(now),
+    lastReceivedAt: now - 2 * hour,
+    lastDeliveredAt: now - 30_000,
+  };
+  const baseline = beatDelay({ ...initialSelf(now) }, now, 0.5, 0);
+  const delayed = beatDelay(calm, now, 0.5, 0);
+  assert.ok(delayed > baseline, '主动后未获回应应当收敛');
+  // 等满两小时后收敛解除。
+  const settled = beatDelay(calm, now + 3 * hour, 0.5, 0);
+  assert.ok(Math.abs(settled - baseline) < 1e-9);
 });

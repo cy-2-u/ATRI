@@ -384,6 +384,24 @@ export class Journal {
     });
   }
 
+  /** 悬置过久的 unknown 发送按失败收场：unknown 封住投递通道（blocked），
+   *  管理员不在时她会对着满 pending 的队列一直闭嘴。等确认的语义有时限，
+   *  超时后交给"没发出去"的真实——说不成的话下一拍自然会重想。 */
+  expireUnknown(timeoutMs: number): number {
+    return this.transaction(() => {
+      const changed = Number(
+        this.statement(
+          "UPDATE kernel_outbox SET status='failed' WHERE status='unknown' AND created_at <= ?",
+        ).run(this.now() - timeoutMs).changes,
+      );
+      if (changed)
+        this.statement(
+          "UPDATE kernel_turns SET state='done' WHERE state='ready' AND id NOT IN (SELECT turn_id FROM kernel_outbox WHERE status IN ('pending','sending','unknown'))",
+        ).run();
+      return changed;
+    });
+  }
+
   receipt(turn: Turn, tool: string, result: unknown, succeeded: boolean): string {
     return this.transaction(() => {
       const id = randomUUID();

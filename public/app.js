@@ -1076,7 +1076,10 @@ $('wechat-login').onclick = () =>
     await api('/api/wechat/login', { method: 'POST' });
     show('二维码生成中，几秒后刷新这里。');
     setTimeout(refreshDrawers, 3000);
+    // 扫码窗口 5 分钟：人走了或一直没扫就停轮询，别让观察者永远空转。
+    const started = Date.now();
     const watch = setInterval(async () => {
+      if (Date.now() - started > 5 * 60_000) return clearInterval(watch);
       const status = await api('/api/wechat/status').catch(() => null);
       if (!status) return clearInterval(watch);
       if (status.status === '已连接') {
