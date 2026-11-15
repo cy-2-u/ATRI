@@ -22,6 +22,7 @@ export function buildOldDb(path: string): void {
     CREATE TABLE self (id INTEGER PRIMARY KEY CHECK(id=1), activity TEXT, activity_since INTEGER, pursuit TEXT, pursuit_since INTEGER, social REAL, express REAL, last_stimulus_at INTEGER, updated_at INTEGER);
     CREATE TABLE diary_sections (id TEXT PRIMARY KEY, peer_id TEXT, task_id TEXT, ordinal INTEGER, day TEXT, content TEXT, sources TEXT, status TEXT, emotion REAL, created_at INTEGER);
     CREATE TABLE life_log (id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER, kind TEXT, text TEXT, artifact TEXT);
+    CREATE TABLE usage (id INTEGER PRIMARY KEY, peer_id TEXT, task_id TEXT, purpose TEXT, input_tokens INTEGER, output_tokens INTEGER, duration_ms INTEGER, created_at INTEGER, cached_tokens INTEGER NOT NULL DEFAULT 0);
     CREATE TABLE memory_embeddings (id TEXT PRIMARY KEY, peer_id TEXT, kind TEXT, vector BLOB, dims INTEGER, model TEXT, created_at INTEGER);
   `);
   const peer = 'wechat:acc:alice';
@@ -145,6 +146,12 @@ export function buildOldDb(path: string): void {
   sql
     .prepare(`INSERT INTO life_log (at, kind, text, artifact) VALUES(?,?,?,?)`)
     .run(Date.now() - 5 * 3600_000, 'did', '画了一张水母图', '');
+  // 用量历史：一条在 7 天窗口内、一条在窗口外——面板按窗口过滤。
+  const insertUsage = sql.prepare(
+    `INSERT INTO usage (peer_id, task_id, purpose, input_tokens, output_tokens, duration_ms, created_at, cached_tokens) VALUES(?,?,?,?,?,?,?,?)`,
+  );
+  insertUsage.run(peer, 't-1', 'chat', 1200, 300, 4000, Date.now() - 2 * 86400000, 200);
+  insertUsage.run(peer, 't-2', 'pulse', 800, 40, 2000, Date.now() - 10 * 86400000, 0);
   const vector = new Float32Array([1, 2, 3]);
   sql
     .prepare(
@@ -221,6 +228,7 @@ test('老库 → 新内核：ID 对齐、六变量投影、会话凭据保留', 
       commitments: 2,
       thoughts: 1,
       vectors: 1,
+      usage: 2,
       config: true,
     });
 
@@ -273,6 +281,13 @@ test('老库 → 新内核：ID 对齐、六变量投影、会话凭据保留', 
     assert.equal(config?.webSearchKey, 'tvly-old');
     assert.ok(!('temperature' in (config?.primary ?? {})));
     assert.equal(journal.mood(peer)?.valence, 0.4);
+    // 用量历史全部映射到主渠道；"近 7 天"只看到窗口内那条。
+    const usage = journal.usage(7);
+    assert.equal(usage.length, 1);
+    assert.equal(usage[0]!.purpose, 'primary');
+    assert.equal(usage[0]!.input, 1200);
+    assert.equal(usage[0]!.output, 300);
+    assert.equal(usage[0]!.cached, 200);
     journal.close();
   } catch (error) {
     assert.fail(error instanceof Error ? error.message : String(error));

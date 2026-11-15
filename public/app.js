@@ -154,12 +154,21 @@ for (const sub of document.querySelectorAll('#view-journal .subtab')) {
 
 // ---------- 抽屉 ----------
 
+// 非阻塞侧板：点开关在开/合间切换，点面板外任意处收起，Esc 全收。
+// 全页遮罩是对话框的做法——这两块是随手瞟一眼的侧板，遮住页面反而碍事。
 for (const opener of document.querySelectorAll('[data-drawer]')) {
-  opener.onclick = () => {
-    $(opener.dataset.drawer).hidden = false;
-    refreshDrawers();
+  opener.onclick = (event) => {
+    event.stopPropagation();
+    const drawer = $(opener.dataset.drawer);
+    drawer.hidden = !drawer.hidden;
+    if (!drawer.hidden) refreshDrawers();
   };
 }
+document.addEventListener('click', (event) => {
+  for (const drawer of document.querySelectorAll('.drawer')) {
+    if (!drawer.hidden && !drawer.contains(event.target)) drawer.hidden = true;
+  }
+});
 for (const closer of document.querySelectorAll('[data-close]')) {
   closer.onclick = () => closer.closest('.drawer').hidden = true;
 }
@@ -505,7 +514,8 @@ function fillSystemForm(config) {
   $('primary-url').value = primary.baseUrl ?? '';
   $('primary-key').value = '';
   $('primary-key-state').textContent = primary.hasApiKey ? '（已保存）' : '（未设置）';
-  $('primary-clear').checked = false;
+  // 已存的密钥不回填明文，但也不能是空白——占位点告诉用户"这里有钥匙"。
+  $('primary-key').placeholder = primary.hasApiKey ? '••••••••' : '';
   $('primary-vision').checked = Boolean(primary.vision);
   $('primary-temp').value = primary.temperature ?? '';
   $('primary-timeout').value = primary.timeoutMs ?? 45000;
@@ -520,16 +530,19 @@ function fillSystemForm(config) {
     $('fallback-url').value = fallback.baseUrl ?? '';
     $('fallback-key').value = '';
     $('fallback-key-state').textContent = fallback.hasApiKey ? '（已保存）' : '（未设置）';
+    $('fallback-key').placeholder = fallback.hasApiKey ? '••••••••' : '';
   }
-  $('fallback-clear').checked = false;
   $('web-key').value = '';
   $('web-key-state').textContent = config.hasWebSearchKey ? '（已保存）' : '（未设置）';
+  $('web-key').placeholder = config.hasWebSearchKey ? '••••••••' : '';
   const embedding = config.embedding;
+  $('embedding-on').checked = Boolean(embedding);
+  $('embedding-fields').hidden = !embedding;
   $('embedding-model').value = embedding?.model ?? '';
   $('embedding-url').value = embedding?.baseUrl ?? '';
   $('embedding-key').value = '';
   $('embedding-key-state').textContent = embedding?.hasApiKey ? '（已保存）' : '（未设置）';
-  $('embedding-clear').checked = false;
+  $('embedding-key').placeholder = embedding?.hasApiKey ? '••••••••' : '';
   const sandbox = config.sandbox ?? {};
   $('sandbox-on').checked = Boolean(sandbox.enabled);
   $('sandbox-net').checked = Boolean(sandbox.network);
@@ -537,6 +550,7 @@ function fillSystemForm(config) {
   $('sandbox-memory').value = sandbox.memoryLimitMb ?? 2048;
 }
 $('fallback-on').onchange = () => { $('fallback-fields').hidden = !$('fallback-on').checked; };
+$('embedding-on').onchange = () => { $('embedding-fields').hidden = !$('embedding-on').checked; };
 
 $('save-system').onclick = () => perform(async () => {
   const primary = {
@@ -551,7 +565,6 @@ $('save-system').onclick = () => perform(async () => {
   };
   if ($('primary-temp').value !== '') primary.temperature = Number($('primary-temp').value);
   if ($('primary-key').value.trim()) primary.apiKey = $('primary-key').value.trim();
-  if ($('primary-clear').checked) primary.clearApiKey = true;
   const body = { primary, sandbox: {
     enabled: $('sandbox-on').checked, network: $('sandbox-net').checked,
     sizeLimitMb: Number($('sandbox-size').value), memoryLimitMb: Number($('sandbox-memory').value),
@@ -569,15 +582,23 @@ $('save-system').onclick = () => perform(async () => {
       retries: primary.retries,
     };
     if ($('fallback-key').value.trim()) fallback.apiKey = $('fallback-key').value.trim();
-    if ($('fallback-clear').checked) fallback.clearApiKey = true;
     body.fallback = fallback;
   } else body.fallback = null;
   if ($('web-key').value.trim()) body.webSearchKey = $('web-key').value.trim();
-  if ($('embedding-clear').checked) body.embedding = null;
-  else if ($('embedding-model').value.trim() || $('embedding-key').value.trim()) {
+  if (!$('embedding-on').checked) body.embedding = null;
+  else {
+    // 勾着"启用"却没给模型：不静默吞掉，直接说明缺什么。
+    const model = $('embedding-model').value.trim();
+    if (!model) throw new Error('启用向量搜索需要填写向量模型');
     body.embedding = {
-      model: $('embedding-model').value.trim(),
-      baseUrl: $('embedding-url').value.trim(),
+      model,
+      // 留空复用主渠道：先取旧向量地址，再退主渠道地址，都没有才交给
+      // 后端报错——标签说的"留空复用"要真的成立。
+      baseUrl:
+        $('embedding-url').value.trim() ||
+        configCache?.embedding?.baseUrl ||
+        configCache?.primary?.baseUrl ||
+        '',
       ...( $('embedding-key').value.trim() ? { apiKey: $('embedding-key').value.trim() } : {}),
     };
   }
@@ -675,6 +696,8 @@ async function refreshDrawers() {
     row.replaceChildren(el('p', `状态：${status.status}${status.error ? `（${status.error}）` : ''}${status.lastPollAt ? ` · 最近轮询 ${timeText(status.lastPollAt)}` : ''}`, 'row-title'));
     const qr = $('wechat-qr');
     qr.replaceChildren();
+    // 没二维码就整框藏起：白底圆角的空壳悬在状态行下面，看着像一个坏掉的输入框。
+    qr.hidden = !status.qrData;
     if (status.qrData) {
       const img = el('img');
       img.alt = '微信扫码';

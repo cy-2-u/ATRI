@@ -21,6 +21,8 @@ export interface ServerOptions {
   stickers: Stickers;
   sandbox?: Sandbox;
   webConfigured(): boolean;
+  /** 配置落库后回调：心跳开关打开时这里立刻补种她的下一拍，不等维护定时器。 */
+  onConfigChange?: () => void;
   staticRoot: string;
   /** 表情等只读资产的根（仅放行 assets/stickers/ 前缀）。 */
   assetsRoot: string;
@@ -168,6 +170,7 @@ export function createServer(options: ServerOptions) {
   app.get('/api/config', async () => options.settings.public());
   app.put('/api/config', async (request) => {
     options.settings.update(request.body);
+    options.onConfigChange?.();
     return options.settings.public();
   });
 

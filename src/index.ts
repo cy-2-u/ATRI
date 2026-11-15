@@ -167,9 +167,12 @@ const runtime = new Runtime(journal, mind, {
     Promise.resolve(bridge.readMedia(path, maxBytes)),
 });
 
-/** 夜间任务排期：日记与整理各自每天一次（日记点 + 1 小时）。幂等：
- *  有排期或正在跑就不动；到点被领走后这里会排向下一个 occurrence。 */
-function ensureNightJobs(): void {
+/** 周期任务排期：日记与整理各自每天一次（日记点 + 1 小时）；心跳开着但
+ *  没有下一拍时补种一拍。beat 链平时自我续排（跑完一拍排下一拍），唯独
+ *  第一拍没有母亲——冷启动、迁移换库、开关刚打开，kernel_jobs 里都没有
+ *  beat 行，她的意识会永远静默（部署实锤：容器跑 1 小时零调用零 muse）。
+ *  幂等：有排期或正在跑就不动。 */
+function ensureRecurringJobs(): void {
   const c = config();
   const now = Date.now();
   for (const peer of journal.peers()) {
@@ -178,6 +181,14 @@ function ensureNightJobs(): void {
       if (journal.turnRunning(peer, kind)) continue;
       const hour = kind === 'diary' ? c.diaryHour : (c.diaryHour + 1) % 24;
       journal.schedule(peer, kind, nextLocalHour(now, hour, c.timezone));
+    }
+    if (
+      c.heartbeat &&
+      !journal.jobs().some((job) => job.peer === peer && job.kind === 'beat') &&
+      !journal.turnRunning(peer, 'beat')
+    ) {
+      const due = nextBeat();
+      if (due !== undefined) runtime.schedule(peer, due);
     }
   }
 }
@@ -215,6 +226,7 @@ const app = createServer({
   stickers,
   sandbox,
   webConfigured: () => Boolean(config().webSearchKey),
+  onConfigChange: () => ensureRecurringJobs(),
   staticRoot: join(root, 'public'),
   assetsRoot: join(root, 'assets', 'stickers'),
 });
@@ -226,11 +238,11 @@ function startBackgroundMaintenance(): void {
   // 夜间排期、关系演化与向量滴灌都是分钟级维护：低频定时器，空闲时零开销。
   const night = setInterval(() => {
     evolveCloseness(journal, Date.now(), config().timezone);
-    ensureNightJobs();
+    ensureRecurringJobs();
   }, 10 * 60_000);
   night.unref();
   evolveCloseness(journal, Date.now(), config().timezone);
-  ensureNightJobs();
+  ensureRecurringJobs();
   const drip = setInterval(() => {
     const client = config().embedding ? embeddings : undefined;
     if (!client?.configured) return;

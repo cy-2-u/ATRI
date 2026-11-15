@@ -135,8 +135,8 @@
         <!-- 人设 -->
         <section id="view-persona" class="view" data-panel="persona" role="tabpanel" aria-labelledby="tab-persona" hidden>
           <div class="settings-columns">
-            <div class="settings-col">
-              <div class="card">
+            <div class="settings-col persona-col">
+              <div class="card persona-card">
                 <h2>她是谁</h2>
                 <label class="field">
                   <span>人格（她读到的自我描述）</span>
@@ -233,7 +233,6 @@
                   <span>密钥<span id="primary-key-state" class="hint"></span></span>
                   <input id="primary-key" type="password" autocomplete="new-password" />
                 </label>
-                <label class="field field-check"><input id="primary-clear" type="checkbox" class="check" /><span>清除已存密钥</span></label>
                 <label class="field field-check"><input id="primary-vision" type="checkbox" class="check" /><span>视觉（她能看图）</span></label>
                 <div class="grid-4">
                   <label class="field"><span>温度（可留空）</span><input id="primary-temp" type="number" min="0" max="2" step="0.1" /></label>
@@ -257,7 +256,6 @@
                     <span>密钥<span id="fallback-key-state" class="hint"></span></span>
                     <input id="fallback-key" type="password" autocomplete="new-password" />
                   </label>
-                  <label class="field field-check"><input id="fallback-clear" type="checkbox" class="check" /><span>清除已存密钥</span></label>
                 </div>
               </div>
               <div class="card">
@@ -266,15 +264,17 @@
                   <span>Tavily 搜索密钥<span id="web-key-state" class="hint"></span></span>
                   <input id="web-key" type="password" autocomplete="new-password" />
                 </label>
-                <div class="grid-2">
-                  <label class="field"><span>向量模型（留空关闭语义召回）</span><input id="embedding-model" type="text" /></label>
-                  <label class="field"><span>向量地址（留空复用主渠道）</span><input id="embedding-url" type="text" /></label>
+                <label class="field field-check"><input id="embedding-on" type="checkbox" class="check" /><span>启用向量搜索</span></label>
+                <div id="embedding-fields">
+                  <div class="grid-2">
+                    <label class="field"><span>向量模型</span><input id="embedding-model" type="text" /></label>
+                    <label class="field"><span>向量地址（留空复用主渠道）</span><input id="embedding-url" type="text" /></label>
+                  </div>
+                  <label class="field">
+                    <span>向量密钥<span id="embedding-key-state" class="hint"></span></span>
+                    <input id="embedding-key" type="password" autocomplete="new-password" />
+                  </label>
                 </div>
-                <label class="field">
-                  <span>向量密钥<span id="embedding-key-state" class="hint"></span></span>
-                  <input id="embedding-key" type="password" autocomplete="new-password" />
-                </label>
-                <label class="field field-check"><input id="embedding-clear" type="checkbox" class="check" /><span>停用向量检索</span></label>
                 <p id="embeddings-state" class="hint"></p>
               </div>
             </div>
@@ -302,10 +302,9 @@
         </section>
       </div>
 
-      <!-- 微信连接 -->
+      <!-- 微信连接：非阻塞侧板——点外面收起，不罩全页遮罩 -->
       <div id="drawer-connection" class="drawer" hidden>
-        <div class="drawer-backdrop" data-close></div>
-        <div class="drawer-body" role="dialog" aria-modal="true" aria-label="微信连接">
+        <div class="drawer-body" role="dialog" aria-modal="false" aria-label="微信连接">
           <div class="drawer-head">
             <h2>微信连接</h2>
             <button class="icon-btn" type="button" data-close aria-label="关闭">
@@ -314,7 +313,7 @@
           </div>
           <div class="drawer-body-inner stack">
             <div id="wechat-status" class="row"></div>
-            <div id="wechat-qr" class="qr"></div>
+            <div id="wechat-qr" class="qr" hidden></div>
             <div class="actions">
               <button id="wechat-login" class="btn primary">扫码登录</button>
               <button id="wechat-logout" class="btn ghost danger">退出微信</button>
@@ -326,8 +325,7 @@
 
       <!-- 待办 -->
       <div id="drawer-issues" class="drawer" hidden>
-        <div class="drawer-backdrop" data-close></div>
-        <div class="drawer-body" role="dialog" aria-modal="true" aria-label="待处理事项">
+        <div class="drawer-body" role="dialog" aria-modal="false" aria-label="待处理事项">
           <div class="drawer-head">
             <h2>待处理事项</h2>
             <button class="icon-btn" type="button" data-close aria-label="关闭">

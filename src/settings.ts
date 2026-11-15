@@ -58,7 +58,6 @@ function endpoint(value: unknown, previous: Endpoint): Endpoint {
     'format',
     'baseUrl',
     'apiKey',
-    'clearApiKey',
     'model',
     'vision',
     'timeoutMs',
@@ -83,15 +82,14 @@ function endpoint(value: unknown, previous: Endpoint): Endpoint {
     throw new TypeError('渠道地址必须是无凭据、查询参数和片段的 HTTP 地址');
   if (typeof merged.model !== 'string' || !merged.model.trim() || merged.model.length > 200)
     throw new TypeError('模型名称无效');
-  if (patch.clearApiKey !== undefined) boolean(patch.clearApiKey, 'clearApiKey');
   if (patch.apiKey !== undefined && typeof patch.apiKey !== 'string')
     throw new TypeError('密钥必须是字符串');
+  // 留空保持旧密钥；换密钥直接贴新的。"清除已存密钥"入口已删——
+  // 换钥匙是常态，拔钥匙不是。
   const apiKey =
-    patch.clearApiKey === true
-      ? ''
-      : typeof patch.apiKey === 'string' && patch.apiKey.trim()
-        ? patch.apiKey.trim()
-        : previous.apiKey;
+    typeof patch.apiKey === 'string' && patch.apiKey.trim()
+      ? patch.apiKey.trim()
+      : previous.apiKey;
   const result: Endpoint = {
     format: merged.format as Format,
     baseUrl: url.toString().replace(/\/+$/, ''),

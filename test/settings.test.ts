@@ -9,7 +9,7 @@ function fixture() {
   return { journal, settings };
 }
 
-test('备用渠道密钥独立，公开配置剥离两套密钥，留空保持、显式清除', () => {
+test('备用渠道密钥独立，公开配置剥离两套密钥，留空保持', () => {
   const { journal, settings } = fixture();
   try {
     settings.update({ fallback: { model: 'backup-model', apiKey: 'backup-secret' } });
@@ -19,9 +19,8 @@ test('备用渠道密钥独立，公开配置剥离两套密钥，留空保持�
     settings.update({ primary: { apiKey: '' }, fallback: { apiKey: '' } });
     assert.equal(settings.routes().primary.apiKey, 'primary-secret');
     assert.equal(settings.routes().fallback!.apiKey, 'backup-secret');
-    settings.update({ fallback: { clearApiKey: true } });
-    assert.equal(settings.routes().fallback!.apiKey, '');
-    assert.equal(settings.routes().primary.apiKey, 'primary-secret');
+    settings.update({ fallback: { apiKey: 'backup-secret-2' } });
+    assert.equal(settings.routes().fallback!.apiKey, 'backup-secret-2');
     settings.update({ fallback: null });
     assert.equal(settings.routes().fallback, undefined);
   } finally {

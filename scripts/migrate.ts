@@ -16,6 +16,8 @@ export interface MigrationSummary {
   commitments: number;
   thoughts: number;
   vectors: number;
+  /** 旧用量行数（近 7 天面板的历史）。 */
+  usage: number;
   /** 旧 config（LLM 密钥/心跳/沙箱）是否成功映射；false 时需管理页手动重填。 */
   config?: boolean;
 }
@@ -40,6 +42,7 @@ export function migrate(oldPath: string, newPath: string): MigrationSummary {
     commitments: 0,
     thoughts: 0,
     vectors: 0,
+    usage: 0,
   };
   fresh.exec('BEGIN IMMEDIATE');
   try {
@@ -523,6 +526,35 @@ export function migrate(oldPath: string, newPath: string): MigrationSummary {
         .prepare('INSERT OR REPLACE INTO kernel_embeddings(id,model,vector,at) VALUES(?,?,?,?)')
         .run(e.id, e.model, e.vector, now);
       summary.vectors++;
+    }
+
+    // --- 用量历史：旧表按任务记账（chat/pulse/diary…），新表按渠道。
+    // v5 只有一条主渠道，全部映射 primary——"近 7 天"面板不丢她过去的
+    // 每一次思考的成本。旧表不存在（更老的备份）就跳过。 ---
+    const hasUsage = old.prepare(`SELECT 1 FROM sqlite_master WHERE name='usage'`).get();
+    if (hasUsage) {
+      const usageRows = old
+        .prepare(`SELECT input_tokens, output_tokens, cached_tokens, created_at FROM usage`)
+        .all() as unknown as {
+        input_tokens: number;
+        output_tokens: number;
+        cached_tokens: number;
+        created_at: number;
+      }[];
+      const insertUsage = fresh.prepare(
+        'INSERT OR IGNORE INTO kernel_usage(purpose,model,input,output,cached,at) VALUES(?,?,?,?,?,?)',
+      );
+      for (const row of usageRows) {
+        insertUsage.run(
+          'primary',
+          '',
+          row.input_tokens,
+          row.output_tokens,
+          row.cached_tokens ?? 0,
+          row.created_at,
+        );
+        summary.usage++;
+      }
     }
 
     fresh.exec('COMMIT');

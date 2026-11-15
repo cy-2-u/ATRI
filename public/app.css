@@ -1552,7 +1552,7 @@ input.check,
     display: grid;
     grid-template-columns: minmax(0, 1fr) minmax(320px, 400px);
     gap: 16px;
-    align-items: start;
+    align-items: stretch;
   }
 
   .settings-col {
@@ -1567,6 +1567,25 @@ input.check,
     position: sticky;
     top: 0;
   }
+}
+
+/* 人设卡撑满列高：人格框是全页最大的编辑面，右列节律卡有多高它就有多
+   高——底边对齐，框不再比邻居矮一截；手机上退化为固定的大框。 */
+.persona-col .card {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.persona-card .field {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+#persona-text {
+  flex: 1;
+  min-height: 460px;
 }
 
 /* Between the mobile breakpoint and a comfortable desktop width, the left
@@ -1753,23 +1772,8 @@ input.check,
 
 /* ---------- 抽屉 ---------- */
 
-.drawer-backdrop {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.45);
-  backdrop-filter: blur(2px);
-  z-index: 60;
-  display: flex;
-  justify-content: flex-end;
-}
-
-.drawer-backdrop[hidden] {
-  display: none;
-}
-
-/* 抽屉外层：HTML 结构是 .drawer 包 backdrop 与 body（与 CSS 最初设想的
-   "backdrop 包 drawer"相反），此前外层无定位被文档流塞进左下角。fixed
-   右侧全高，backdrop（fixed inset 0, z 60）垫底、抽屉本体 z 70。 */
+/* 抽屉外层：fixed 右侧全高的非阻塞侧板。没有全页遮罩——它蒙住整个
+   页面，把"瞟一眼状态"变成"必须先关掉对话框"；面板外点击即收起。 */
 .drawer {
   position: fixed;
   inset: 0 0 0 auto;
@@ -1828,6 +1832,12 @@ input.check,
   border-radius: 10px;
   background: #fff;
   padding: 8px;
+}
+
+/* .qr 的 display:block 会压过 hidden 属性的 UA 样式——没有二维码时
+   必须显式藏起，否则留一个白底空壳悬在状态行下面。 */
+.qr[hidden] {
+  display: none;
 }
 
 /* ---------- 对话框与提示 ---------- */
@@ -2046,11 +2056,6 @@ dialog .row {
 
   .pill {
     padding: 7px 13px;
-  }
-
-  .drawer-backdrop {
-    justify-content: center;
-    align-items: flex-end;
   }
 
   .drawer {
