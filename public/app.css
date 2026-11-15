@@ -753,27 +753,16 @@ svg {
 }
 
 /* checkbox 不吃 .field input 的 width:100%——否则复选框被拉满一行，
-   与标签中间隔出大片空白（走查截图实锤）。 */
+   与标签中间隔出大片空白（走查截图实锤）。.check 历史上误挂过整行样式
+   （flex/gap/margin 全作用在勾选框自身），4px/12px 外边距在 flex 行里把
+   勾选框推得与文字一高一低——现在只管勾选框本身，外边距归零。 */
+input.check,
 .field input[type='checkbox'] {
   width: 17px;
   height: 17px;
+  margin: 0;
   flex: none;
   border-radius: 3px;
-  accent-color: var(--accent);
-}
-
-.check {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin: 4px 0 12px;
-  font-size: 14px;
-  cursor: pointer;
-}
-
-.check input {
-  width: 17px;
-  height: 17px;
   accent-color: var(--accent);
 }
 
