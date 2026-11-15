@@ -68,7 +68,7 @@ test('心情与在做/在追经 runtime 落库，影响下一拍材料', async (
   try {
     runtime.start();
     runtime.receive('peer', 'one', 'hi');
-    const deadline = Date.now() + 2000;
+    const deadline = Date.now() + 6000;
     while (Date.now() < deadline && !journal.events('peer').some((e) => e.kind === 'said'))
       await delay(5);
     assert.equal(sent[0], 'hola');
@@ -117,11 +117,11 @@ test('目录外的表情整条丢弃，只剩无效表情的 speak 判失败不�
   try {
     runtime.start();
     runtime.receive('peer', 'one', 'a');
-    let deadline = Date.now() + 2000;
+    let deadline = Date.now() + 6000;
     while (Date.now() < deadline && !sent.length) await delay(5);
     assert.deepEqual(sent, ['有字']);
     runtime.receive('peer', 'two', 'b');
-    deadline = Date.now() + 2000;
+    deadline = Date.now() + 6000;
     while (
       Date.now() < deadline &&
       !journal.events('peer').some((e) => e.kind === 'failure' && e.content.includes('表情'))
@@ -172,7 +172,7 @@ test('多气泡按长度节奏投递，被打断时保持待发', async () => {
   try {
     runtime.start();
     runtime.receive('peer', 'one', 'hi');
-    const deadline = Date.now() + 2000;
+    const deadline = Date.now() + 6000;
     while (Date.now() < deadline && sent.length < 2) await delay(5);
     assert.deepEqual(sent, ['a', 'b']);
     // 第二条有停顿：第一条送达后 effects 已提交，但两气泡同轮。

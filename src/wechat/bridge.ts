@@ -35,6 +35,9 @@ export class WechatBridge {
   };
   private runtime?: Runtime;
   private stopped = true;
+  /** 共享客户端：typing_ticket 的 20h 缓存在实例里，每次 new 等于缓存
+   *  永远失效（每条气泡都先取一次 ticket）。换绑/重登才重建。 */
+  private shared?: { session: WechatSession; client: WechatClient };
 
   constructor(
     private readonly journal: Journal,
@@ -61,6 +64,13 @@ export class WechatBridge {
     const account = this.session?.account ?? this.journal.setting('wechat:account', '');
     if (!account) throw new Error('微信账号尚未确定');
     return `wechat:${account}:${address}`;
+  }
+
+  private sharedClient(): WechatClient {
+    if (!this.session) throw new Error('微信账号尚未确定');
+    if (!this.shared || this.shared.session !== this.session)
+      this.shared = { session: this.session, client: new WechatClient(this.session) };
+    return this.shared.client;
   }
 
   approve(address: string): void {
@@ -172,6 +182,7 @@ export class WechatBridge {
     this.loginTask?.controller.abort();
     this.polling?.controller.abort();
     this.session = undefined;
+    this.shared = undefined;
     this.journal.setSetting('wechat:session', null);
     this.state = { status: '未登录' };
     await Promise.allSettled([this.loginTask?.promise, this.polling?.promise]);
@@ -253,7 +264,7 @@ export class WechatBridge {
     if (!text.trim()) return;
 
     const media: { path: string; mime: string }[] = [];
-    const client = this.session ? new WechatClient(this.session) : undefined;
+    const client = this.session ? this.sharedClient() : undefined;
     for (const ref of refs.filter((item) => item.kind === 'image').slice(0, 2)) {
       if (!client) break;
       try {
@@ -273,13 +284,13 @@ export class WechatBridge {
     this.runtime?.receive(this.peer(contact.address), key, content.slice(0, 12000));
   }
 
-  /** 对方的"输入中"指示：气泡间隔期间的打字感。 */
+  /** 对方的"输入中"指示：气泡到达前的打字感。 */
   async composing(peer: string, active: boolean): Promise<void> {
     const contact = this.contacts().find(
       (item) => this.peer(item.address) === peer && item.approved,
     );
     if (!this.session || !contact?.context) return;
-    await new WechatClient(this.session).typing(contact.address, contact.context, active);
+    await this.sharedClient().typing(contact.address, contact.context, active);
   }
 
   async send(peer: string, part: Bubble): Promise<'sent' | 'unknown' | 'failed'> {
@@ -287,7 +298,7 @@ export class WechatBridge {
       (item) => this.peer(item.address) === peer && item.approved,
     );
     if (!this.session || !contact?.context) return 'failed';
-    const client = new WechatClient(this.session);
+    const client = this.sharedClient();
     try {
       if (part.type === 'text')
         await client.sendText(contact.address, contact.context, part.text ?? '');

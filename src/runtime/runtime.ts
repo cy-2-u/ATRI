@@ -177,20 +177,20 @@ export class Runtime {
 
   private async work(peer: string, signal: AbortSignal): Promise<void> {
     const envelopes = this.journal.blocked(peer) ? [] : this.journal.pending(peer);
-    let first = true;
     const pacingOn =
       typeof this.options.pacing === 'function' ? this.options.pacing() : this.options.pacing;
     for (const envelope of envelopes) {
       if (signal.aborted || this.stopped) return;
-      if (!first && pacingOn) {
-        // 气泡间隔在占用发送位之前进行：被取消就保持待发，下次接着发。
+      // 每条气泡都先"输入中"再按长度打字：第一条也一样——秒回是机器，
+      // 打字是人；指示消失与气泡到达之间的那半拍就是她真实存在的时间。
+      // 间隔在占用发送位之前进行：被取消就保持待发，下次接着发。
+      if (pacingOn) {
         await this.options.onComposing?.(peer, true).catch(() => undefined);
         await delay(pacingMs(envelope.part), signal);
         await this.options.onComposing?.(peer, false).catch(() => undefined);
         if (signal.aborted || this.stopped) return;
       }
       if (!this.journal.startDelivery(envelope.id)) return;
-      first = false;
       let status: 'sent' | 'unknown' | 'failed';
       try {
         status = await this.options.send(peer, envelope.part);
