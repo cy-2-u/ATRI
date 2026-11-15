@@ -16,6 +16,8 @@ export interface MigrationSummary {
   commitments: number;
   thoughts: number;
   vectors: number;
+  /** 旧 config（LLM 密钥/心跳/沙箱）是否成功映射；false 时需管理页手动重填。 */
+  config?: boolean;
 }
 
 const parse = <T>(value: unknown, fallback: T): T => {
@@ -359,26 +361,143 @@ export function migrate(oldPath: string, newPath: string): MigrationSummary {
       fresh
         .prepare('INSERT OR REPLACE INTO kernel_settings(key,value) VALUES(?,?)')
         .run('self', JSON.stringify(value));
-      const mood = old.prepare(`SELECT value FROM settings WHERE key='mood'`).get();
-      if (mood)
+      // 旧版心情键两种形态都在：早期无后缀 'mood'，后来 'mood:<peer>'。
+      // 无后缀的映射到唯一 peer；带后缀的原样搬。
+      const legacyMood = old.prepare(`SELECT value FROM settings WHERE key='mood'`).get() as
+        { value: string } | undefined;
+      if (legacyMood)
         fresh
           .prepare('INSERT OR REPLACE INTO kernel_settings(key,value) VALUES(?,?)')
-          .run(`mood:${peer}`, String(mood.value));
+          .run(`mood:${peer}`, String(legacyMood.value));
+      const moods = old
+        .prepare(`SELECT key, value FROM settings WHERE key LIKE 'mood:%'`)
+        .all() as unknown as { key: string; value: string }[];
+      for (const mood of moods)
+        fresh
+          .prepare('INSERT OR REPLACE INTO kernel_settings(key,value) VALUES(?,?)')
+          .run(mood.key, String(mood.value));
+    }
+
+    // --- 旧 config 全量映射：LLM 密钥、心跳、沙箱、人格都在这一行里，
+    //     不搬则新内核带着空配置上线（她的眼睛和手全部失灵）。 ---
+    const oldConfigRow = old.prepare(`SELECT value FROM settings WHERE key='config'`).get() as
+      { value: string } | undefined;
+    if (oldConfigRow) {
+      try {
+        const c = JSON.parse(String(oldConfigRow.value)) as Record<string, any>;
+        const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+        const primary: Record<string, unknown> = {
+          format: c.format || 'openai',
+          baseUrl: c.baseUrl,
+          apiKey: c.apiKey || '',
+          model: c.model,
+          vision: !!c.vision,
+          timeoutMs: clamp((c.requestTimeoutSeconds || 45) * 1000, 1000, 180000),
+          maxTokens: clamp(c.maxOutputTokens || 3000, 128, 32768),
+          inputTokens: clamp(c.inputBudgetTokens || c.contextWindowTokens || 24000, 1024, 1000000),
+          retries: 2,
+        };
+        if (c.temperature !== undefined && c.temperature !== null)
+          primary.temperature = clamp(Number(c.temperature), 0, 2);
+        const config: Record<string, unknown> = {
+          primary,
+          heartbeat: !!c.proactiveEnabled,
+          closeness: clamp(Math.round(c.clinginess ?? 50), 0, 100),
+          timezone: c.timeZone || 'Asia/Shanghai',
+          sleepStart: c.sleepStart ?? 60,
+          sleepEnd: c.sleepEnd ?? 420,
+          diaryHour: c.diaryHour ?? 3,
+          turnTimeoutMs: clamp((c.turnTimeoutSeconds || 180) * 1000, 5000, 600000),
+          debounceMs: c.debounceMs ?? 800,
+          concurrency: clamp(c.maxConcurrentPeers ?? 3, 1, 16),
+          persona: '',
+          webSearchKey: c.tavilyKey || '',
+          sandbox: {
+            enabled: !!c.sandboxEnabled,
+            network: !!c.sandboxNetwork,
+            sizeLimitMb: c.sandboxSizeMb || 512,
+            memoryLimitMb: c.sandboxMemoryMb || 2048,
+            timeoutMs: clamp((c.sandboxTimeoutSeconds || 600) * 1000, 0, 1800000),
+          },
+        };
+        if (c.embeddingEnabled && c.embeddingModel && c.embeddingApiKey) {
+          config.embedding = {
+            baseUrl: c.embeddingBaseUrl || c.baseUrl || '',
+            apiKey: c.embeddingApiKey,
+            model: c.embeddingModel,
+          };
+        }
+        try {
+          const personas = JSON.parse(
+            String(
+              old.prepare(`SELECT value FROM settings WHERE key='personas'`).get()?.value ?? '[]',
+            ),
+          ) as { id?: string; content?: string }[];
+          const current = personas.find((p) => p.id === 'default') ?? personas[0];
+          if (current?.content) config.persona = String(current.content).slice(0, 20000);
+        } catch {
+          // 人格存档读不出就走默认提示词
+        }
+        fresh
+          .prepare('INSERT OR REPLACE INTO kernel_settings(key,value) VALUES(?,?)')
+          .run('config', JSON.stringify(config));
+        summary.config = true;
+      } catch (error) {
+        console.error(
+          'config 迁移失败（管理页需手动重填）：',
+          error instanceof Error ? error.message : error,
+        );
+        summary.config = false;
+      }
     }
 
     // --- 微信会话与表情设置（免重新扫码）---
-    for (const key of [
-      'wechat:session',
-      'wechat:account',
-      'stickers:custom',
-      'stickers:disabled',
-    ]) {
+    // 会话键名旧版是 {botToken, baseUrl, accountId}，新版读 {token, baseUrl,
+    // account}——不转换则新内核拿着 Bearer undefined 被微信拒 -14，
+    // bridge 还会把 session 清掉，联系人直接"登录已过期"。
+    const sessionRow = old
+      .prepare(`SELECT value FROM settings WHERE key='wechat:session'`)
+      .get() as { value: string } | undefined;
+    if (sessionRow) {
+      try {
+        const oldSession = JSON.parse(String(sessionRow.value)) as {
+          token?: string;
+          botToken?: string;
+          baseUrl?: string;
+          account?: string;
+          accountId?: string;
+        };
+        const session = {
+          token: oldSession.token ?? oldSession.botToken ?? '',
+          baseUrl: oldSession.baseUrl ?? '',
+          account: oldSession.account ?? oldSession.accountId ?? '',
+        };
+        if (!session.token || !session.account) throw new Error('missing fields');
+        fresh
+          .prepare('INSERT OR REPLACE INTO kernel_settings(key,value) VALUES(?,?)')
+          .run('wechat:session', JSON.stringify(session));
+      } catch {
+        // 无法解析的会话原样落库：宁可让用户重扫，也不静默丢结构。
+        fresh
+          .prepare('INSERT OR REPLACE INTO kernel_settings(key,value) VALUES(?,?)')
+          .run('wechat:session', String(sessionRow.value));
+      }
+    }
+    for (const key of ['wechat:account', 'stickers:custom', 'stickers:disabled'] as const) {
       const row = old.prepare(`SELECT value FROM settings WHERE key=?`).get(key);
       if (row)
         fresh
           .prepare('INSERT OR REPLACE INTO kernel_settings(key,value) VALUES(?,?)')
           .run(key, String((row as { value: unknown }).value));
     }
+    // 轮询游标续接：不迁则迁移后第一条拉取会从零开始（旧消息可能重发）。
+    const cursors = old
+      .prepare(`SELECT key, value FROM settings WHERE key LIKE 'wechat:cursor:%'`)
+      .all() as unknown as { key: string; value: string }[];
+    for (const row of cursors)
+      fresh
+        .prepare('INSERT OR REPLACE INTO kernel_settings(key,value) VALUES(?,?)')
+        .run(row.key, row.value);
     const contactsRow = old
       .prepare(`SELECT key, value FROM settings WHERE key LIKE 'wechat:contacts%'`)
       .all() as unknown as { key: string; value: string }[];

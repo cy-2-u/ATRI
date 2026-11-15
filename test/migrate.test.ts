@@ -168,11 +168,42 @@ export function buildOldDb(path: string): void {
       at: Date.now() - 60000,
     }),
   );
-  sql
-    .prepare(`INSERT INTO settings (key, value) VALUES('wechat:session', ?)`)
-    .run(
-      JSON.stringify({ token: 'tok', baseUrl: 'https://ilinkai.weixin.qq.com', account: 'acc' }),
-    );
+  sql.prepare(`INSERT INTO settings (key, value) VALUES('wechat:session', ?)`).run(
+    // 旧版键名：botToken/accountId——迁移器必须转换成新格式的 token/account。
+    JSON.stringify({
+      botToken: 'tok',
+      baseUrl: 'https://ilinkai.weixin.qq.com',
+      accountId: 'acc',
+    }),
+  );
+  sql.prepare(`INSERT INTO settings (key, value) VALUES('config', ?)`).run(
+    JSON.stringify({
+      format: 'openai',
+      baseUrl: 'https://api.deepseek.com',
+      apiKey: 'sk-old',
+      model: 'deepseek-chat',
+      vision: true,
+      temperature: null,
+      proactiveEnabled: true,
+      clinginess: 65,
+      timeZone: 'Asia/Shanghai',
+      diaryHour: 3,
+      sleepStart: 60,
+      sleepEnd: 420,
+      turnTimeoutSeconds: 180,
+      requestTimeoutSeconds: 45,
+      maxOutputTokens: 3000,
+      inputBudgetTokens: 24000,
+      maxConcurrentPeers: 3,
+      debounceMs: 800,
+      tavilyKey: 'tvly-old',
+      sandboxEnabled: true,
+      sandboxNetwork: false,
+      sandboxSizeMb: 512,
+      sandboxMemoryMb: 2048,
+      sandboxTimeoutSeconds: 600,
+    }),
+  );
   sql.close();
 }
 
@@ -190,6 +221,7 @@ test('老库 → 新内核：ID 对齐、六变量投影、会话凭据保留', 
       commitments: 2,
       thoughts: 1,
       vectors: 1,
+      config: true,
     });
 
     const journal = new Journal(newPath);
@@ -212,9 +244,35 @@ test('老库 → 新内核：ID 对齐、六变量投影、会话凭据保留', 
     // 她的当下与心情迁入。
     assert.equal(journal.self().activity, '复读水母');
     assert.equal(journal.mood(peer)?.valence, 0.4);
-    // 微信会话保留（免重新扫码）。
-    const session = journal.setting<{ token: string } | undefined>('wechat:session', undefined);
+    // 微信会话保留（免重新扫码），且旧键名 botToken/accountId 转成 token/account。
+    const session = journal.setting<{ token: string; account?: string } | undefined>(
+      'wechat:session',
+      undefined,
+    );
     assert.equal(session?.token, 'tok');
+    assert.equal(session?.account, 'acc');
+    // 旧 config 全量映射：模型、密钥、心跳、黏人度种子、沙箱、tavily、人格。
+    const config = journal.setting<
+      | {
+          primary: { model: string; apiKey: string; vision: boolean; timeoutMs: number };
+          heartbeat: boolean;
+          closeness: number;
+          sandbox: { enabled: boolean };
+          webSearchKey: string;
+          persona: string;
+        }
+      | undefined
+    >('config', undefined);
+    assert.equal(config?.primary.model, 'deepseek-chat');
+    assert.equal(config?.primary.apiKey, 'sk-old');
+    assert.equal(config?.primary.vision, true);
+    assert.ok(config && config.primary.timeoutMs >= 1000);
+    assert.equal(config?.heartbeat, true);
+    assert.equal(config?.closeness, 65);
+    assert.equal(config?.sandbox?.enabled, true);
+    assert.equal(config?.webSearchKey, 'tvly-old');
+    assert.ok(!('temperature' in (config?.primary ?? {})));
+    assert.equal(journal.mood(peer)?.valence, 0.4);
     journal.close();
   } catch (error) {
     assert.fail(error instanceof Error ? error.message : String(error));
