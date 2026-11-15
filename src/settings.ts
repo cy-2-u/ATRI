@@ -87,9 +87,7 @@ function endpoint(value: unknown, previous: Endpoint): Endpoint {
   // 留空保持旧密钥；换密钥直接贴新的。"清除已存密钥"入口已删——
   // 换钥匙是常态，拔钥匙不是。
   const apiKey =
-    typeof patch.apiKey === 'string' && patch.apiKey.trim()
-      ? patch.apiKey.trim()
-      : previous.apiKey;
+    typeof patch.apiKey === 'string' && patch.apiKey.trim() ? patch.apiKey.trim() : previous.apiKey;
   const result: Endpoint = {
     format: merged.format as Format,
     baseUrl: url.toString().replace(/\/+$/, ''),
