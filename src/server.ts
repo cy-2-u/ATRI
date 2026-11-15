@@ -23,6 +23,16 @@ export interface ServerOptions {
   webConfigured(): boolean;
   /** 配置落库后回调：心跳开关打开时这里立刻补种她的下一拍，不等维护定时器。 */
   onConfigChange?: () => void;
+  /** 渠道体检：连通（一发最小消息）、角色生效（system 标记探测）、向量连通。
+   *  失败随结果对象返回（{ok:false,error}）——探针的诊断就是它的产出，
+   *  不走服务端错误兜底。 */
+  channelProbe(): Promise<
+    { ok: true; latencyMs: number; model: string; format: string } | { ok: false; error: string }
+  >;
+  systemProbe(): Promise<{ ok: boolean; reply?: string; error?: string }>;
+  embeddingProbe(): Promise<
+    { ok: true; latencyMs: number; dims: number; model: string } | { ok: false; error: string }
+  >;
   staticRoot: string;
   /** 表情等只读资产的根（仅放行 assets/stickers/ 前缀）。 */
   assetsRoot: string;
@@ -173,6 +183,12 @@ export function createServer(options: ServerOptions) {
     options.onConfigChange?.();
     return options.settings.public();
   });
+
+  // 渠道体检（v5 时代的按钮回归）：走与真实轮次同一套 transport，测的
+  // 就是聊天真正会走的那条路。
+  app.post('/api/test-llm', async () => options.channelProbe());
+  app.post('/api/test-system', async () => options.systemProbe());
+  app.post('/api/test-embedding', async () => options.embeddingProbe());
 
   // 状态总览
   app.get('/api/status', async () => ({

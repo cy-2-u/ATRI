@@ -83,6 +83,20 @@ function confirmButton(label, message, handler, classes = 'ghost small danger') 
   };
   return node;
 }
+function usageDayLine(label, totals, isTotal) {
+  const line = el('div', undefined, 'usage-day' + (isTotal ? ' usage-total' : ''));
+  const nums = (value) => value.toLocaleString('zh-CN');
+  line.append(
+    el('span', label, 'usage-day-label'),
+    el(
+      'span',
+      `${totals.calls} 次调用 · 输入 ${nums(totals.input)} · 输出 ${nums(totals.output)}${totals.cached ? ` · 缓存命中 ${nums(totals.cached)}` : ''}`,
+      'usage-day-count',
+    ),
+  );
+  return line;
+}
+
 function timeText(at) {
   if (!at) return '';
   return new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date(at));
@@ -611,6 +625,33 @@ $('save-system').onclick = () => perform(async () => {
   show('系统配置已保存');
 });
 
+// ---------- 渠道体检（v5 时代的按钮回归） ----------
+// 探针失败随 200 返回 {ok:false,error}——诊断信息就是产出，不走报错兜底。
+
+$('test-llm').onclick = () =>
+  perform(async () => {
+    const result = await api('/api/test-llm', { method: 'POST' });
+    if (!result.ok) throw new Error(result.error);
+    show(`模型连通正常：${result.model}（${result.format}）· 延迟 ${result.latencyMs} ms`);
+  }, $('test-llm'));
+$('test-system').onclick = () =>
+  perform(async () => {
+    const result = await api('/api/test-system', { method: 'POST' });
+    if (result.ok === false && result.error) throw new Error(result.error);
+    show(
+      result.ok
+        ? `角色生效：该渠道支持 system 提示，人设可以正常工作（回复“${result.reply}”）`
+        : `角色不生效：该渠道丢弃了 system 提示，人设无法工作，建议更换渠道或模型（实际回复“${result.reply}”）`,
+      !result.ok,
+    );
+  }, $('test-system'));
+$('test-embedding').onclick = () =>
+  perform(async () => {
+    const result = await api('/api/test-embedding', { method: 'POST' });
+    if (!result.ok) throw new Error(result.error);
+    show(`向量连通正常：${result.model} · 维度 ${result.dims} · 延迟 ${result.latencyMs} ms`);
+  }, $('test-embedding'));
+
 async function refreshSystem() {
   const config = configCache ?? await api('/api/config');
   configCache = config;
@@ -641,21 +682,29 @@ async function refreshSystem() {
     usageSnapshot = usageSig;
     const grid = $('usage-grid');
     grid.replaceChildren();
-    if (!usage.length) empty(grid, '还没有模型调用。');
-    const purposeName = { primary: '主渠道', fallback: '备用渠道', 'primary:failed': '主渠道失败', 'fallback:failed': '备用渠道失败' };
-    const byPurpose = new Map();
+    // 按天一行（API 本来就带 day 维度，此前二次聚合成一条"主渠道"把
+    // 她每天的思考量全部抹平了）；尾部合计。
+    const byDay = new Map();
     for (const row of usage) {
-      const target = byPurpose.get(row.purpose) ?? { calls: 0, input: 0, output: 0, cached: 0 };
-      target.calls += row.calls; target.input += row.input; target.output += row.output; target.cached += row.cached;
-      byPurpose.set(row.purpose, target);
+      const totals = byDay.get(row.day) ?? { calls: 0, input: 0, output: 0, cached: 0 };
+      totals.calls += row.calls;
+      totals.input += row.input;
+      totals.output += row.output;
+      totals.cached += row.cached;
+      byDay.set(row.day, totals);
     }
-    for (const [purpose, totals] of byPurpose) {
-      const card = el('div', undefined, 'usage-card');
-      card.append(
-        el('p', purposeName[purpose] ?? purpose, 'row-title'),
-        el('p', `${totals.calls} 次调用 · 输入 ${totals.input.toLocaleString('zh-CN')} · 输出 ${totals.output.toLocaleString('zh-CN')}${totals.cached ? ` · 缓存命中 ${totals.cached.toLocaleString('zh-CN')}` : ''}`, 'usage-count'),
-      );
-      grid.append(card);
+    if (!byDay.size) {
+      empty(grid, '还没有模型调用。');
+    } else {
+      const grand = { calls: 0, input: 0, output: 0, cached: 0 };
+      for (const [day, totals] of [...byDay.entries()].sort((a, b) => (a[0] < b[0] ? 1 : -1))) {
+        grand.calls += totals.calls;
+        grand.input += totals.input;
+        grand.output += totals.output;
+        grand.cached += totals.cached;
+        grid.append(usageDayLine(day.slice(5).replace('-', '/'), totals, false));
+      }
+      grid.append(usageDayLine('合计', grand, true));
     }
   }
   const embeddings = await api('/api/embeddings').catch(() => null);
@@ -693,7 +742,9 @@ async function refreshDrawers() {
   const status = await api('/api/wechat/status').catch(() => null);
   if (status) {
     const row = $('wechat-status');
-    row.replaceChildren(el('p', `状态：${status.status}${status.error ? `（${status.error}）` : ''}${status.lastPollAt ? ` · 最近轮询 ${timeText(status.lastPollAt)}` : ''}`, 'row-title'));
+    const head = el('div', undefined, 'row-title');
+    head.append(el('span', `状态：${status.status}${status.error ? `（${status.error}）` : ''}${status.lastPollAt ? ` · 最近轮询 ${timeText(status.lastPollAt)}` : ''}`));
+    row.replaceChildren(head);
     const qr = $('wechat-qr');
     qr.replaceChildren();
     // 没二维码就整框藏起：白底圆角的空壳悬在状态行下面，看着像一个坏掉的输入框。
@@ -710,10 +761,13 @@ async function refreshDrawers() {
   list.replaceChildren();
   if (!contacts.length) { empty(list, '还没有联系人出现。让 TA 给这个账号发一条消息。'); return; }
   for (const contact of contacts) {
-    const rowEl = el('div', undefined, 'peer-row' + (contact.approved ? ' selected' : ''));
-    rowEl.append(el('span', contact.address, 'peer-name'));
-    if (contact.approved) rowEl.append(el('span', '已绑定（她只属于这一个人）', 'tag'));
-    else {
+    const rowEl = el('div', undefined, 'row peer-row');
+    const head = el('div', undefined, 'row-title');
+    head.append(el('span', contact.address));
+    if (contact.approved) head.append(el('span', '已绑定（她只属于这一个人）', 'tag'));
+    rowEl.append(head);
+    if (!contact.approved) {
+      const actions = el('div', undefined, 'actions');
       const approve = el('button', '允许使用', 'btn primary small');
       approve.type = 'button';
       approve.onclick = () => perform(async () => {
@@ -721,7 +775,8 @@ async function refreshDrawers() {
         await refreshDrawers();
         show('已绑定。她会在十分钟内开口。');
       }, approve);
-      rowEl.append(approve);
+      actions.append(approve);
+      rowEl.append(actions);
     }
     list.append(rowEl);
   }

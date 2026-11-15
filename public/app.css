@@ -467,21 +467,15 @@ svg {
   border: 0;
 }
 
+.stack-tight {
+  display: grid;
+  gap: 12px;
+}
+
 .stack-tight > .row {
   border: 1px solid var(--border-soft);
   border-radius: var(--radius-sm);
   padding: 12px 14px;
-  margin-bottom: 12px;
-}
-
-.stack-tight > .row:last-child {
-  margin-bottom: 2px;
-}
-
-/* Row internals: the ID line, the badge row and controls each get their own
-   breath instead of a cramped single grid. */
-.stack-tight > .row.peer-row {
-  gap: 10px;
 }
 
 .row {
@@ -935,61 +929,16 @@ input.check,
   padding: 0 8px;
 }
 
+/* 抽屉里的行卡：状态行与联系人行吃卡片底。此前容器挂的 .stack 类没有任何
+   全局定义，行在抽屉里裸奔成一竖条文字（截图中"已连接"和微信 ID 全无
+   着落）。行内长 ID 走 row-title 的 break-all 规则。 */
+.drawer-body-inner .row {
+  background: var(--surface);
+}
+
 .peer-list {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.peer-item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 9px 10px;
-  border: none;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--text-dim);
-  font: inherit;
-  font-size: 14px;
-  text-align: left;
-  cursor: pointer;
-  /* WeChat ids are 40+ opaque characters. Wrapping them turned a one-line pill
-     into a two-line block on a phone; the full id is available in the connection
-     drawer, so truncate here. */
-  min-width: 0;
-}
-
-.peer-item > span:last-child {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.peer-item:hover {
-  background: var(--surface-2);
-  color: var(--text);
-}
-
-.peer-item.selected {
-  background: var(--accent-soft);
-  color: var(--text);
-  /* Same reason as .nav-item.selected: 1.10:1 of background difference is not
-     perceivable on its own. */
-  box-shadow: inset 0 0 0 1.5px var(--accent-ink);
-}
-
-.peer-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  flex: none;
-  background: var(--text-faint);
-}
-
-.peer-item .peer-dot.ok {
-  background: var(--ok);
+  display: grid;
+  gap: 8px;
 }
 
 .chat-main {
@@ -1561,12 +1510,6 @@ input.check,
     gap: 12px;
     min-width: 0;
   }
-
-  /* The usage card is short; pinning it to the top avoids a tall empty column. */
-  .settings-col:last-of-type .card {
-    position: sticky;
-    top: 0;
-  }
 }
 
 /* 人设卡撑满列高：人格框是全页最大的编辑面，右列节律卡有多高它就有多
@@ -1643,36 +1586,48 @@ input.check,
   background: var(--accent);
 }
 
+/* 用量按天一行：她每天的思考量按日可见，尾部合计——此前按渠道聚合成
+   一条，一天的波动全部被抹平。 */
 .usage-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
-  gap: 10px;
+  gap: 8px;
   margin-bottom: 18px;
 }
 
-.usage-card {
+.usage-day {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 12px;
   border: 1px solid var(--border-soft);
   border-radius: var(--radius-sm);
-  padding: 10px 14px;
-  display: grid;
-  gap: 4px;
+  padding: 9px 14px;
   background: var(--surface-2);
-}
-
-.usage-card strong {
-  font-size: 14px;
-}
-
-.usage-count {
-  color: var(--text-faint);
-  font-size: 12px;
-}
-
-.usage-card p {
-  margin: 0;
   font-size: 12.5px;
   color: var(--text-dim);
-  white-space: pre-wrap;
+}
+
+.usage-day-label {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-day-count {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-total {
+  background: var(--accent-soft);
+  border-color: transparent;
+}
+
+.usage-total .usage-day-label {
+  color: var(--accent-ink);
 }
 
 .recent-list {
@@ -1993,21 +1948,6 @@ dialog .row {
     flex: none;
     margin: 0;
     max-width: none;
-  }
-
-  .peer-list {
-    flex-direction: row;
-  }
-
-  .peer-item {
-    flex: none;
-    padding: 6px 12px;
-    border: 1px solid var(--border-soft);
-    border-radius: 999px;
-    background: var(--surface);
-    /* The row scrolls horizontally, so an unbounded pill would push every other
-       contact off-screen. Cap it and let the id ellipsize. */
-    max-width: 62vw;
   }
 
   .messages {

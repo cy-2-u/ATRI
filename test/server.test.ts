@@ -41,6 +41,9 @@ async function fixture() {
     bridge,
     stickers,
     webConfigured: () => false,
+    channelProbe: async () => ({ ok: true, latencyMs: 1, model: 'm', format: 'openai' }),
+    systemProbe: async () => ({ ok: true, reply: 'SYSTEMOK' }),
+    embeddingProbe: async () => ({ ok: true, latencyMs: 1, dims: 3, model: 'm' }),
     staticRoot: '.',
     assetsRoot: '.',
   });
@@ -114,6 +117,34 @@ test('人工确认未知送达走统一提交路径，重复确认返回冲突',
     assert.equal((await env.app.inject(request)).statusCode, 200);
     assert.equal(env.journal.events('peer').at(-1)!.kind, 'said');
     assert.equal((await env.app.inject(request)).statusCode, 409);
+  } finally {
+    await env.close();
+  }
+});
+
+test('渠道体检端点需要登录，命中注入的探针', async () => {
+  const env = await fixture();
+  try {
+    assert.equal((await env.app.inject({ method: 'POST', url: '/api/test-llm' })).statusCode, 401);
+    const llm = await env.app.inject({
+      method: 'POST',
+      url: '/api/test-llm',
+      headers: { cookie: env.cookie },
+    });
+    assert.equal(llm.statusCode, 200);
+    assert.deepEqual(llm.json(), { ok: true, latencyMs: 1, model: 'm', format: 'openai' });
+    const system = await env.app.inject({
+      method: 'POST',
+      url: '/api/test-system',
+      headers: { cookie: env.cookie },
+    });
+    assert.deepEqual(system.json(), { ok: true, reply: 'SYSTEMOK' });
+    const embedding = await env.app.inject({
+      method: 'POST',
+      url: '/api/test-embedding',
+      headers: { cookie: env.cookie },
+    });
+    assert.deepEqual(embedding.json(), { ok: true, latencyMs: 1, dims: 3, model: 'm' });
   } finally {
     await env.close();
   }

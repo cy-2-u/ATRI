@@ -6,6 +6,7 @@ import { Journal } from './storage/journal.js';
 import { Settings } from './settings.js';
 import { ModelRouter } from './model/router.js';
 import { httpTransport } from './model/http.js';
+import type { Endpoint } from './model/types.js';
 import { Mind } from './domain/mind.js';
 import { LifeMaterial } from './domain/material.js';
 import { lifeTools, TOOL_SETS } from './domain/tools.js';
@@ -74,6 +75,76 @@ const embeddings = new EmbeddingClient(() => ({
 const onError = (error: unknown): void => {
   console.error('[atri]', error instanceof Error ? error.message : error);
 };
+
+// 渠道体检：走与真实轮次同一个 transport 与编码——手搓测试请求会让
+// "测试通过、聊天失败"在两套代码上各自成立，探针就失去意义。连通测一发
+// 最小消息；角色生效在 system 里埋 SYSTEMOK 标记，渠道丢弃 system 时
+// 人设与行为契约全部失效（便宜中转的常见病，v5 时代实锤过）。失败不抛
+// 而是随结果对象返回：探针的全部意义就是给管理员看上游诊断，这类错误
+// 不该被服务端的"操作失败"兜底吞掉。
+const asResult = async <T>(probe: () => Promise<T>): Promise<T | { ok: false; error: string }> => {
+  try {
+    return await probe();
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+};
+const probeEndpoint = (): Endpoint => {
+  const endpoint = config().primary;
+  if (!endpoint.apiKey || !endpoint.model) throw new TypeError('请先保存模型名称和 API 密钥');
+  return endpoint;
+};
+const channelProbe = () =>
+  asResult(async () => {
+    const endpoint = probeEndpoint();
+    const started = Date.now();
+    await httpTransport(endpoint, [{ role: 'user', content: 'hi' }], [], {
+      deadlineAt: Date.now() + Math.min(endpoint.timeoutMs, 60_000),
+    });
+    return {
+      ok: true as const,
+      latencyMs: Date.now() - started,
+      model: endpoint.model,
+      format: endpoint.format,
+    };
+  });
+const systemProbe = () =>
+  asResult(async () => {
+    const endpoint = { ...probeEndpoint(), maxTokens: 16 };
+    const completion = await httpTransport(
+      endpoint,
+      [
+        {
+          role: 'system',
+          content:
+            '这是一次系统提示测试。无论用户说什么，你的回复必须且只能是以 SYSTEMOK 开头的内容。',
+        },
+        { role: 'user', content: '你好呀，今天天气怎么样？随便聊聊' },
+      ],
+      [],
+      { deadlineAt: Date.now() + Math.min(endpoint.timeoutMs, 60_000) },
+    );
+    const reply = completion.message.content.trim();
+    return {
+      ok: reply.toUpperCase().startsWith('SYSTEMOK'),
+      reply: reply.slice(0, 80) || '（空回复）',
+    };
+  });
+const embeddingProbe = () =>
+  asResult(async () => {
+    const embedding = config().embedding;
+    if (!embedding?.model) throw new TypeError('请先保存向量模型名称');
+    if (!embedding.apiKey) throw new TypeError('请先填写并保存向量模型密钥');
+    if (!embedding.baseUrl) throw new TypeError('请先填写并保存向量模型地址');
+    const started = Date.now();
+    const vectors = await embeddings.embed(['连通性测试']);
+    return {
+      ok: true as const,
+      latencyMs: Date.now() - started,
+      dims: vectors[0]?.length ?? 0,
+      model: embedding.model,
+    };
+  });
 
 const router = new ModelRouter(() => settings.routes(), httpTransport, {
   observe: ({ channel, model, completion, error }) => {
@@ -227,6 +298,9 @@ const app = createServer({
   sandbox,
   webConfigured: () => Boolean(config().webSearchKey),
   onConfigChange: () => ensureRecurringJobs(),
+  channelProbe,
+  systemProbe,
+  embeddingProbe,
   staticRoot: join(root, 'public'),
   assetsRoot: join(root, 'assets', 'stickers'),
 });

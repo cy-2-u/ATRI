@@ -240,6 +240,10 @@
                   <label class="field"><span>输出上限</span><input id="primary-max-tokens" type="number" min="128" max="32768" step="128" /></label>
                   <label class="field"><span>重试</span><input id="primary-retries" type="number" min="0" max="4" /></label>
                 </div>
+                <div class="actions">
+                  <button class="btn ghost" id="test-llm" type="button">测试模型连通</button>
+                  <button class="btn ghost" id="test-system" type="button">测试角色生效</button>
+                </div>
               </div>
               <div class="card">
                 <h2>备用渠道（主渠道连续 3 轮失败冷却 1 小时后接管）</h2>
@@ -274,6 +278,9 @@
                     <span>向量密钥<span id="embedding-key-state" class="hint"></span></span>
                     <input id="embedding-key" type="password" autocomplete="new-password" />
                   </label>
+                  <div class="actions">
+                    <button class="btn ghost" id="test-embedding" type="button">测试向量连通</button>
+                  </div>
                 </div>
                 <p id="embeddings-state" class="hint"></p>
               </div>
@@ -311,7 +318,7 @@
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" /></svg>
             </button>
           </div>
-          <div class="drawer-body-inner stack">
+          <div class="drawer-body-inner stack-tight">
             <div id="wechat-status" class="row"></div>
             <div id="wechat-qr" class="qr" hidden></div>
             <div class="actions">
@@ -332,7 +339,7 @@
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" /></svg>
             </button>
           </div>
-          <div id="issues-list" class="drawer-body-inner stack"></div>
+          <div id="issues-list" class="drawer-body-inner stack-tight"></div>
         </div>
       </div>
 
