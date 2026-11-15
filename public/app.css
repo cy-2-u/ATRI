@@ -708,9 +708,11 @@ svg {
   flex: 1;
 }
 
-/* 字段带动作：输入框吃剩余宽度，按钮贴右且与输入框等高。等高的三件套
-   是 padding 9px、line-height 继承 body 的 1.6（按钮 UA 默认 normal 少
-   一截）、border-box 下同宽边框——缺一个都差两像素。 */
+/* 字段带动作：输入框吃剩余宽度，按钮贴右且与输入框等高。等高四件套：
+   padding 9px、line-height 继承 body 1.6、border-box 同边框、**去掉
+   .card .field 的 16px 下外边距**——flex-end 按 margin 盒对齐，那个
+   外边距会把输入框底边抬高、按钮整体坠下去 16px（前两轮"矮一截"的
+   真凶，此前只量高度不量位置，两次都没抓到它）。 */
 .field-with-action {
   display: flex;
   align-items: flex-end;
@@ -721,6 +723,7 @@ svg {
 .field-with-action .field {
   flex: 1;
   min-width: 0;
+  margin-bottom: 0;
 }
 
 .field-with-action > .btn {
