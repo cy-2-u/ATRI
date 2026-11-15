@@ -237,9 +237,15 @@ export class WechatClient {
 
   // ---------- typing 指示 ----------
 
-  /** 会话级 typing ticket：缓存 20 小时，过期重取一次；重取仍失败就放弃——
-   *  指示是装饰，不能挡住真消息。 */
-  private async ticket(signal?: AbortSignal): Promise<string | undefined> {
+  /** 会话级 typing ticket：必须按联系人（带会话上下文）取——v6 重写时
+   *  丢了 ilink_user_id/context_token 三个字段，上游 ret=-2 拒发，指示
+   *  从未生效。缓存 20 小时，过期重取一次；重取仍失败就放弃——指示是
+   *  装饰，不能挡住真消息。 */
+  private async ticket(
+    address: string,
+    context: string,
+    signal?: AbortSignal,
+  ): Promise<string | undefined> {
     const cached = this.typingTicket;
     if (cached && cached.expiresAt > Date.now()) return cached.ticket;
     if (this.refreshedTicket) return undefined;
@@ -247,7 +253,12 @@ export class WechatClient {
     try {
       const reply = await this.request(
         '/ilink/bot/getconfig',
-        { base_info: { channel_version: '1.0.2' } },
+        {
+          ilink_user_id: address,
+          to_user_id: address,
+          context_token: context,
+          base_info: { channel_version: '1.0.2' },
+        },
         signal,
         false,
         15_000,
@@ -273,7 +284,7 @@ export class WechatClient {
     signal?: AbortSignal,
   ): Promise<void> {
     if (!this.session || !address || !context) return;
-    const ticket = active ? await this.ticket(signal) : undefined;
+    const ticket = active ? await this.ticket(address, context, signal) : undefined;
     try {
       await this.request(
         '/ilink/bot/sendtyping',
