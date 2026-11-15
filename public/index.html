@@ -153,27 +153,32 @@
                   <input id="heartbeat" type="checkbox" class="check" />
                 </label>
                 <label class="field">
-                  <span>黏人度种子（0–100，只种第一次；此后由相处自己长）</span>
+                  <span>黏人度种子</span>
                   <input id="closeness" type="number" min="0" max="100" step="1" />
+                  <span class="hint">0–100，只在第一次启动时生效；此后由相处自己长</span>
                 </label>
                 <div class="grid-2">
                   <label class="field">
-                    <span>入睡（分钟 0–1439，60=1:00）</span>
+                    <span>入睡</span>
                     <input id="sleep-start" type="number" min="0" max="1439" />
+                    <span class="hint">分钟 0–1439（60=1:00）</span>
                   </label>
                   <label class="field">
-                    <span>醒来（分钟，420=7:00）</span>
+                    <span>醒来</span>
                     <input id="sleep-end" type="number" min="0" max="1439" />
+                    <span class="hint">分钟（420=7:00）</span>
                   </label>
                 </div>
                 <div class="grid-2">
                   <label class="field">
-                    <span>日记时刻（点）</span>
+                    <span>日记时刻</span>
                     <input id="diary-hour" type="number" min="0" max="23" />
+                    <span class="hint">本地几点（24 小时制）</span>
                   </label>
                   <label class="field">
                     <span>时区</span>
                     <input id="timezone" type="text" />
+                    <span class="hint">IANA 名（Asia/Shanghai）</span>
                   </label>
                 </div>
                 <div class="grid-2">

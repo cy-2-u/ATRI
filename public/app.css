@@ -656,6 +656,12 @@ svg {
   color: var(--text-dim);
 }
 
+/* 字段内的说明是注释不是第二标签：弱一档色，避免与下一组字段的标签
+   混读（hint 紧贴下一个字段时尤其明显）。 */
+.field .hint {
+  color: var(--text-faint);
+}
+
 .field.inline {
   grid-auto-flow: column;
   align-items: center;
