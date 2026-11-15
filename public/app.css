@@ -2044,9 +2044,11 @@ dialog .row {
   }
 
   /* iOS zooms any input under 16px on focus, blowing out the whole layout.
-     16px is the documented threshold. */
+     16px is the documented threshold. 字段带动作行里的按钮一并放大：
+     输入框 16px 按钮仍 14px 的话，等高在窄屏又被打破。 */
   .field input,
   .field textarea,
+  .field-with-action > .btn,
   .dropdown-host .dropdown-toggle,
   .model-filter,
   #model-filter {
