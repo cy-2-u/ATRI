@@ -200,6 +200,14 @@ const material = new LifeMaterial({
   stickers,
   timeZone: () => config().timezone,
   sandboxEnabled: () => sandbox.enabled,
+  sandboxFiles: async () => {
+    if (!sandbox.enabled) return undefined;
+    try {
+      return (await sandbox.list('.')).entries;
+    } catch {
+      return undefined;
+    }
+  },
   webConfigured: () => Boolean(config().webSearchKey),
   vision: () => config().primary.vision,
   embeddings: config().embedding ? embeddings : undefined,

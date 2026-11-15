@@ -186,6 +186,11 @@ const dueLabel = (due: number, now: number, timeZone: string): string => {
   return `${when}（还有 ${Math.ceil(delta / 86400000)} 天）`;
 };
 
+/** 闲拍的自由：资料式给出"可以做"，绝不指令"去做"——被安排的自主
+ *  不叫自主，"待着也是生活"收底防表演感。只在 beat 拍出现。 */
+const YOUR_TIME_NOTE =
+  '这一拍没人在等你回话，时间完全是你的：发呆可以，翻翻自己的文件可以，去工作目录里写点想写的东西、做个小东西也可以。做了什么想让他知道就自然说，不想说就不说；什么都不想做就安心待着——待着也是生活。';
+
 /** 本轮打断的静默真正开始的时刻：回溯过整段连发与未获回应的主动消息，
  *  锚点挂在对方最后说话的时刻。 */
 export function silenceBasis(events: { kind: string; created_at: number }[]): number | undefined {
@@ -296,6 +301,8 @@ export interface MaterialDeps {
   stickers: Stickers;
   timeZone(): string;
   sandboxEnabled(): boolean;
+  /** 她的工作目录清单（沙箱开着才给）：写过的东西浮回来，才连成生活。 */
+  sandboxFiles?(): Promise<{ name: string; kind: string; size: number }[] | undefined>;
   webConfigured(): boolean;
   vision(): boolean;
   embeddings?: EmbeddingClient;
@@ -393,11 +400,19 @@ export class LifeMaterial {
     return out;
   }
 
-  private selfNow(self: SelfState, timeZone: string): string {
+  private selfNow(self: SelfState, timeZone: string, now: number): string {
     const parts: string[] = [];
     if (self.activity) {
       const since = self.activitySince ? `，从 ${clock(self.activitySince, timeZone)} 开始` : '';
-      parts.push(`此刻在做：${self.activity}${since}`);
+      // 状态会过时：维持超过一小时就提醒她复核——材料里现值有锚定效应，
+      // 没这句她会永远"刚倒了杯水"。
+      const held = Math.floor((now - self.activitySince) / 3_600_000);
+      parts.push(
+        `此刻在做：${self.activity}${since}` +
+          (held >= 1
+            ? `（这个状态已经过了 ${held} 小时：还是这样就别动它，其实已经变了就更新）`
+            : ''),
+      );
     }
     if (self.pursuit) {
       const since = self.pursuitSince ? `（从 ${clock(self.pursuitSince, timeZone)} 开始）` : '';
@@ -527,14 +542,19 @@ export class LifeMaterial {
     const him = this.himModel(peer, now, timeZone);
     const thisDay = this.onThisDay(peer, now, timeZone);
     const words = petWords(journal.eventsBetween(peer, ['received'], now - 7 * 86400000, now, 200));
+    // 心跳拍是"没人在等她"的拍：给她属于自己的时间与自己的文件清单，
+    // 写过的东西浮回来，生活才连得起来。
+    const workdir = turn.kind === 'beat' ? await this.deps.sandboxFiles?.() : undefined;
     const material = {
       mode: turn.kind,
       time: renderTimeGap(now, turn.kind === 'chat' ? basis : lastReceived, timeZone),
       body: this.body(peer, now),
-      selfNow: this.selfNow(self, timeZone),
+      selfNow: this.selfNow(self, timeZone, now),
       ...(story ? { selfStory: story } : {}),
       ...(him ? { himModel: him } : {}),
       abilities: this.abilities(),
+      ...(turn.kind === 'beat' ? { yourTime: YOUR_TIME_NOTE } : {}),
+      ...(workdir?.length ? { workdir: workdir.slice(0, 30) } : {}),
       lifeLog: journal.experiences(peer, 10).map((e) => renderExperience(e, timeZone)),
       thoughts: journal
         .thoughts(peer)
