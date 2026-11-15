@@ -888,9 +888,13 @@ export class Journal {
           `UPDATE OR REPLACE ${table} SET peer = ?1 || substr(peer, ?2) WHERE substr(peer, 1, ?3) = ?4`,
         ).run(fresh, old.length + 1, old.length, old);
       }
-      // 以 peer 为键的设置（心情快照、会话上下文）。
+      // 以 peer 为键的设置：mood 是瞬态（衰减自愈），旧账号的值直接退场，
+      // 新账号已长出的现值保留；历史与上下文键无冲突照搬。
       this.statement(
-        'UPDATE kernel_settings SET key = replace(key, ?1, ?2) WHERE instr(key, ?1) > 0',
+        "DELETE FROM kernel_settings WHERE key LIKE 'mood:%' AND instr(key, ?1) > 0",
+      ).run(old);
+      this.statement(
+        "UPDATE kernel_settings SET key = replace(key, ?1, ?2) WHERE instr(key, ?1) > 0 AND (key LIKE 'mood-history:%' OR key LIKE 'wechat:context:%')",
       ).run(old, fresh);
       this.statement('DELETE FROM kernel_peers WHERE id LIKE ?').run(`${old}%`);
     });

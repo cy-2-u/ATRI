@@ -173,6 +173,8 @@ test('账号换绑：记忆与对话整体搬到新账号 peer，旧 peer 退场
     env.journal.setSetting(`mood:${oldPeer}`, { pleasure: 0.4, energy: 0, patience: 0, at: 1000 });
     env.journal.setSetting(`wechat:context:${oldPeer}`, 'ctx-token');
     env.journal.schedule(oldPeer, 'beat', 5000);
+    // 换绑前新账号已长出自己的心情瞬态：保留现值，不被旧值覆盖。
+    env.journal.setSetting(`mood:${newPeer}`, { pleasure: 0.8, energy: 0, patience: 0, at: 2000 });
 
     env.journal.remapPeers('old-bot', 'new-bot');
 
@@ -185,7 +187,7 @@ test('账号换绑：记忆与对话整体搬到新账号 peer，旧 peer 退场
           pleasure: number;
         }
       ).pleasure,
-      0.4,
+      0.8,
     );
     assert.equal(env.journal.setting(`wechat:context:${newPeer}`, ''), 'ctx-token');
     assert.ok(env.journal.jobs().some((job) => job.peer === newPeer && job.kind === 'beat'));
