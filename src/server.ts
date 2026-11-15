@@ -260,7 +260,15 @@ export function createServer(options: ServerOptions) {
   const firstPeer = () => options.journal.peers()[0] ?? '';
   app.get('/api/events', async (request) => {
     const peer = (request.query as { peer?: string } | undefined)?.peer || firstPeer();
-    return options.journal.events(peer);
+    // kinds 过滤：管理页"内心"各分区只要自己那类事件，别让一次切换拖全量。
+    const requested = String((request.query as { kinds?: string } | undefined)?.kinds ?? '');
+    const kinds = requested
+      .split(',')
+      .map((kind) => kind.trim())
+      .filter((kind) =>
+        ['received', 'said', 'diary', 'muse', 'failure', 'experienced', 'attempted'].includes(kind),
+      );
+    return options.journal.events(peer, kinds.length ? kinds : undefined);
   });
   app.get('/api/memories', async (request) => {
     const peer = (request.query as { peer?: string } | undefined)?.peer || firstPeer();

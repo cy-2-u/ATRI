@@ -360,10 +360,10 @@ function entryDate(at) {
 }
 
 async function refreshJournal() {
-  const sig = journalSub + ':' + (await fetchEtag());
   const load = async () => {
     if (journalSub === 'diary') {
-      const events = (await api('/api/events')).filter(e => e.kind === 'diary');
+      // 各分区只拉自己那类事件（后端 kinds 过滤）——别让一次切换拖全量。
+      const events = await api('/api/events?kinds=diary');
       // 日记从新到旧：夜里的她最先想被读到的是昨天的自己。
       return events
         .sort((a, b) => b.created_at - a.created_at)
@@ -381,8 +381,8 @@ async function refreshJournal() {
       }));
     }
     if (journalSub === 'thoughts') {
-      const [thoughts, events] = await Promise.all([api('/api/thoughts'), api('/api/events')]);
-      const muses = events.filter(e => e.kind === 'muse').map(e => {
+      const [thoughts, muses] = await Promise.all([api('/api/thoughts'), api('/api/events?kinds=muse')]);
+      const flashes = muses.map(e => {
         let content = e.content;
         try { content = JSON.parse(e.content).content; } catch { /* 原样 */ }
         return { id: e.id, at: e.created_at, title: '一闪而过的念头', body: content, badge: '' };
@@ -390,7 +390,7 @@ async function refreshJournal() {
       const idle = thoughts.filter(t => t.state === 'idle').map(t => ({
         id: t.id, at: t.updatedAt, title: `想找他：${t.topic}`, body: t.meaning, badge: '等一个开口的时机',
       }));
-      return [...idle, ...muses].sort((a, b) => b.at - a.at);
+      return [...idle, ...flashes].sort((a, b) => b.at - a.at);
     }
     const commitments = await api('/api/commitments');
     return commitments.map(c => ({
@@ -413,12 +413,9 @@ async function refreshJournal() {
     head.append(el('span', item.title));
     if (item.badge) head.append(el('span', item.badge, 'tag'));
     entry.append(head, el('div', item.body, 'entry-body'), el('div', timeText(item.at), 'entry-time'));
-    list.append(entry);
+      list.append(entry);
+    }
   }
-}
-async function fetchEtag() {
-  // journal 内容的变化由各端点数据本身决定：轮询里直接拉轻量状态即可。
-  return String((await api('/api/status')).jobs?.length ?? '');
 }
 
 async function refreshStickers() {
