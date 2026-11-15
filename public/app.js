@@ -107,6 +107,8 @@ $('login-form').onsubmit = async (event) => {
     fillPersonaForm.done = false;
     $('login').hidden = true;
     $('dashboard').hidden = false;
+    // 五个视图初始都是 hidden：不点亮当前 tab，登录后就是一个空壳面板。
+    selectTab(currentTab);
     startPolling();
   }, $('login-form').querySelector('button'));
 };
@@ -170,7 +172,14 @@ document.addEventListener('keydown', (event) => {
 function startPolling() {
   clearInterval(pollTimer);
   const tick = async () => {
-    try { await refreshCurrent(); } catch { /* 轮询自退避：错误已 toast */ }
+    const results = await refreshCurrent();
+    // 断线可见：网络层失败（非登录过期）显示横幅，恢复即撤——
+    // 空白页不解释自己是失职。
+    const offline = results.some(
+      (r) => r.status === 'rejected' && !(r.reason instanceof Error && r.reason.message.includes('登录已过期')),
+    );
+    const banner = $('offline-banner');
+    if (banner) banner.hidden = !offline;
   };
   tick();
   pollTimer = setInterval(tick, 4000);
@@ -198,7 +207,9 @@ async function refreshStatus() {
   configCache = config;
   // 连接状态
   const wechat = status.wechat ?? {};
-  $('connection-text').textContent = wechat.status || '未连接';
+  // "未登录"在管理面板语境里读作管理员未登录——加主语，一眼分清
+  // 这是她的连接态，不是你的登录态。
+  $('connection-text').textContent = wechat.status ? `她 · ${wechat.status}` : '她 · 未上线';
   document.querySelector('#connection .pill-dot')?.classList.toggle('warn', !wechat.status || !/已连接/.test(wechat.status));
   // 待办
   const issues = await api('/api/deliveries').catch(() => []);
@@ -266,7 +277,8 @@ async function refreshChat() {
     );
     list.append(bubble);
   }
-  if (!visible.length) empty(list, '还没有对话。她的第一句话会出现在这里。');
+  if (!visible.length)
+    empty(list, '还没有对话。她的第一句话会出现在这里——这里只读：她聊天的对象在微信那头，不在管理页里。');
   if (nearBottom) list.scrollTop = list.scrollHeight;
   $('chat-hint').textContent = `${visible.length} 条记录`;
 }
@@ -321,7 +333,7 @@ async function refreshJournal() {
   list.replaceChildren();
   if (!items.length) empty(list, { diary: '夜深时她会自己写日记。', memories: '还没有记下的东西。', thoughts: '她此刻没有存着的念头。', commitments: '没有挂着的约定。' }[journalSub]);
   for (const item of items) {
-    const entry = el('div', undefined, 'entry');
+    const entry = el('div', undefined, 'row entry');
     const head = el('div', undefined, 'entry-date');
     head.append(el('span', item.title));
     if (item.badge) head.append(el('span', item.badge, 'tag'));
@@ -639,3 +651,20 @@ $('wechat-logout').onclick = () => perform(async () => {
   await api('/api/wechat/logout', { method: 'POST' });
   await refreshDrawers();
 });
+
+// ---------- 启动与断线可见性 ----------
+
+// 会话还活着就直接进面板：刷新/重开页面不该让人重输密码。
+void (async () => {
+  try {
+    configCache = await api('/api/config');
+    authenticated = true;
+    fillPersonaForm.done = false;
+    $('login').hidden = true;
+    $('dashboard').hidden = false;
+    selectTab(currentTab);
+    startPolling();
+  } catch {
+    /* 未登录：停留登录页 */
+  }
+})();

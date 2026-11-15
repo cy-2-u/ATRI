@@ -32,7 +32,6 @@
   /* Primary buttons: white text needs a darker base (5.76:1 / 4.35:1).
      The second stop was under AA for 14px/600 white text and hover made it
      worse by brightening it; #b4531e measures 4.9:1 and hover now darkens. */
-  --accent-btn-1: #ab4718;
   --accent-btn-2: #b4531e;
   --on-accent: #ffffff;
   --accent-soft: rgba(232, 112, 60, 0.1);
@@ -116,6 +115,8 @@ svg {
   place-items: center;
   gap: 28px;
   padding: 24px;
+  /* 一层 10% 暖光的"晨光"是品牌叙事（她的房间朝海），不是 AI 默认的
+     紫色 halo——透明度刻意压在 0.1，收敛到氛围而不是舞台灯。 */
   background: radial-gradient(60% 50% at 50% 8%, var(--accent-soft), transparent 70%), var(--bg);
 }
 
@@ -144,10 +145,9 @@ svg {
   font-size: 30px;
   letter-spacing: 6px;
   text-align: center;
-  background: linear-gradient(120deg, var(--accent), var(--accent-2));
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  /* 渐变字是 AI 生成感的头号 tell（impeccable.style/slop 点名）：品牌橙
+     实色 + 品牌字距同样成立，且更稳。 */
+  color: var(--accent-ink);
 }
 
 .login-sub {
@@ -374,9 +374,10 @@ svg {
 }
 
 .btn.primary {
-  /* White on --accent (#e8703c → #f2924f) measured 3.08:1 and 2.33:1: every
-     primary action in the app failed AA. These two shades clear it. */
-  background: linear-gradient(135deg, var(--accent-btn-1), var(--accent-btn-2));
+  /* White on the bright accent (#e8703c) measured 3.08:1: every primary
+     action failed AA. One solid shade clears it — the previous two-stop
+     gradient differed by ~3% luminance, i.e. invisible weight for real cost. */
+  background: var(--accent-btn-2);
   color: var(--on-accent);
   font-weight: 600;
 }
@@ -717,6 +718,18 @@ svg {
   margin-bottom: 12px;
 }
 
+/* 断线横幅：安静的一行，不抢戏——她只是暂时联系不上。 */
+.offline-banner {
+  margin: 0 0 10px;
+  padding: 9px 14px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
 /* checkbox 不吃 .field input 的 width:100%——否则复选框被拉满一行，
    与标签中间隔出大片空白（走查截图实锤）。 */
 .field input[type='checkbox'] {
@@ -881,15 +894,18 @@ svg {
 
 /* ---------- 对话 ---------- */
 
+/* 消息流是主体（占宽列），"她此刻"是辅助面板（右侧窄栏）——
+   DOM 顺序 chat-main 在前，列宽必须与之对齐；此前 236px 给了第一列，
+   把对话挤进窄条、让状态 chips 反占主区。 */
 .chat-view {
   display: grid;
-  grid-template-columns: 236px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) 236px;
   padding: 0;
   overflow: hidden;
 }
 
 .chat-side {
-  border-right: 1px solid var(--border-soft);
+  border-left: 1px solid var(--border-soft);
   background: var(--bg-soft);
   padding: 14px 10px;
   overflow-y: auto;
@@ -1586,11 +1602,11 @@ svg {
 }
 
 .budget-card progress::-webkit-progress-value {
-  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  background: var(--accent);
 }
 
 .budget-card progress::-moz-progress-bar {
-  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  background: var(--accent);
 }
 
 .usage-grid {
@@ -1909,7 +1925,8 @@ dialog .row {
 
   .chat-view {
     grid-template-columns: 1fr;
-    grid-template-rows: auto 1fr;
+    /* 消息占主体（1fr），"她此刻"收成底部状态条（auto）——行高跟随 DOM 顺序。 */
+    grid-template-rows: minmax(0, 1fr) auto;
     /* .view's mobile padding would inset the two-pane chat layout and make the
        sidebar/composer look like floating cards. Chat manages its own spacing. */
     padding: 0;
@@ -1922,8 +1939,8 @@ dialog .row {
     overflow-y: hidden;
     padding: 8px 10px;
     gap: 6px;
-    border-right: none;
-    border-bottom: 1px solid var(--border-soft);
+    border-left: none;
+    border-top: 1px solid var(--border-soft);
   }
 
   .side-title {
