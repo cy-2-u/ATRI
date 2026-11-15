@@ -708,8 +708,9 @@ svg {
   flex: 1;
 }
 
-/* 字段带动作：输入框吃剩余宽度，按钮贴右且与输入框等高（padding 对齐
-   输入框的 9px，行顶底两条线齐平——此前按钮矮一截）。 */
+/* 字段带动作：输入框吃剩余宽度，按钮贴右且与输入框等高。等高的三件套
+   是 padding 9px、line-height 继承 body 的 1.6（按钮 UA 默认 normal 少
+   一截）、border-box 下同宽边框——缺一个都差两像素。 */
 .field-with-action {
   display: flex;
   align-items: flex-end;
@@ -726,6 +727,7 @@ svg {
   flex: none;
   padding-top: 9px;
   padding-bottom: 9px;
+  line-height: inherit;
 }
 
 /* 联系人关系卡：不是列表，是一张"名分"卡。已绑定走品牌色轻底 + 呼吸
