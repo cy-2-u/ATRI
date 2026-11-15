@@ -651,9 +651,18 @@ svg {
 
 .field {
   display: grid;
-  gap: 6px;
+  gap: 8px;
   font-size: 13px;
   color: var(--text-dim);
+}
+
+/* 卡片内统一的字段节奏：同组内 label↔input 8px，字段之间 16px——
+   文字与框之间、组与组之间，两种间歇要拉开才有层级。 */
+.card .field,
+.card .grid-2,
+.card .grid-3,
+.card .grid-4 {
+  margin-bottom: 16px;
 }
 
 /* 字段内的说明是注释不是第二标签：弱一档色，避免与下一组字段的标签
@@ -679,6 +688,7 @@ svg {
 
 .field input,
 .field textarea,
+.field select,
 .dropdown-host .dropdown-toggle {
   width: 100%;
   background: var(--surface-2);
@@ -692,6 +702,7 @@ svg {
 
 .field input:focus,
 .field textarea:focus,
+.field select:focus,
 .dropdown-host .dropdown-toggle:focus {
   outline: none;
   border-color: var(--accent);
@@ -701,15 +712,25 @@ svg {
    global visible outline, matching the rest of the console. */
 .field input:focus:not(:focus-visible),
 .field textarea:focus:not(:focus-visible),
+.field select:focus:not(:focus-visible),
 .dropdown-host .dropdown-toggle:focus:not(:focus-visible) {
   outline: none;
 }
 
 .field input:focus-visible,
 .field textarea:focus-visible,
+.field select:focus-visible,
 .dropdown-host .dropdown-toggle:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
+}
+
+/* 下拉框此前不在任何样式规则里：原生系统渲染的灰框和旁边的自定义
+   输入框完全两个物种（用户第一眼以为是坏了）。纳入统一样式后，原生
+   箭头保留，外观与输入框一致。 */
+.field select {
+  height: 42px;
+  cursor: pointer;
 }
 
 .field textarea {
@@ -725,7 +746,7 @@ svg {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 12px;
+  margin-bottom: 16px;
   font-size: 13px;
   color: var(--text-dim);
   cursor: pointer;
@@ -749,6 +770,7 @@ svg {
   width: 17px;
   height: 17px;
   flex: none;
+  border-radius: 3px;
   accent-color: var(--accent);
 }
 
@@ -771,21 +793,18 @@ svg {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
-  margin-bottom: 12px;
 }
 
 .grid-3 {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
-  margin-bottom: 12px;
 }
 
 .grid-4 {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
-  margin-bottom: 12px;
 }
 
 .inline-form {
@@ -1992,6 +2011,7 @@ dialog .row {
      16px is the documented threshold. */
   .field input,
   .field textarea,
+  .field select,
   .dropdown-host .dropdown-toggle,
   .model-filter,
   #model-filter {

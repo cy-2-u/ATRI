@@ -105,6 +105,7 @@ $('login-form').onsubmit = async (event) => {
     await api('/api/login', { method: 'POST', body: { password: $('password').value } });
     authenticated = true;
     fillPersonaForm.done = false;
+    fillSystemForm.done = false;
     $('login').hidden = true;
     $('dashboard').hidden = false;
     // 五个视图初始都是 hidden：不点亮当前 tab，登录后就是一个空壳面板。
@@ -432,9 +433,19 @@ $('save-persona').onclick = () => perform(async () => {
 
 // ---------- 系统 ----------
 
+// 协议不该是用户的负担：模型名自带答案（gemini-* → Gemini，claude-* →
+// Anthropic，其余 → OpenAI 兼容）。下拉默认"自动"，只有名字不标准的
+// 自建代理才需要手动指定。
+const inferModelFormat = (model) =>
+  /gemini/i.test(model) ? 'gemini' : /claude/i.test(model) ? 'anthropic' : 'openai';
+
 function fillSystemForm(config) {
+  // 轮询每 4 秒到系统页就会走到这里：无守卫的重填会把正在输入的密钥
+  // 清空、正在改的地址覆盖回旧值——表单只在进面板后填一次。
+  if (fillSystemForm.done) return;
+  fillSystemForm.done = true;
   const primary = config.primary ?? {};
-  $('primary-format').value = primary.format ?? 'openai';
+  $('primary-format').value = 'auto';
   $('primary-model').value = primary.model ?? '';
   $('primary-url').value = primary.baseUrl ?? '';
   $('primary-key').value = '';
@@ -449,7 +460,7 @@ function fillSystemForm(config) {
   $('fallback-on').checked = Boolean(fallback);
   $('fallback-fields').hidden = !fallback;
   if (fallback) {
-    $('fallback-format').value = fallback.format ?? 'openai';
+    $('fallback-format').value = 'auto';
     $('fallback-model').value = fallback.model ?? '';
     $('fallback-url').value = fallback.baseUrl ?? '';
     $('fallback-key').value = '';
@@ -472,9 +483,23 @@ function fillSystemForm(config) {
 }
 $('fallback-on').onchange = () => { $('fallback-fields').hidden = !$('fallback-on').checked; };
 
+// "自动"协议跟随模型名实时推断；手动选了具体协议就不越俎代庖。
+const followFormat = (modelId, selectId) => {
+  $(modelId).addEventListener('input', () => {
+    const select = $(selectId);
+    if (select.value === 'auto') select.value = inferModelFormat($(modelId).value.trim());
+  });
+};
+followFormat('primary-model', 'primary-format');
+followFormat('fallback-model', 'fallback-format');
+const resolveFormat = (selectId, modelId) => {
+  const value = $(selectId).value;
+  return value === 'auto' ? inferModelFormat($(modelId).value.trim()) : value;
+};
+
 $('save-system').onclick = () => perform(async () => {
   const primary = {
-    format: $('primary-format').value,
+    format: resolveFormat('primary-format', 'primary-model'),
     model: $('primary-model').value.trim(),
     baseUrl: $('primary-url').value.trim(),
     vision: $('primary-vision').checked,
@@ -493,7 +518,7 @@ $('save-system').onclick = () => perform(async () => {
   } };
   if ($('fallback-on').checked) {
     const fallback = {
-      format: $('fallback-format').value,
+      format: resolveFormat('fallback-format', 'fallback-model'),
       model: $('fallback-model').value.trim(),
       baseUrl: $('fallback-url').value.trim(),
       vision: $('primary-vision').checked,
@@ -517,6 +542,9 @@ $('save-system').onclick = () => perform(async () => {
   }
   await api('/api/config', { method: 'PUT', body });
   configCache = null;
+  // 保存后的重填与刚提交的值一致（协议下拉会回到"自动"），且解禁下一次
+  // 填充让密钥状态行等反映新配置。
+  fillSystemForm.done = false;
   await refreshSystem();
   show('系统配置已保存');
 });
@@ -660,6 +688,7 @@ void (async () => {
     configCache = await api('/api/config');
     authenticated = true;
     fillPersonaForm.done = false;
+    fillSystemForm.done = false;
     $('login').hidden = true;
     $('dashboard').hidden = false;
     selectTab(currentTab);
