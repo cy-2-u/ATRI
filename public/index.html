@@ -224,12 +224,7 @@
                 <h2>主模型渠道</h2>
                 <div class="grid-2">
                   <label class="field"><span>协议</span>
-                    <select id="primary-format">
-                      <option value="auto">自动（按模型名）</option>
-                      <option value="openai">OpenAI 兼容</option>
-                      <option value="anthropic">Anthropic</option>
-                      <option value="gemini">Gemini</option>
-                    </select>
+                    <div class="dropdown-host" id="primary-format"></div>
                   </label>
                   <label class="field"><span>模型</span><input id="primary-model" type="text" /></label>
                 </div>
@@ -253,12 +248,7 @@
                 <div id="fallback-fields">
                   <div class="grid-2">
                     <label class="field"><span>协议</span>
-                      <select id="fallback-format">
-                        <option value="auto">自动（按模型名）</option>
-                        <option value="openai">OpenAI 兼容</option>
-                        <option value="anthropic">Anthropic</option>
-                        <option value="gemini">Gemini</option>
-                      </select>
+                      <div class="dropdown-host" id="fallback-format"></div>
                     </label>
                     <label class="field"><span>模型</span><input id="fallback-model" type="text" /></label>
                   </div>

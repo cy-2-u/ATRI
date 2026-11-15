@@ -433,11 +433,65 @@ $('save-persona').onclick = () => perform(async () => {
 
 // ---------- 系统 ----------
 
-// 协议不该是用户的负担：模型名自带答案（gemini-* → Gemini，claude-* →
-// Anthropic，其余 → OpenAI 兼容）。下拉默认"自动"，只有名字不标准的
-// 自建代理才需要手动指定。
-const inferModelFormat = (model) =>
-  /gemini/i.test(model) ? 'gemini' : /claude/i.test(model) ? 'anthropic' : 'openai';
+// 手绘下拉：CSS 早已备好 .dropdown-* 全套，JS 组件缺席——补上通用实现。
+// 值落在 host.dataset.value；选项由调用方给。
+function createDropdown(id, options) {
+  const host = $(id);
+  host.innerHTML = '<div class="dropdown">' +
+    '<button type="button" class="dropdown-toggle">' +
+    '<span class="dropdown-label"></span><i class="dropdown-caret"></i>' +
+    '</button><div class="dropdown-menu" hidden></div></div>';
+  const dropdown = host.querySelector('.dropdown');
+  const toggle = host.querySelector('.dropdown-toggle');
+  const label = host.querySelector('.dropdown-label');
+  const menu = host.querySelector('.dropdown-menu');
+  let value = options[0].value;
+  const set = (v) => {
+    value = v;
+    const opt = options.find((o) => o.value === v);
+    label.textContent = opt.label;
+    host.dataset.value = v;
+    for (const btn of menu.children)
+      btn.classList.toggle('selected', btn.dataset.value === v);
+  };
+  for (const opt of options) {
+    const btn = el('button', opt.label, 'dropdown-option');
+    btn.type = 'button';
+    btn.dataset.value = opt.value;
+    btn.onclick = () => {
+      set(opt.value);
+      menu.hidden = true;
+      dropdown.classList.remove('open');
+    };
+    menu.append(btn);
+  }
+  toggle.onclick = () => {
+    menu.hidden = !menu.hidden;
+    dropdown.classList.toggle('open', !menu.hidden);
+  };
+  document.addEventListener('click', (event) => {
+    if (!host.contains(event.target)) {
+      menu.hidden = true;
+      dropdown.classList.remove('open');
+    }
+  });
+  set(value);
+  return {
+    get value() {
+      return value;
+    },
+    set value(v) {
+      set(v);
+    },
+  };
+}
+const FORMAT_OPTIONS = [
+  { value: 'openai', label: 'OpenAI 兼容' },
+  { value: 'anthropic', label: 'Anthropic' },
+  { value: 'gemini', label: 'Gemini' },
+];
+const primaryFormat = createDropdown('primary-format', FORMAT_OPTIONS);
+const fallbackFormat = createDropdown('fallback-format', FORMAT_OPTIONS);
 
 function fillSystemForm(config) {
   // 轮询每 4 秒到系统页就会走到这里：无守卫的重填会把正在输入的密钥
@@ -445,7 +499,7 @@ function fillSystemForm(config) {
   if (fillSystemForm.done) return;
   fillSystemForm.done = true;
   const primary = config.primary ?? {};
-  $('primary-format').value = 'auto';
+  primaryFormat.value = primary.format ?? 'openai';
   $('primary-model').value = primary.model ?? '';
   $('primary-url').value = primary.baseUrl ?? '';
   $('primary-key').value = '';
@@ -460,7 +514,7 @@ function fillSystemForm(config) {
   $('fallback-on').checked = Boolean(fallback);
   $('fallback-fields').hidden = !fallback;
   if (fallback) {
-    $('fallback-format').value = 'auto';
+    fallbackFormat.value = fallback.format ?? 'openai';
     $('fallback-model').value = fallback.model ?? '';
     $('fallback-url').value = fallback.baseUrl ?? '';
     $('fallback-key').value = '';
@@ -483,23 +537,9 @@ function fillSystemForm(config) {
 }
 $('fallback-on').onchange = () => { $('fallback-fields').hidden = !$('fallback-on').checked; };
 
-// "自动"协议跟随模型名实时推断；手动选了具体协议就不越俎代庖。
-const followFormat = (modelId, selectId) => {
-  $(modelId).addEventListener('input', () => {
-    const select = $(selectId);
-    if (select.value === 'auto') select.value = inferModelFormat($(modelId).value.trim());
-  });
-};
-followFormat('primary-model', 'primary-format');
-followFormat('fallback-model', 'fallback-format');
-const resolveFormat = (selectId, modelId) => {
-  const value = $(selectId).value;
-  return value === 'auto' ? inferModelFormat($(modelId).value.trim()) : value;
-};
-
 $('save-system').onclick = () => perform(async () => {
   const primary = {
-    format: resolveFormat('primary-format', 'primary-model'),
+    format: primaryFormat.value,
     model: $('primary-model').value.trim(),
     baseUrl: $('primary-url').value.trim(),
     vision: $('primary-vision').checked,
@@ -518,7 +558,7 @@ $('save-system').onclick = () => perform(async () => {
   } };
   if ($('fallback-on').checked) {
     const fallback = {
-      format: resolveFormat('fallback-format', 'fallback-model'),
+      format: fallbackFormat.value,
       model: $('fallback-model').value.trim(),
       baseUrl: $('fallback-url').value.trim(),
       vision: $('primary-vision').checked,
