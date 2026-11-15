@@ -734,7 +734,16 @@ svg {
 }
 
 /* 联系人关系卡：不是列表，是一张"名分"卡。已绑定走品牌色轻底 + 呼吸
-   绿点；敲门中是中性的灰点加一句解释。 */
+   绿点；敲门中是中性的灰点加一句解释。卡样式自带全套（不搭 stack-tight
+   的便车——contact-list 套在 peer-list 里，之前的边框规则只认直接子
+   元素，卡裸奔成了一段白底文字）。 */
+.peer-list .contact-card {
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  padding: 14px 16px;
+  background: var(--surface);
+}
+
 .contact-dot {
   width: 9px;
   height: 9px;
@@ -750,8 +759,8 @@ svg {
 }
 
 .contact-bound {
-  border-color: color-mix(in srgb, var(--accent) 35%, var(--border-soft));
-  background: color-mix(in srgb, var(--accent) 6%, var(--surface));
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border-soft));
+  background: color-mix(in srgb, var(--accent) 9%, var(--surface));
 }
 
 .contact-note {
@@ -1028,7 +1037,7 @@ input.check,
 
 .peer-list {
   display: grid;
-  gap: 8px;
+  gap: 10px;
 }
 
 .chat-main {
