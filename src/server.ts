@@ -190,6 +190,36 @@ export function createServer(options: ServerOptions) {
   app.post('/api/test-system', async () => options.systemProbe());
   app.post('/api/test-embedding', async () => options.embeddingProbe());
 
+  // 拉取模型列表（v5 回归）：主渠道必须是 OpenAI 兼容接口才有 /models。
+  app.get('/api/models', async () => {
+    const endpoint = options.settings.get().primary;
+    if (endpoint.format !== 'openai') throw new TypeError('模型列表拉取仅支持 OpenAI 兼容接口');
+    if (!endpoint.apiKey) throw new TypeError('请先保存模型密钥');
+    const base = endpoint.baseUrl.replace(/\/+$/, '');
+    const url = /\/v\d+$/.test(base) ? `${base}/models` : `${base}/v1/models`;
+    const response = await fetch(url, {
+      headers: { authorization: `Bearer ${endpoint.apiKey}` },
+      signal: AbortSignal.timeout(15_000),
+    });
+    // 读一次再用：response.json() 会吃掉 body，错误分支的 text() 只剩空串。
+    const raw = await response.text().catch(() => '');
+    type ModelListBody = { data?: { id?: unknown }[]; error?: { message?: unknown } };
+    let body: ModelListBody | null = null;
+    try {
+      body = raw ? (JSON.parse(raw) as ModelListBody) : null;
+    } catch {
+      body = null;
+    }
+    if (!response.ok)
+      throw new TypeError(
+        `拉取模型列表失败（HTTP ${response.status}）：${(body?.error?.message as string) || raw.slice(0, 200) || '无响应内容'}`,
+      );
+    const ids = (body?.data ?? [])
+      .filter((m): m is { id: string } => typeof m?.id === 'string')
+      .map((m) => m.id);
+    return { models: [...new Set(ids)].sort((a, b) => a.localeCompare(b)) };
+  });
+
   // 状态总览
   app.get('/api/status', async () => ({
     channel: options.router.status(),

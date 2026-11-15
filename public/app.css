@@ -230,13 +230,19 @@ svg {
   background: var(--text-faint);
 }
 
+/* 她在线 = 品牌橙（灰点是"从来没有过连接态"的错觉，绿点则像别人的
+   应用）；异常红走 .warn。 */
+.pill-dot.warn {
+  background: var(--danger);
+}
+
 .pill.online {
   color: var(--text);
 }
 
 .pill.online .pill-dot {
-  background: var(--ok);
-  box-shadow: 0 0 8px var(--ok);
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent);
 }
 
 .icon-btn {
@@ -586,29 +592,44 @@ svg {
   overflow-wrap: anywhere;
 }
 
+/* 纵向堆叠容器（她此刻的 chip 组）：此前 .stack 挂在 HTML 上却从未有过
+   全局定义，子项全部贴在一起。 */
+.stack {
+  display: grid;
+  gap: 8px;
+}
+
+/* 她此刻：胶囊改竖排卡片。长文本（心情原因、三条队列）挤在 999px 圆角的
+   胶囊里左右撞墙；label 小字在上、值正文在下、原因弱色第三行，读得动。 */
 .status-chip {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 6px;
-  margin: 2px 8px 2px 0;
-  padding: 4px 12px;
+  display: grid;
+  gap: 3px;
+  margin: 0;
+  padding: 10px 14px;
   border: 1px solid var(--border-soft);
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
   background: var(--surface-2);
-  font-size: 12.5px;
-  /* Values here are short phrases (已开启 / nsjail 沙箱目录). `anywhere` split
-     them mid-word on narrow screens; wrapping the chip as a whole is enough. */
   max-width: 100%;
 }
 
 .status-chip-label {
-  color: var(--text-dim);
+  color: var(--text-faint);
+  font-size: 11.5px;
   flex: none;
 }
 
 .status-chip-value {
   color: var(--text);
-  font-weight: 500;
+  font-size: 13px;
+  line-height: 1.55;
+  min-width: 0;
+  overflow-wrap: break-word;
+}
+
+.status-chip-sub {
+  color: var(--text-faint);
+  font-size: 12px;
+  line-height: 1.5;
   min-width: 0;
   overflow-wrap: break-word;
 }
@@ -685,6 +706,23 @@ svg {
 
 .field.grow {
   flex: 1;
+}
+
+/* 字段带动作：输入框吃剩余宽度，按钮贴右、底边对齐（v5 的拉取模型行）。 */
+.field-with-action {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  min-width: 0;
+}
+
+.field-with-action .field {
+  flex: 1;
+  min-width: 0;
+}
+
+.field-with-action > .btn {
+  flex: none;
 }
 
 .field input,

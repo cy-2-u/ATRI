@@ -101,6 +101,32 @@ function timeText(at) {
   if (!at) return '';
   return new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date(at));
 }
+function hmTime(at) {
+  if (!at) return '';
+  return new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date(at));
+}
+// 微信 ID 是 40+ 字符不可读串：保留两端，两个联系人仍可区分，title 里有全名。
+function shortAddress(address) {
+  if (!address || address.length <= 22) return address;
+  return address.slice(0, 11) + '…' + address.slice(-8);
+}
+// 入睡/醒来从纯分钟改成 HH:MM：人读的是钟点不是分钟数。
+const minutesToHM = (minutes) =>
+  `${String(Math.floor(minutes / 60) % 24).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
+const hmToMinutes = (value) => {
+  const text = String(value).trim();
+  const parsed = /^(\d{1,2}):(\d{1,2})$/.exec(text);
+  if (parsed) {
+    const minutes = Number(parsed[1]) * 60 + Number(parsed[2]);
+    if (Number(parsed[1]) > 23 || Number(parsed[2]) > 59 || minutes > 1439)
+      throw new Error('时间无效（HH:MM，00:00–23:59）');
+    return minutes;
+  }
+  const minutes = Number(text);
+  if (!Number.isInteger(minutes) || minutes < 0 || minutes > 1439)
+    throw new Error('时间无效（HH:MM 或分钟 0–1439）');
+  return minutes;
+};
 function bubbleText(content, isShe) {
   // said 事件存的是 Bubble JSON；旧数据可能已是纯文本。
   try {
@@ -231,10 +257,14 @@ async function refreshStatus() {
   configCache = config;
   // 连接状态
   const wechat = status.wechat ?? {};
+  const connected = Boolean(wechat.status && /已连接/.test(wechat.status));
   // "未登录"在管理面板语境里读作管理员未登录——加主语，一眼分清
   // 这是她的连接态，不是你的登录态。
   $('connection-text').textContent = wechat.status ? `她 · ${wechat.status}` : '她 · 未上线';
-  document.querySelector('#connection .pill-dot')?.classList.toggle('warn', !wechat.status || !/已连接/.test(wechat.status));
+  const pill = $('connection');
+  const dot = pill.querySelector('.pill-dot');
+  pill.classList.toggle('online', connected);
+  dot?.classList.toggle('warn', !connected);
   // 待办
   const issues = await api('/api/deliveries').catch(() => []);
   const issuesSig = JSON.stringify(issues);
@@ -255,24 +285,41 @@ function renderSelfChips(status, config) {
   const mood = status.mood;
   const jobs = status.jobs ?? [];
   const channel = status.channel ?? {};
+  // 队列的 kind 是内核术语，人读的是"心跳/日记"这样的钟点安排。
+  const jobName = { chat: '回复', beat: '心跳', diary: '日记', tidy: '整理', reminder: '提醒' };
   const parts = [
-    ['状态', self.activity || '没有在做特定的事'],
-    ['在追', self.pursuit || '—'],
-    ['心情', mood ? `愉悦 ${mood.valence.toFixed(2)} / 精力 ${mood.energy.toFixed(2)}${mood.reason ? `（${mood.reason}）` : ''}` : '平静'],
-    ['心跳', config.heartbeat ? `开（黏人度 ${Math.round(((status.self?.closeness ?? 0.5) * 100))}，由相处自己长）` : '关', config.heartbeat],
-    ['渠道', channel.cooldownUntil > Date.now() ? `主渠道冷却至 ${timeText(channel.cooldownUntil)}` : channel.probing ? '主渠道恢复探测中' : channel.failures ? `主渠道连续失败 ${channel.failures} 次` : '正常', !channel.failures],
-    ['队列', jobs.length ? jobs.map(j => `${j.kind}@${timeText(j.due_at)}`).join('、') : '空'],
+    { label: '状态', value: self.activity || '没有在做特定的事' },
+    { label: '在追', value: self.pursuit || '—' },
+    {
+      label: '心情',
+      value: mood ? `愉悦 ${mood.valence.toFixed(2)} · 精力 ${mood.energy.toFixed(2)}` : '平静',
+      sub: mood?.reason,
+    },
+    {
+      label: '心跳',
+      value: config.heartbeat ? `开 · 黏人度 ${Math.round((self.closeness ?? 0.5) * 100)}` : '关',
+    },
+    {
+      label: '渠道',
+      value: channel.cooldownUntil > Date.now() ? `主渠道冷却至 ${timeText(channel.cooldownUntil)}` : channel.probing ? '主渠道恢复探测中' : channel.failures ? `主渠道连续失败 ${channel.failures} 次` : '正常',
+      ok: !channel.failures,
+    },
+    {
+      label: '队列',
+      value: jobs.length ? jobs.map((job) => `${jobName[job.kind] ?? job.kind} ${hmTime(job.due_at)}`).join(' · ') : '空',
+    },
   ];
   const sig = JSON.stringify(parts);
   if (chips.dataset.sig === sig) return;
   chips.dataset.sig = sig;
   chips.replaceChildren();
-  for (const [label, value, ok] of parts) {
+  for (const { label, value, sub, ok } of parts) {
     const chip = el('div', undefined, 'status-chip' + (ok === false ? ' status-chip-warn' : ''));
     chip.append(
       el('span', label, 'status-chip-label'),
       el('span', String(value), 'status-chip-value'),
     );
+    if (sub) chip.append(el('span', String(sub), 'status-chip-sub'));
     chips.append(chip);
   }
 }
@@ -430,8 +477,8 @@ function fillPersonaForm(config) {
   $('persona-text').value = config.persona ?? '';
   $('heartbeat').checked = Boolean(config.heartbeat);
   $('closeness').value = config.closeness ?? 50;
-  $('sleep-start').value = config.sleepStart ?? 60;
-  $('sleep-end').value = config.sleepEnd ?? 420;
+  $('sleep-start').value = minutesToHM(config.sleepStart ?? 60);
+  $('sleep-end').value = minutesToHM(config.sleepEnd ?? 420);
   $('diary-hour').value = config.diaryHour ?? 3;
   $('timezone').value = config.timezone ?? 'Asia/Shanghai';
   $('turn-timeout').value = config.turnTimeoutMs ?? 180000;
@@ -444,8 +491,8 @@ $('save-persona').onclick = () => perform(async () => {
       persona: $('persona-text').value,
       heartbeat: $('heartbeat').checked,
       closeness: Number($('closeness').value),
-      sleepStart: Number($('sleep-start').value),
-      sleepEnd: Number($('sleep-end').value),
+      sleepStart: hmToMinutes($('sleep-start').value),
+      sleepEnd: hmToMinutes($('sleep-end').value),
       diaryHour: Number($('diary-hour').value),
       timezone: $('timezone').value.trim(),
       turnTimeoutMs: Number($('turn-timeout').value),
@@ -652,6 +699,57 @@ $('test-embedding').onclick = () =>
     show(`向量连通正常：${result.model} · 维度 ${result.dims} · 延迟 ${result.latencyMs} ms`);
   }, $('test-embedding'));
 
+// 拉取模型列表（v5 回归）：面板可筛选，点选填入模型框。
+let fetchedModels = null;
+$('fetch-models').onclick = () =>
+  perform(async () => {
+    const { models } = await api('/api/models');
+    if (!models.length) throw new Error('渠道返回了空模型列表');
+    fetchedModels = models;
+    renderModelSuggestions();
+    $('model-suggestions').hidden = false;
+  }, $('fetch-models'));
+function ensureModelPanel() {
+  if ($('model-suggestions')) return;
+  const panel = document.createElement('div');
+  panel.id = 'model-suggestions';
+  panel.className = 'model-suggestions';
+  panel.hidden = true;
+  panel.innerHTML =
+    '<div class="model-suggestions-head">' +
+    '<input id="model-filter" type="search" placeholder="筛选模型名…" />' +
+    '<button type="button" class="btn ghost small" id="model-filter-close">收起</button>' +
+    '</div><div class="model-suggestions-list" id="model-suggestions-list"></div>';
+  $('primary-model').closest('.field-with-action').after(panel);
+  $('model-filter').oninput = () => renderModelSuggestions();
+  $('model-filter-close').onclick = () => {
+    panel.hidden = true;
+  };
+}
+function renderModelSuggestions() {
+  ensureModelPanel();
+  const panel = $('model-suggestions');
+  const models = fetchedModels ?? [];
+  const query = ($('model-filter').value || '').trim().toLowerCase();
+  const filtered = query ? models.filter((m) => m.toLowerCase().includes(query)) : models;
+  const list = $('model-suggestions-list');
+  list.replaceChildren();
+  if (!filtered.length) {
+    list.append(el('p', '没有匹配的模型。', 'model-suggestion-empty'));
+    return;
+  }
+  for (const model of filtered) {
+    const item = el('button', model, 'model-suggestion-item' + (model === $('primary-model').value ? ' current' : ''));
+    item.type = 'button';
+    item.title = model;
+    item.onclick = () => {
+      $('primary-model').value = model;
+      panel.hidden = true;
+    };
+    list.append(item);
+  }
+}
+
 async function refreshSystem() {
   const config = configCache ?? await api('/api/config');
   configCache = config;
@@ -763,7 +861,9 @@ async function refreshDrawers() {
   for (const contact of contacts) {
     const rowEl = el('div', undefined, 'row peer-row');
     const head = el('div', undefined, 'row-title');
-    head.append(el('span', contact.address));
+    const name = el('span', shortAddress(contact.address));
+    name.title = contact.address;
+    head.append(name);
     if (contact.approved) head.append(el('span', '已绑定（她只属于这一个人）', 'tag'));
     rowEl.append(head);
     if (!contact.approved) {

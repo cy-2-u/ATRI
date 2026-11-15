@@ -99,6 +99,8 @@ function endpoint(value: unknown, previous: Endpoint): Endpoint {
     inputTokens: integer(merged.inputTokens, 'inputTokens', 1024, 1_000_000),
     retries: integer(merged.retries, 'retries', 0, 4),
   };
+  // 温度留空 = 1：各上游的默认值五花八门，显式钉住她的说话手感。
+  result.temperature = 1;
   if (merged.temperature !== undefined) {
     if (
       typeof merged.temperature !== 'number' ||
