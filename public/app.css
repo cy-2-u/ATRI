@@ -713,8 +713,17 @@ svg {
 .field-with-action {
   display: flex;
   gap: 10px;
-  align-items: flex-end;
+  align-items: center;
   margin-bottom: 12px;
+}
+
+/* checkbox 不吃 .field input 的 width:100%——否则复选框被拉满一行，
+   与标签中间隔出大片空白（走查截图实锤）。 */
+.field input[type='checkbox'] {
+  width: 17px;
+  height: 17px;
+  flex: none;
+  accent-color: var(--accent);
 }
 
 .field-with-action .field {

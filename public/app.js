@@ -104,6 +104,7 @@ $('login-form').onsubmit = async (event) => {
   await perform(async () => {
     await api('/api/login', { method: 'POST', body: { password: $('password').value } });
     authenticated = true;
+    fillPersonaForm.done = false;
     $('login').hidden = true;
     $('dashboard').hidden = false;
     startPolling();
@@ -179,9 +180,16 @@ function refreshCurrent() {
     refreshStatus(),
     currentTab === 'chat' ? refreshChat() : Promise.resolve(),
     currentTab === 'journal' ? refreshJournal() : Promise.resolve(),
+    currentTab === 'persona' ? refreshPersona() : Promise.resolve(),
     currentTab === 'stickers' ? refreshStickers() : Promise.resolve(),
     currentTab === 'system' ? refreshSystem() : Promise.resolve(),
   ]);
+}
+// 人设表单只填一次（进入页时），轮询不回写：别覆盖正在编辑的值。
+async function refreshPersona() {
+  const config = configCache ?? await api('/api/config');
+  configCache = config;
+  if (!fillPersonaForm.done) fillPersonaForm(config);
 }
 async function refreshStatus() {
   const seq = ++statusSeq;
@@ -381,6 +389,7 @@ $('add-sticker').onclick = () => perform(async () => {
 // ---------- 人设 ----------
 
 function fillPersonaForm(config) {
+  fillPersonaForm.done = true;
   $('persona-text').value = config.persona ?? '';
   $('heartbeat').checked = Boolean(config.heartbeat);
   $('closeness').value = config.closeness ?? 50;

@@ -51,7 +51,13 @@ export function createServer(options: ServerOptions) {
   app.addHook('onRequest', async (request, reply) => {
     reply.header('cache-control', 'no-store');
     reply.header('x-content-type-options', 'nosniff');
-    reply.header('content-security-policy', "default-src 'none'; frame-ancestors 'none'");
+    // 页面无内联脚本与样式：default-src 'self' 放行同源脚本/样式/请求，
+    // img 加 data:（扫码二维码是 data URI）。此前的 default-src 'none'
+    // 会把 app.js 与全部 fetch 一并拦死——管理页在浏览器里从未活过。
+    reply.header(
+      'content-security-policy',
+      "default-src 'self'; img-src 'self' data:; frame-ancestors 'none'",
+    );
     if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method)) {
       const origin = request.headers.origin;
       if (origin) {

@@ -29,7 +29,10 @@ import { createServer } from './server.js';
 /** 装配层：把内核、身体、感官与管理面接成一个可运行的进程。
  *  她的一切都在这里获得宿主：数据库、人格、心跳、夜与手眼。 */
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
+// 项目根：src/index.ts → atri/，dist/index.js → atri/（Docker 里 /app/dist → /app）。
+// 此前是 '../..'——内核还住在 atri/new/ 时代的遗留，搬根后多跳一层，
+// 生产镜像里 root 解析成 '/'，管理页 404、人格与表情目录全丢。
+const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const dataDir = resolve(process.env.ATRI_DATA_DIR || join(root, 'data'));
 mkdirSync(dataDir, { recursive: true });
 
