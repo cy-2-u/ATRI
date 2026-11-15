@@ -788,11 +788,12 @@ export class Journal {
 
   schedule(peer: string, kind: Turn['kind'], dueAt: number): void {
     if (!Number.isFinite(dueAt)) throw new TypeError('任务时间必须有限');
+    const due = Math.round(dueAt);
     this.transaction(() => {
       this.statement('INSERT OR IGNORE INTO kernel_peers(id) VALUES(?)').run(peer);
       this.statement(
         'INSERT INTO kernel_jobs(peer,kind,due_at) VALUES(?,?,?) ON CONFLICT(peer,kind) DO UPDATE SET due_at=excluded.due_at',
-      ).run(peer, kind, dueAt);
+      ).run(peer, kind, due);
     });
   }
 

@@ -65,30 +65,58 @@
         </div>
       </header>
 
-      <div id="offline-banner" class="offline-banner" hidden>连接中断，正在重试——她还在，别担心。</div>
+      <div id="offline-banner" class="offline-banner" hidden>
+        连接中断，正在重试——她还在，别担心。
+      </div>
 
       <nav id="nav" class="nav" role="tablist" aria-label="功能导航">
-        <button class="nav-item selected" id="tab-chat" role="tab" data-tab="chat" aria-selected="true">
+        <button
+          class="nav-item selected"
+          id="tab-chat"
+          role="tab"
+          data-tab="chat"
+          aria-selected="true"
+        >
           <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8z" />
+            <path
+              d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8z"
+            />
           </svg>
           <span>对话</span>
         </button>
-        <button class="nav-item" id="tab-journal" role="tab" data-tab="journal" aria-selected="false">
+        <button
+          class="nav-item"
+          id="tab-journal"
+          role="tab"
+          data-tab="journal"
+          aria-selected="false"
+        >
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z" />
             <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z" />
           </svg>
           <span>内心</span>
         </button>
-        <button class="nav-item" id="tab-persona" role="tab" data-tab="persona" aria-selected="false">
+        <button
+          class="nav-item"
+          id="tab-persona"
+          role="tab"
+          data-tab="persona"
+          aria-selected="false"
+        >
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
             <circle cx="12" cy="7" r="4" />
           </svg>
           <span>人设</span>
         </button>
-        <button class="nav-item" id="tab-stickers" role="tab" data-tab="stickers" aria-selected="false">
+        <button
+          class="nav-item"
+          id="tab-stickers"
+          role="tab"
+          data-tab="stickers"
+          aria-selected="false"
+        >
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <circle cx="12" cy="12" r="10" />
             <path d="M8 14s1.5 2 4 2 4-2 4-2" />
@@ -99,7 +127,9 @@
         <button class="nav-item" id="tab-system" role="tab" data-tab="system" aria-selected="false">
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <circle cx="12" cy="12" r="3" />
-            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.08a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.08a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+            <path
+              d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.08a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.08a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"
+            />
           </svg>
           <span>系统</span>
         </button>
@@ -107,7 +137,14 @@
 
       <div id="views" class="main">
         <!-- 对话 -->
-        <section id="view-chat" class="view chat-view" data-panel="chat" role="tabpanel" aria-labelledby="tab-chat" hidden>
+        <section
+          id="view-chat"
+          class="view chat-view"
+          data-panel="chat"
+          role="tabpanel"
+          aria-labelledby="tab-chat"
+          hidden
+        >
           <div class="chat-main">
             <div id="chat-head" class="chat-head">
               <span id="chat-head-name" class="chat-head-name">她</span>
@@ -122,18 +159,40 @@
         </section>
 
         <!-- 内心 -->
-        <section id="view-journal" class="view" data-panel="journal" role="tabpanel" aria-labelledby="tab-journal" hidden>
+        <section
+          id="view-journal"
+          class="view"
+          data-panel="journal"
+          role="tabpanel"
+          aria-labelledby="tab-journal"
+          hidden
+        >
           <div class="subtabs" role="tablist" aria-label="内心分区">
-            <button class="subtab selected" data-journal="diary" role="tab" aria-selected="true">日记</button>
-            <button class="subtab" data-journal="memories" role="tab" aria-selected="false">记忆</button>
-            <button class="subtab" data-journal="thoughts" role="tab" aria-selected="false">念头</button>
-            <button class="subtab" data-journal="commitments" role="tab" aria-selected="false">约定</button>
+            <button class="subtab selected" data-journal="diary" role="tab" aria-selected="true">
+              日记
+            </button>
+            <button class="subtab" data-journal="memories" role="tab" aria-selected="false">
+              记忆
+            </button>
+            <button class="subtab" data-journal="thoughts" role="tab" aria-selected="false">
+              念头
+            </button>
+            <button class="subtab" data-journal="commitments" role="tab" aria-selected="false">
+              约定
+            </button>
           </div>
           <div id="journal-list" class="journal-list"></div>
         </section>
 
         <!-- 人设 -->
-        <section id="view-persona" class="view" data-panel="persona" role="tabpanel" aria-labelledby="tab-persona" hidden>
+        <section
+          id="view-persona"
+          class="view"
+          data-panel="persona"
+          role="tabpanel"
+          aria-labelledby="tab-persona"
+          hidden
+        >
           <div class="settings-columns">
             <div class="settings-col persona-col">
               <div class="card persona-card">
@@ -198,7 +257,14 @@
         </section>
 
         <!-- 表情 -->
-        <section id="view-stickers" class="view" data-panel="stickers" role="tabpanel" aria-labelledby="tab-stickers" hidden>
+        <section
+          id="view-stickers"
+          class="view"
+          data-panel="stickers"
+          role="tabpanel"
+          aria-labelledby="tab-stickers"
+          hidden
+        >
           <div class="card">
             <h2>她的表情</h2>
             <p class="hint">最多启用 32 个；停用的不再进提示词目录。</p>
@@ -207,27 +273,46 @@
           <div class="card">
             <h2>添加自定义表情</h2>
             <div class="grid-2">
-              <label class="field"><span>slug（小写字母/数字/连字符）</span><input id="sticker-slug" type="text" /></label>
-              <label class="field"><span>含义（她看目录时读的文字）</span><input id="sticker-desc" type="text" /></label>
+              <label class="field"
+                ><span>slug（小写字母/数字/连字符）</span><input id="sticker-slug" type="text"
+              /></label>
+              <label class="field"
+                ><span>含义（她看目录时读的文字）</span><input id="sticker-desc" type="text"
+              /></label>
             </div>
-            <label class="field"><span>标签（逗号分隔，可选）</span><input id="sticker-tags" type="text" /></label>
-            <label class="field"><span>图片（PNG/JPEG/GIF/WebP，≤3 MB）</span><input id="sticker-file" type="file" accept="image/*" /></label>
+            <label class="field"
+              ><span>标签（逗号分隔，可选）</span><input id="sticker-tags" type="text"
+            /></label>
+            <label class="field"
+              ><span>图片（PNG/JPEG/GIF/WebP，≤3 MB）</span
+              ><input id="sticker-file" type="file" accept="image/*"
+            /></label>
             <button id="add-sticker" class="btn primary">上传</button>
           </div>
         </section>
 
         <!-- 系统 -->
-        <section id="view-system" class="view" data-panel="settings" role="tabpanel" aria-labelledby="tab-system" hidden>
+        <section
+          id="view-system"
+          class="view"
+          data-panel="settings"
+          role="tabpanel"
+          aria-labelledby="tab-system"
+          hidden
+        >
           <div class="settings-columns">
             <div class="settings-col">
               <div class="card">
                 <h2>主模型渠道</h2>
                 <div class="grid-2">
-                  <label class="field"><span>协议</span>
+                  <label class="field"
+                    ><span>协议</span>
                     <div class="dropdown-host" id="primary-format"></div>
                   </label>
                   <div class="field-with-action">
-                    <label class="field"><span>模型</span><input id="primary-model" type="text" /></label>
+                    <label class="field"
+                      ><span>模型</span><input id="primary-model" type="text"
+                    /></label>
                     <button class="btn ghost" id="fetch-models" type="button">拉取模型</button>
                   </div>
                 </div>
@@ -236,12 +321,27 @@
                   <span>密钥<span id="primary-key-state" class="hint"></span></span>
                   <input id="primary-key" type="password" autocomplete="new-password" />
                 </label>
-                <label class="field field-check"><input id="primary-vision" type="checkbox" class="check" /><span>视觉（她能看图）</span></label>
+                <label class="field field-check"
+                  ><input id="primary-vision" type="checkbox" class="check" /><span
+                    >视觉（她能看图）</span
+                  ></label
+                >
                 <div class="grid-4">
-                  <label class="field"><span>温度<span class="hint">（默认 1）</span></span><input id="primary-temp" type="number" min="0" max="2" step="0.1" /></label>
-                  <label class="field"><span>超时 ms</span><input id="primary-timeout" type="number" min="1000" max="180000" step="1000" /></label>
-                  <label class="field"><span>输出上限</span><input id="primary-max-tokens" type="number" min="128" max="32768" step="128" /></label>
-                  <label class="field"><span>重试</span><input id="primary-retries" type="number" min="0" max="4" /></label>
+                  <label class="field"
+                    ><span>温度<span class="hint">（默认 1）</span></span
+                    ><input id="primary-temp" type="number" min="0" max="2" step="0.1"
+                  /></label>
+                  <label class="field"
+                    ><span>超时 ms</span
+                    ><input id="primary-timeout" type="number" min="1000" max="180000" step="1000"
+                  /></label>
+                  <label class="field"
+                    ><span>输出上限</span
+                    ><input id="primary-max-tokens" type="number" min="128" max="32768" step="128"
+                  /></label>
+                  <label class="field"
+                    ><span>重试</span><input id="primary-retries" type="number" min="0" max="4"
+                  /></label>
                 </div>
                 <div class="actions between">
                   <button class="btn ghost" id="test-llm" type="button">测试模型连通</button>
@@ -250,15 +350,24 @@
               </div>
               <div class="card">
                 <h2>备用渠道（主渠道连续 3 轮失败冷却 1 小时后接管）</h2>
-                <label class="field field-check"><input id="fallback-on" type="checkbox" class="check" /><span>启用备用渠道</span></label>
+                <label class="field field-check"
+                  ><input id="fallback-on" type="checkbox" class="check" /><span
+                    >启用备用渠道</span
+                  ></label
+                >
                 <div id="fallback-fields">
                   <div class="grid-2">
-                    <label class="field"><span>协议</span>
+                    <label class="field"
+                      ><span>协议</span>
                       <div class="dropdown-host" id="fallback-format"></div>
                     </label>
-                    <label class="field"><span>模型</span><input id="fallback-model" type="text" /></label>
+                    <label class="field"
+                      ><span>模型</span><input id="fallback-model" type="text"
+                    /></label>
                   </div>
-                  <label class="field"><span>地址</span><input id="fallback-url" type="text" /></label>
+                  <label class="field"
+                    ><span>地址</span><input id="fallback-url" type="text"
+                  /></label>
                   <label class="field">
                     <span>密钥<span id="fallback-key-state" class="hint"></span></span>
                     <input id="fallback-key" type="password" autocomplete="new-password" />
@@ -271,11 +380,19 @@
                   <span>Tavily 搜索密钥<span id="web-key-state" class="hint"></span></span>
                   <input id="web-key" type="password" autocomplete="new-password" />
                 </label>
-                <label class="field field-check"><input id="embedding-on" type="checkbox" class="check" /><span>启用向量搜索</span></label>
+                <label class="field field-check"
+                  ><input id="embedding-on" type="checkbox" class="check" /><span
+                    >启用向量搜索</span
+                  ></label
+                >
                 <div id="embedding-fields">
                   <div class="grid-2">
-                    <label class="field"><span>向量模型</span><input id="embedding-model" type="text" /></label>
-                    <label class="field"><span>向量地址（留空复用主渠道）</span><input id="embedding-url" type="text" /></label>
+                    <label class="field"
+                      ><span>向量模型</span><input id="embedding-model" type="text"
+                    /></label>
+                    <label class="field"
+                      ><span>向量地址（留空复用主渠道）</span><input id="embedding-url" type="text"
+                    /></label>
                   </div>
                   <label class="field">
                     <span>向量密钥<span id="embedding-key-state" class="hint"></span></span>
@@ -292,12 +409,26 @@
               <div class="card">
                 <h2>她的手：沙箱</h2>
                 <div class="grid-2">
-                  <label class="field field-check"><input id="sandbox-on" type="checkbox" class="check" /><span>启用沙箱</span></label>
-                  <label class="field field-check"><input id="sandbox-net" type="checkbox" class="check" /><span>沙箱联网</span></label>
+                  <label class="field field-check"
+                    ><input id="sandbox-on" type="checkbox" class="check" /><span
+                      >启用沙箱</span
+                    ></label
+                  >
+                  <label class="field field-check"
+                    ><input id="sandbox-net" type="checkbox" class="check" /><span
+                      >沙箱联网</span
+                    ></label
+                  >
                 </div>
                 <div class="grid-2">
-                  <label class="field"><span>容量上限 MB</span><input id="sandbox-size" type="number" min="0" max="65536" /></label>
-                  <label class="field"><span>内存上限 MB</span><input id="sandbox-memory" type="number" min="0" max="65536" /></label>
+                  <label class="field"
+                    ><span>容量上限 MB</span
+                    ><input id="sandbox-size" type="number" min="0" max="65536"
+                  /></label>
+                  <label class="field"
+                    ><span>内存上限 MB</span
+                    ><input id="sandbox-memory" type="number" min="0" max="65536"
+                  /></label>
                 </div>
                 <p id="sandbox-state" class="hint"></p>
                 <div id="sandbox-files" class="recent-list"></div>

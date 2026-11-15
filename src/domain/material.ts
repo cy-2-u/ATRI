@@ -20,7 +20,11 @@ const vagueDays = (days: number): string => {
   if (days <= 9) return '一周左右';
   if (days <= 13) return '十来天';
   if (days <= 20) return '两周多';
-  return '快一个月';
+  if (days <= 45) return '一个月';
+  if (days <= 75) return '两个月左右';
+  const months = Math.round(days / 30);
+  if (months < 12) return `约 ${months} 个月`;
+  return '一年多了';
 };
 const daypart = (at: number, timeZone: string): string => {
   const hour = Number(
