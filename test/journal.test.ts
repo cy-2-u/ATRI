@@ -147,3 +147,53 @@ test('设置只编码一次，重启后保持对象类型', () => {
     env.close();
   }
 });
+
+test('账号换绑：记忆与对话整体搬到新账号 peer，旧 peer 退场', () => {
+  const env = fixture();
+  try {
+    const oldPeer = 'wechat:old-bot:alice';
+    const newPeer = 'wechat:new-bot:alice';
+    env.journal.receive(oldPeer, 'event-1', '我不吃香菜');
+    env.journal.saveMemory(oldPeer, {
+      id: 'mem-1',
+      content: '他不吃香菜',
+      kind: 'stated',
+      sources: ['event-1'],
+      status: 'active',
+      detail: 0.9,
+      importance: 0.7,
+      emotion: 0,
+      consolidation: 0,
+      interference: 0,
+      createdAt: 1000,
+      evaluatedAt: 1000,
+      lastRehearsedAt: 0,
+      pinned: false,
+    } as never);
+    env.journal.setSetting(`mood:${oldPeer}`, { pleasure: 0.4, energy: 0, patience: 0, at: 1000 });
+    env.journal.setSetting(`wechat:context:${oldPeer}`, 'ctx-token');
+    env.journal.schedule(oldPeer, 'beat', 5000);
+
+    env.journal.remapPeers('old-bot', 'new-bot');
+
+    assert.equal(env.journal.events(newPeer).length, 1);
+    assert.equal(env.journal.events(oldPeer).length, 0);
+    assert.equal(env.journal.memories(newPeer).length, 1);
+    assert.equal(
+      (
+        env.journal.setting<{ pleasure: number }>(`mood:${newPeer}`, { pleasure: 0 }) as {
+          pleasure: number;
+        }
+      ).pleasure,
+      0.4,
+    );
+    assert.equal(env.journal.setting(`wechat:context:${newPeer}`, ''), 'ctx-token');
+    assert.ok(env.journal.jobs().some((job) => job.peer === newPeer && job.kind === 'beat'));
+    assert.equal(
+      env.journal.peers().some((peer) => peer === oldPeer),
+      false,
+    );
+  } finally {
+    env.close();
+  }
+});

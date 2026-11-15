@@ -147,8 +147,12 @@ export class WechatBridge {
           ),
         };
         signal.throwIfAborted();
-        if (this.session && this.session.account !== account)
+        if (this.session && this.session.account !== account) {
+          // 换绑账号：她的记忆与对话整体搬到新账号的 peer 下——账号变了，
+          // 人没变，历史不能丢在新账号的白纸 peer 外面。
+          this.journal.remapPeers(this.session.account, account);
           this.journal.setSetting('wechat:contacts', []);
+        }
         this.journal.setSetting('wechat:session', session);
         this.journal.setSetting('wechat:account', account);
         this.session = session;

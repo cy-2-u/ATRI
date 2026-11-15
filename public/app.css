@@ -708,7 +708,8 @@ svg {
   flex: 1;
 }
 
-/* 字段带动作：输入框吃剩余宽度，按钮贴右、底边对齐（v5 的拉取模型行）。 */
+/* 字段带动作：输入框吃剩余宽度，按钮贴右且与输入框等高（padding 对齐
+   输入框的 9px，行顶底两条线齐平——此前按钮矮一截）。 */
 .field-with-action {
   display: flex;
   align-items: flex-end;
@@ -723,6 +724,36 @@ svg {
 
 .field-with-action > .btn {
   flex: none;
+  padding-top: 9px;
+  padding-bottom: 9px;
+}
+
+/* 联系人关系卡：不是列表，是一张"名分"卡。已绑定走品牌色轻底 + 呼吸
+   绿点；敲门中是中性的灰点加一句解释。 */
+.contact-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--text-faint);
+  align-self: center;
+}
+
+.contact-dot.ok {
+  background: var(--ok);
+  box-shadow: 0 0 6px var(--ok);
+}
+
+.contact-bound {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border-soft));
+  background: color-mix(in srgb, var(--accent) 6%, var(--surface));
+}
+
+.contact-note {
+  margin: 0;
+  color: var(--text-faint);
+  font-size: 12.5px;
+  line-height: 1.55;
 }
 
 .field input,

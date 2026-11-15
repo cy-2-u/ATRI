@@ -857,6 +857,45 @@ export class Journal {
     );
   }
 
+  /** 机器人账号换绑：peer id 形如 wechat:{account}:{address}——账号换了，
+   *  人没换，她的记忆、对话、约定、排期整体搬到新账号的 peer 下。
+   *  jobs 的 (peer,kind) 冲突时旧数据优先（她的历史不可丢）。 */
+  remapPeers(oldAccount: string, newAccount: string): void {
+    if (oldAccount === newAccount) return;
+    const old = `wechat:${oldAccount}:`;
+    const fresh = `wechat:${newAccount}:`;
+    this.transaction(() => {
+      // 先立新 peer 行：子表的 peer 外键要指到真实存在的行。
+      for (const row of this.statement('SELECT id FROM kernel_peers WHERE id LIKE ?').all(
+        `${old}%`,
+      ) as unknown as {
+        id: string;
+      }[])
+        this.statement('INSERT OR IGNORE INTO kernel_peers(id,version) VALUES(?,?)').run(
+          fresh + row.id.slice(old.length),
+          0,
+        );
+      for (const table of [
+        'kernel_events',
+        'kernel_memories',
+        'kernel_thoughts',
+        'kernel_commitments',
+        'kernel_jobs',
+        'kernel_turns',
+        'kernel_outbox',
+      ]) {
+        this.statement(
+          `UPDATE OR REPLACE ${table} SET peer = ?1 || substr(peer, ?2) WHERE substr(peer, 1, ?3) = ?4`,
+        ).run(fresh, old.length + 1, old.length, old);
+      }
+      // 以 peer 为键的设置（心情快照、会话上下文）。
+      this.statement(
+        'UPDATE kernel_settings SET key = replace(key, ?1, ?2) WHERE instr(key, ?1) > 0',
+      ).run(old, fresh);
+      this.statement('DELETE FROM kernel_peers WHERE id LIKE ?').run(`${old}%`);
+    });
+  }
+
   recover(): void {
     this.transaction(() => {
       this.statement("UPDATE kernel_outbox SET status='unknown' WHERE status='sending'").run();

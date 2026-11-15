@@ -621,7 +621,7 @@ $('save-system').onclick = () => perform(async () => {
     vision: $('primary-vision').checked,
     timeoutMs: Number($('primary-timeout').value),
     maxTokens: Number($('primary-max-tokens').value),
-    inputTokens: configCache?.primary?.inputTokens ?? 24000,
+    inputTokens: configCache?.primary?.inputTokens ?? 256000,
     retries: Number($('primary-retries').value),
   };
   if ($('primary-temp').value !== '') primary.temperature = Number($('primary-temp').value);
@@ -857,28 +857,43 @@ async function refreshDrawers() {
   const contacts = await api('/api/wechat/contacts').catch(() => []);
   const list = $('contact-list');
   list.replaceChildren();
-  if (!contacts.length) { empty(list, '还没有联系人出现。让 TA 给这个账号发一条消息。'); return; }
+  if (!contacts.length) {
+    empty(list, '还没有联系人出现。让 TA 给这个账号发一条消息。');
+    return;
+  }
+  // 她只属于一个人：这里不是联系人列表，是一张关系卡——敲门中是等待，
+  // 已绑定是名分。
   for (const contact of contacts) {
-    const rowEl = el('div', undefined, 'row peer-row');
+    const card = el('div', undefined, 'row contact-card' + (contact.approved ? ' contact-bound' : ''));
     const head = el('div', undefined, 'row-title');
+    const dot = el('span', undefined, 'contact-dot' + (contact.approved ? ' ok' : ''));
     const name = el('span', shortAddress(contact.address));
     name.title = contact.address;
-    head.append(name);
-    if (contact.approved) head.append(el('span', '已绑定（她只属于这一个人）', 'tag'));
-    rowEl.append(head);
+    head.append(dot, name, el('span', contact.approved ? '已绑定' : '敲门中', 'tag'));
+    card.append(head);
+    card.append(
+      el(
+        'p',
+        contact.approved
+          ? '她只属于这一个人——对话、记忆与约定，都只与你进行。'
+          : '有人来找她说话。批准后，她的世界就只有这一个人。',
+        'contact-note',
+      ),
+    );
     if (!contact.approved) {
       const actions = el('div', undefined, 'actions');
       const approve = el('button', '允许使用', 'btn primary small');
       approve.type = 'button';
-      approve.onclick = () => perform(async () => {
-        await api('/api/wechat/approve', { method: 'POST', body: { address: contact.address } });
-        await refreshDrawers();
-        show('已绑定。她会在十分钟内开口。');
-      }, approve);
+      approve.onclick = () =>
+        perform(async () => {
+          await api('/api/wechat/approve', { method: 'POST', body: { address: contact.address } });
+          await refreshDrawers();
+          show('已绑定。她会在十分钟内开口。');
+        }, approve);
       actions.append(approve);
-      rowEl.append(actions);
+      card.append(actions);
     }
-    list.append(rowEl);
+    list.append(card);
   }
 }
 

@@ -170,7 +170,9 @@ export class Settings {
       vision: env.LLM_VISION === 'true',
       timeoutMs: 45_000,
       maxTokens: 3000,
-      inputTokens: 24_000,
+      // 她的思考一轮 = 人格 + 素材 + 160 条历史 + 工具定义，24000 的预算
+      // 连心跳都装不下（生产实锤：连续 budget failure）。
+      inputTokens: 256_000,
       retries: 2,
     };
     const fallback = env.FALLBACK_LLM_MODEL
