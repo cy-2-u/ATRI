@@ -148,7 +148,7 @@
             <div class="settings-col">
               <div class="card">
                 <h2>生理与节律</h2>
-                <label class="field field-with-action">
+                <label class="field field-check">
                   <span>心跳（她的意识节拍）</span>
                   <input id="heartbeat" type="checkbox" class="check" />
                 </label>
@@ -233,19 +233,14 @@
                   <label class="field"><span>模型</span><input id="primary-model" type="text" /></label>
                 </div>
                 <label class="field"><span>地址</span><input id="primary-url" type="text" /></label>
-                <label class="field field-with-action">
+                <label class="field">
                   <span>密钥<span id="primary-key-state" class="hint"></span></span>
                   <input id="primary-key" type="password" autocomplete="new-password" />
                 </label>
-                <label class="field field-with-action">
-                  <span>清除已存密钥</span>
-                  <input id="primary-clear" type="checkbox" class="check" />
-                </label>
-                <div class="grid-2">
-                  <label class="field"><span>视觉（她能看图）</span><input id="primary-vision" type="checkbox" class="check" /></label>
+                <label class="field field-check"><span>清除已存密钥</span><input id="primary-clear" type="checkbox" class="check" /></label>
+                <label class="field field-check"><span>视觉（她能看图）</span><input id="primary-vision" type="checkbox" class="check" /></label>
+                <div class="grid-4">
                   <label class="field"><span>温度（可留空）</span><input id="primary-temp" type="number" min="0" max="2" step="0.1" /></label>
-                </div>
-                <div class="grid-3">
                   <label class="field"><span>超时 ms</span><input id="primary-timeout" type="number" min="1000" max="180000" step="1000" /></label>
                   <label class="field"><span>输出上限</span><input id="primary-max-tokens" type="number" min="128" max="32768" step="128" /></label>
                   <label class="field"><span>重试</span><input id="primary-retries" type="number" min="0" max="4" /></label>
@@ -253,7 +248,7 @@
               </div>
               <div class="card">
                 <h2>备用渠道（主渠道连续 3 轮失败冷却 1 小时后接管）</h2>
-                <label class="field field-with-action"><span>启用备用渠道</span><input id="fallback-on" type="checkbox" class="check" /></label>
+                <label class="field field-check"><span>启用备用渠道</span><input id="fallback-on" type="checkbox" class="check" /></label>
                 <div id="fallback-fields">
                   <div class="grid-2">
                     <label class="field"><span>协议</span>
@@ -266,16 +261,16 @@
                     <label class="field"><span>模型</span><input id="fallback-model" type="text" /></label>
                   </div>
                   <label class="field"><span>地址</span><input id="fallback-url" type="text" /></label>
-                  <label class="field field-with-action">
+                  <label class="field">
                     <span>密钥<span id="fallback-key-state" class="hint"></span></span>
                     <input id="fallback-key" type="password" autocomplete="new-password" />
                   </label>
-                  <label class="field field-with-action"><span>清除已存密钥</span><input id="fallback-clear" type="checkbox" class="check" /></label>
+                  <label class="field field-check"><span>清除已存密钥</span><input id="fallback-clear" type="checkbox" class="check" /></label>
                 </div>
               </div>
               <div class="card">
                 <h2>她的眼：联网与向量</h2>
-                <label class="field field-with-action">
+                <label class="field">
                   <span>Tavily 搜索密钥<span id="web-key-state" class="hint"></span></span>
                   <input id="web-key" type="password" autocomplete="new-password" />
                 </label>
@@ -283,11 +278,11 @@
                   <label class="field"><span>向量模型（留空关闭语义召回）</span><input id="embedding-model" type="text" /></label>
                   <label class="field"><span>向量地址（留空复用主渠道）</span><input id="embedding-url" type="text" /></label>
                 </div>
-                <label class="field field-with-action">
+                <label class="field">
                   <span>向量密钥<span id="embedding-key-state" class="hint"></span></span>
                   <input id="embedding-key" type="password" autocomplete="new-password" />
                 </label>
-                <label class="field field-with-action"><span>停用向量检索</span><input id="embedding-clear" type="checkbox" class="check" /></label>
+                <label class="field field-check"><span>停用向量检索</span><input id="embedding-clear" type="checkbox" class="check" /></label>
                 <p id="embeddings-state" class="hint"></p>
               </div>
             </div>
@@ -295,8 +290,8 @@
               <div class="card">
                 <h2>她的手：沙箱</h2>
                 <div class="grid-2">
-                  <label class="field field-with-action"><span>启用沙箱</span><input id="sandbox-on" type="checkbox" class="check" /></label>
-                  <label class="field field-with-action"><span>沙箱联网</span><input id="sandbox-net" type="checkbox" class="check" /></label>
+                  <label class="field field-check"><span>启用沙箱</span><input id="sandbox-on" type="checkbox" class="check" /></label>
+                  <label class="field field-check"><span>沙箱联网</span><input id="sandbox-net" type="checkbox" class="check" /></label>
                 </div>
                 <div class="grid-2">
                   <label class="field"><span>容量上限 MB</span><input id="sandbox-size" type="number" min="0" max="65536" /></label>

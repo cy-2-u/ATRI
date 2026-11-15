@@ -717,11 +717,18 @@ svg {
   min-height: 80px;
 }
 
-.field-with-action {
+/* 复选框字段：勾选目标紧贴标签——此前复用的 field-with-action 把 checkbox
+   推到行最右端，孤零零悬着；而密钥行套它后被 flex 收缩成半宽，与全宽的
+   地址框错出半列。两种字段各自归位：文本/密码框永远全宽（field），勾选
+   紧贴（field-check）。 */
+.field-check {
   display: flex;
-  gap: 10px;
   align-items: center;
+  gap: 8px;
   margin-bottom: 12px;
+  font-size: 13px;
+  color: var(--text-dim);
+  cursor: pointer;
 }
 
 /* 断线横幅：安静的一行，不抢戏——她只是暂时联系不上。 */
@@ -743,15 +750,6 @@ svg {
   height: 17px;
   flex: none;
   accent-color: var(--accent);
-}
-
-.field-with-action .field {
-  margin-bottom: 0;
-}
-
-.field-with-action .btn {
-  flex: none;
-  margin-bottom: 1px;
 }
 
 .check {
@@ -1988,15 +1986,6 @@ dialog .row {
 
   .persona-layout {
     grid-template-columns: 1fr;
-  }
-
-  .field-with-action {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .field-with-action .btn {
-    margin-bottom: 0;
   }
 
   /* iOS zooms any input under 16px on focus, blowing out the whole layout.
