@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
@@ -54,17 +54,17 @@ const config = () => settings.get();
 const stickers = new Stickers(root, dataDir, journal);
 // 沙箱目录独立于数据目录：nsjail 会把 /data 遮蔽成空 tmpfs，她的工作
 // 目录必须活在遮蔽之外，否则命令 cwd 直接消失。
+// 恒创建、由 enabled 现读开关：管理页中途开启沙箱后，工具与材料立刻
+// 一致——不需要重启进程才长出手。
 const sandboxDir = process.env.ATRI_SANDBOX_DIR || join(dataDir, 'sandbox');
-const sandbox = config().sandbox.enabled
-  ? new Sandbox(sandboxDir, {
-      enabled: () => config().sandbox.enabled,
-      sizeLimitBytes: () => config().sandbox.sizeLimitMb * 1024 * 1024,
-      timeoutMs: () => config().sandbox.timeoutMs,
-      memoryLimitMb: () => config().sandbox.memoryLimitMb,
-      timeZone: () => config().timezone,
-      network: () => config().sandbox.network,
-    })
-  : undefined;
+const sandbox = new Sandbox(sandboxDir, {
+  enabled: () => config().sandbox.enabled,
+  sizeLimitBytes: () => config().sandbox.sizeLimitMb * 1024 * 1024,
+  timeoutMs: () => config().sandbox.timeoutMs,
+  memoryLimitMb: () => config().sandbox.memoryLimitMb,
+  timeZone: () => config().timezone,
+  network: () => config().sandbox.network,
+});
 const web = new TavilyWeb(() => config().webSearchKey);
 const embeddings = new EmbeddingClient(() => ({
   baseUrl: config().embedding?.baseUrl ?? '',
@@ -163,7 +163,9 @@ const router = new ModelRouter(() => settings.routes(), httpTransport, {
 const mind = new Mind(
   router,
   journal,
-  lifeTools(journal, { sandbox, web: config().webSearchKey ? web : undefined }),
+  // 工具恒注册：搜索单独由 TavilyWeb 现读密钥，沙箱由 Sandbox 现读开关——
+  // 启动后才配置的"眼"与"手"不再需要重启进程。
+  lifeTools(journal, { sandbox, web }),
   readPrompt('life.md', ''),
   () => config().primary.inputTokens,
   TOOL_SETS,
@@ -197,7 +199,7 @@ const material = new LifeMaterial({
   journal,
   stickers,
   timeZone: () => config().timezone,
-  sandboxEnabled: () => Boolean(sandbox?.enabled),
+  sandboxEnabled: () => sandbox.enabled,
   webConfigured: () => Boolean(config().webSearchKey),
   vision: () => config().primary.vision,
   embeddings: config().embedding ? embeddings : undefined,
@@ -246,16 +248,17 @@ const runtime = new Runtime(journal, mind, {
 function ensureRecurringJobs(): void {
   const c = config();
   const now = Date.now();
+  const jobs = journal.jobs();
   for (const peer of journal.peers()) {
     for (const kind of ['diary', 'tidy'] as const) {
-      if (journal.jobs().some((job) => job.peer === peer && job.kind === kind)) continue;
+      if (jobs.some((job) => job.peer === peer && job.kind === kind)) continue;
       if (journal.turnRunning(peer, kind)) continue;
       const hour = kind === 'diary' ? c.diaryHour : (c.diaryHour + 1) % 24;
       journal.schedule(peer, kind, nextLocalHour(now, hour, c.timezone));
     }
     if (
       c.heartbeat &&
-      !journal.jobs().some((job) => job.peer === peer && job.kind === 'beat') &&
+      !jobs.some((job) => job.peer === peer && job.kind === 'beat') &&
       !journal.turnRunning(peer, 'beat')
     ) {
       const due = nextBeat();
@@ -323,6 +326,38 @@ function startBackgroundMaintenance(): void {
     for (const peer of journal.peers()) dripBackfill(journal, client, peer).catch(onError);
   }, 5 * 60_000);
   drip.unref();
+  // 收到的图片只在对话事件里被引用：事件之外的文件永远没人读。启动与
+  // 每天各扫一次，引用集之外即孤儿（写入与扫描同一进程，时序上先落盘
+  // 后入事件——扫掉的只可能是早已无人引用的）。
+  const sweep = setInterval(sweepMedia, 24 * 3_600_000);
+  sweep.unref();
+  sweepMedia();
+}
+
+function sweepMedia(): void {
+  let files: string[];
+  try {
+    files = readdirSync(join(dataDir, 'media'));
+  } catch {
+    return;
+  }
+  const referenced = new Set<string>();
+  for (const peer of journal.peers())
+    for (const event of journal.events(peer, ['received']))
+      try {
+        const media = JSON.parse(event.content)?.media;
+        if (Array.isArray(media))
+          for (const item of media) if (typeof item?.path === 'string') referenced.add(item.path);
+      } catch {
+        /* 纯文本 */
+      }
+  let swept = 0;
+  for (const file of files)
+    if (!referenced.has(`media/${file}`)) {
+      rmSync(join(dataDir, 'media', file), { force: true });
+      swept++;
+    }
+  if (swept) console.log(`[atri] swept ${swept} orphan media files`);
 }
 
 app
@@ -343,9 +378,11 @@ async function shutdown(): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
   try {
+    // 先关 HTTP（等在途请求收尾），再停心跳与桥，最后落库收口。
+    await app.close();
     await runtime.stop();
     await bridge.stop();
-    sandbox?.dispose();
+    sandbox.dispose();
     journal.close();
   } finally {
     process.exit(0);

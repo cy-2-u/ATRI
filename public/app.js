@@ -271,8 +271,10 @@ async function refreshPersona() {
 }
 async function refreshStatus() {
   const seq = ++statusSeq;
-  const [status, config] = await Promise.all([api('/api/status'), api('/api/config')]);
+  const status = await api('/api/status');
   if (seq !== statusSeq) return;
+  // 人设全文不该每 4 秒拖一遍：config 走缓存，保存配置时置空重拉。
+  const config = configCache ?? (await api('/api/config'));
   configCache = config;
   // 连接状态
   const wechat = status.wechat ?? {};
@@ -353,7 +355,8 @@ function renderSelfChips(status, config) {
 }
 
 async function refreshChat() {
-  const events = await api('/api/events');
+  // 只拉对话本身：全量 events 会把日记、念头、failure 的内容每 4 秒拖一遍。
+  const events = await api('/api/events?kinds=received,said');
   const visible = events.filter((e) => e.kind === 'received' || e.kind === 'said');
   const sig = JSON.stringify(visible.map((e) => [e.id, e.kind, e.content]));
   if (sig === chatSnapshot) return;
@@ -612,6 +615,7 @@ $('save-persona').onclick = () =>
         debounceMs: Number($('debounce').value),
       },
     });
+    configCache = null;
     show('已保存。她在下一拍读到新的人设与节律。');
   });
 

@@ -583,16 +583,19 @@ export class LifeMaterial {
     };
   }
 
-  /** 整理材料：相近的记忆对交给模型归拢（夜里只理旧事，不写新事）。 */
+  /** 整理材料：相近的记忆对交给模型归拢（夜里只理旧事，不写新事）。
+   *  相似度用 bigram Jaccard——gram 集每条只算一次，不进内层循环。 */
   private tidyMaterial(peer: string): unknown {
     const journal = this.deps.journal;
     const now = this.deps.now();
     const actives = journal.memories(peer).filter((m) => m.status === 'active');
+    // gram 集每条只算一次，不进内层循环。
+    const gramSets = actives.map((m) => grams(m.content));
     const pairs: { a: { id: string; content: string }; b: { id: string; content: string } }[] = [];
     for (let i = 0; i < actives.length && pairs.length < 60; i++)
       for (let j = i + 1; j < actives.length && pairs.length < 60; j++) {
-        const a = grams(actives[i]!.content),
-          b = grams(actives[j]!.content);
+        const a = gramSets[i]!,
+          b = gramSets[j]!;
         let overlap = 0;
         for (const g of a) if (b.has(g)) overlap++;
         const union = a.size + b.size - overlap;

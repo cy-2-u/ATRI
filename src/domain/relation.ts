@@ -46,21 +46,20 @@ export function evolveCloseness(journal: Journal, now: number, timeZone: string)
   const density = clamp((received + said) / 16);
   const reciprocity = received ? clamp(said / received) : 0;
   let initiatives = 0;
-  let answered = 0;
   for (let i = 0; i < events.length; i++) {
     const event = events[i]!;
     if (event.kind !== 'said') continue;
     const previous = events[i - 1];
     if (!previous || previous.kind !== 'said' || event.created_at - previous.created_at >= BURST_MS)
       initiatives++;
-    if (
-      events
-        .slice(i + 1)
-        .some(
-          (later) => later.kind === 'received' && later.created_at - event.created_at <= ANSWER_MS,
-        )
-    )
-      answered++;
+  }
+  // 开口是否落空：倒序单遍——记住身后最近的一条回应，12 小时内算被接住。
+  let answered = 0;
+  let nextReceivedAt = Infinity;
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i]!;
+    if (event.kind === 'received') nextReceivedAt = event.created_at;
+    else if (nextReceivedAt - event.created_at <= ANSWER_MS) answered++;
   }
   const fallingFlat = initiatives ? 1 - answered / initiatives : 0;
   const target = clamp(0.25 + 0.45 * density + 0.3 * reciprocity - 0.15 * fallingFlat);

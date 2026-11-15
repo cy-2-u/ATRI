@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { readFileSync, existsSync, statSync } from 'node:fs';
+import { gzipSync } from 'node:zlib';
 import { resolve, sep, extname } from 'node:path';
 import QRCode from 'qrcode';
 import { Settings } from './settings.js';
@@ -61,7 +62,12 @@ export function createServer(options: ServerOptions) {
   const passwordHash = digest(options.password);
 
   app.addHook('onRequest', async (request, reply) => {
-    reply.header('cache-control', 'no-store');
+    // API 不缓存（响应随状态实时变）；静态页走 no-cache——浏览器可存副本
+    // 但每次用 ETag 验证，命中就是无 body 的 304，不再整页重拉。
+    reply.header(
+      'cache-control',
+      request.url.startsWith('/api/') || request.url === '/healthz' ? 'no-store' : 'no-cache',
+    );
     reply.header('x-content-type-options', 'nosniff');
     // 页面无内联脚本与样式：default-src 'self' 放行同源脚本/样式/请求，
     // img 加 data:（扫码二维码是 data URI）。此前的 default-src 'none'
@@ -131,10 +137,19 @@ export function createServer(options: ServerOptions) {
       return reply.code(403).send({ error: '路径无效' });
     if (!existsSync(target) || !statSync(target).isFile())
       return reply.code(404).send({ error: '不存在' });
+    // 文本资源 gzip（~1/4）+ ETag 304：管理页刷新只传空响应。
+    const mime = MIME[extname(target)] ?? 'application/octet-stream';
     const bytes = readFileSync(target);
-    return reply
-      .header('content-type', MIME[extname(target)] ?? 'application/octet-stream')
-      .send(bytes);
+    const gzipped =
+      /^(text\/|application\/(json|javascript|xhtml))/i.test(mime) &&
+      String(request.headers['accept-encoding'] ?? '').includes('gzip');
+    const payload = gzipped ? gzipSync(bytes) : bytes;
+    const etag = `"${createHash('sha1').update(payload).digest('base64')}"`;
+    reply.header('etag', etag).header('vary', 'accept-encoding');
+    if (request.headers['if-none-match'] === etag) return reply.code(304).send();
+    reply.header('content-type', mime);
+    if (gzipped) reply.header('content-encoding', 'gzip');
+    return reply.send(payload);
   });
 
   app.get('/healthz', async () => ({ ok: true }));
@@ -337,7 +352,7 @@ export function createServer(options: ServerOptions) {
   });
   app.get('/api/usage', async (request) => {
     const days = Number((request.query as { days?: string } | undefined)?.days ?? 7);
-    return options.journal.usage(Number.isFinite(days) ? days : 7);
+    return options.journal.usage(Number.isFinite(days) ? days : 7, options.settings.get().timezone);
   });
   app.get('/api/embeddings', async (request) => {
     const peer = (request.query as { peer?: string } | undefined)?.peer || firstPeer();

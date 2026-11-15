@@ -12,6 +12,30 @@ export interface Bubble {
   path?: string;
 }
 
+/** 某时刻在某时区的 UTC 偏移（分钟，东正西负）：用量按天分组用。 */
+function zoneOffsetMinutes(at: number, timeZone: string): number {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    hourCycle: 'h23',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  }).formatToParts(new Date(at));
+  const get = (type: string): number => Number(parts.find((p) => p.type === type)?.value);
+  const asUTC = Date.UTC(
+    get('year'),
+    get('month') - 1,
+    get('day'),
+    get('hour'),
+    get('minute'),
+    get('second'),
+  );
+  return Math.round((asUTC - at) / 60000);
+}
+
 export interface Turn {
   id: string;
   peer: string;
@@ -474,25 +498,29 @@ export class Journal {
     return out;
   }
 
-  /** 语义检索的语料：收到的消息、确认送达的话、日记段与活跃记忆。 */
+  /** 语义检索的语料：收到的消息、确认送达的话、日记段与活跃记忆。
+   *  缺嵌入的判断下沉进 SQL（NOT EXISTS）——不再为"已有哪些"加载全量 id。 */
   searchable(
     peer: string,
     model: string,
     limit = 400,
   ): { id: string; kind: string; text: string }[] {
     const rows = this.statement(
-      `SELECT id,kind,content FROM kernel_events WHERE peer=? AND kind IN ('received','said','diary') ORDER BY seq DESC LIMIT ?`,
-    ).all(peer, Math.floor(limit)) as unknown as { id: string; kind: string; content: string }[];
+      `SELECT id,kind,content FROM kernel_events
+       WHERE peer=? AND kind IN ('received','said','diary')
+         AND NOT EXISTS (SELECT 1 FROM kernel_embeddings x WHERE x.id=kernel_events.id AND x.model=?)
+       ORDER BY seq DESC LIMIT ?`,
+    ).all(peer, model, Math.floor(limit)) as unknown as {
+      id: string;
+      kind: string;
+      content: string;
+    }[];
     const memoryRows = this.statement(
-      `SELECT value FROM kernel_memories WHERE peer=? AND status='active' ORDER BY rowid DESC LIMIT ?`,
-    ).all(peer, Math.floor(limit / 2)) as unknown as { value: string }[];
-    const have = new Set(
-      (
-        this.statement('SELECT id FROM kernel_embeddings WHERE model=?').all(model) as unknown as {
-          id: string;
-        }[]
-      ).map((r) => r.id),
-    );
+      `SELECT value FROM kernel_memories
+       WHERE peer=? AND status='active'
+         AND NOT EXISTS (SELECT 1 FROM kernel_embeddings x WHERE x.id=kernel_memories.id AND x.model=?)
+       ORDER BY rowid DESC LIMIT ?`,
+    ).all(peer, model, Math.floor(limit / 2)) as unknown as { value: string }[];
     const out: { id: string; kind: string; text: string }[] = [];
     for (const row of rows) {
       let text = row.content;
@@ -514,7 +542,7 @@ export class Journal {
         text: memory.kind === 'stated' ? memory.content : `${memory.content}（${memory.gist}）`,
       });
     }
-    return out.filter((item) => !have.has(item.id)).slice(0, 128);
+    return out.slice(0, 128);
   }
 
   recordUsage(purpose: string, model: string, input: number, output: number, cached: number): void {
@@ -530,7 +558,10 @@ export class Journal {
     );
   }
 
-  usage(days = 7): {
+  usage(
+    days = 7,
+    timeZone?: string,
+  ): {
     day: string;
     purpose: string;
     calls: number;
@@ -539,11 +570,13 @@ export class Journal {
     cached: number;
   }[] {
     const since = this.now() - Math.max(1, Math.min(90, days)) * 86400000;
+    // 按她的时区切日：'天'是人读的钟点，不是 UTC 的凌晨八点。
+    const offsetMs = timeZone ? zoneOffsetMinutes(this.now(), timeZone) * 60000 : 0;
     return this.statement(
-      `SELECT date(at/1000,'unixepoch') AS day, purpose, count(*) AS calls,
+      `SELECT date((at + ?)/1000,'unixepoch') AS day, purpose, count(*) AS calls,
               sum(input) AS input, sum(output) AS output, sum(cached) AS cached
        FROM kernel_usage WHERE at>=? GROUP BY day, purpose ORDER BY day DESC, purpose`,
-    ).all(since) as unknown as {
+    ).all(offsetMs, since) as unknown as {
       day: string;
       purpose: string;
       calls: number;
@@ -904,10 +937,17 @@ export class Journal {
         ).run(fresh, old.length + 1, old.length, old);
       }
       // 以 peer 为键的设置：mood 是瞬态（衰减自愈），旧账号的值直接退场，
-      // 新账号已长出的现值保留；历史与上下文键无冲突照搬。
+      // 新账号已长出的现值保留；历史与上下文键无冲突照搬。旧账号的联系人
+      // 册与同步游标随账号退场——账号换了，它们不再被任何路径读到。
       this.statement(
         "DELETE FROM kernel_settings WHERE key LIKE 'mood:%' AND instr(key, ?1) > 0",
       ).run(old);
+      this.statement('DELETE FROM kernel_settings WHERE key = ?').run(
+        `wechat:contacts:${oldAccount}`,
+      );
+      this.statement('DELETE FROM kernel_settings WHERE key = ?').run(
+        `wechat:cursor:${oldAccount}`,
+      );
       this.statement(
         "UPDATE kernel_settings SET key = replace(key, ?1, ?2) WHERE instr(key, ?1) > 0 AND (key LIKE 'mood-history:%' OR key LIKE 'wechat:context:%')",
       ).run(old, fresh);
