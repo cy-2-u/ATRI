@@ -179,13 +179,8 @@ const mind = new Mind(
   // 渲染必须确定性（按 slug 排序、固定格式），字节不稳缓存永远 miss。
   () => {
     const life = readPrompt('life.md', '');
-    const lines = stickers
-      .list()
-      .map((item) => `${item.slug}：${item.description}`)
-      .sort((a, b) => a.localeCompare(b));
-    return lines.length
-      ? `${life}\n\n可用表情（slug：含义；发表情用 {"type":"sticker","slug":"…"} 对象）：\n${lines.join('\n')}`
-      : life;
+    const catalog = stickers.catalogPrompt();
+    return catalog ? `${life}\n\n${catalog}` : life;
   },
   () => config().primary.inputTokens,
   TOOL_SETS,

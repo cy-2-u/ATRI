@@ -33,6 +33,18 @@ export class Stickers {
       .map((s) => ({ ...s, disabled: disabled.has(s.slug) }))
       .filter((s) => includeDisabled || !s.disabled);
   }
+
+  /** 目录的提示词渲染（系统提示稳定前缀的一部分）：按 slug 排序保证
+   *  字节稳定——目录变动只废一次供应商前缀缓存。头部教的是挑选方法
+   *  （按情绪贴合、宁缺毋滥、slug 原样照抄），不是逐个场景的规则。 */
+  catalogPrompt(): string {
+    const lines = this.list()
+      .map((item) => `${item.slug}：${item.description}`)
+      .sort((a, b) => a.localeCompare(b));
+    return lines.length
+      ? `可用表情（slug：含义——按当下情绪挑最贴的，对不上就不用；发表情用 {"type":"sticker","slug":"…"} 对象，slug 必须原样照抄目录里的写法）：\n${lines.join('\n')}`
+      : '';
+  }
   /** 解析目录内路径并证明没有越出所属基目录：目录正常只由 add() 写入，
    *  被篡改/恢复的数据库不能把图片读取变成任意读。 */
   private resolveFile(file: string): { base: string; path: string } {
