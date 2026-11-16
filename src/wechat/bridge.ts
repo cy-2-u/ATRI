@@ -191,6 +191,10 @@ export class WechatBridge {
   private async poll(session: WechatSession, signal: AbortSignal): Promise<void> {
     const client = new WechatClient(session);
     const key = `wechat:cursor:${session.account}`;
+    // 空批自适应退避：聊天进行中 250ms 保温（他连发时秒进），持续安静
+    // 逐步放宽到 2s——深夜与长无人时段省下近九成空轮询；任何消息一来
+    // 立即回到 250ms。2s 的额外延迟在她的 debounce 与思考时间面前无感。
+    let idleMs = 250;
     while (!signal.aborted && this.session === session) {
       try {
         const cursor = this.journal.setting(key, '');
@@ -208,7 +212,11 @@ export class WechatBridge {
           status: this.loginTask ? this.state.status : '已连接',
           lastPollAt: Date.now(),
         };
-        if (!result.msgs?.length) await new Promise((resolve) => setTimeout(resolve, 250));
+        if (result.msgs?.length) idleMs = 250;
+        else {
+          await new Promise((resolve) => setTimeout(resolve, idleMs));
+          idleMs = Math.min(2000, idleMs * 2);
+        }
       } catch (error) {
         if (signal.aborted) return;
         if (error instanceof WechatError && error.expired) {

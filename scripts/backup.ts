@@ -1,4 +1,4 @@
-import { mkdirSync, copyFileSync, readdirSync, statSync } from 'node:fs';
+import { mkdirSync, copyFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
@@ -9,13 +9,16 @@ import { DatabaseSync } from 'node:sqlite';
  *  WAL 模式下直接 copyFileSync 主文件，可能拿到与 wal 对不上的不一致
  *  快照。先在独立连接上做 checkpoint(TRUNCATE)：把 wal 全部并回主库并
  *  截断 wal 文件，随后的主库拷贝自然是某一时刻的完整状态；checkpoint
- *  被并发读阻塞失败时仍照抄 wal/shm，副本靠 wal 恢复，两头都不吃亏。 */
+ *  被并发读阻塞失败时仍照抄 wal/shm，副本靠 wal 恢复，两头都不吃亏。
+ *  默认目录内自动轮换，只保留最近 10 份——磁盘不跟着备份次数无限涨。 */
 
+const KEEP = 10;
 const dataDir = resolve(
   process.env.ATRI_DATA_DIR || join(resolve(dirname(fileURLToPath(import.meta.url))), '..', 'data'),
 );
 const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-const outDir = resolve(process.argv[2] || join(dataDir, 'backups', stamp));
+const customOut = process.argv[2];
+const outDir = resolve(customOut || join(dataDir, 'backups', stamp));
 
 mkdirSync(outDir, { recursive: true });
 const source = join(dataDir, 'atri.db');
@@ -42,6 +45,13 @@ try {
 const custom = join(dataDir, 'custom');
 if (statSync(custom, { throwIfNoEntry: false })?.isDirectory())
   copyDir(custom, join(outDir, 'custom'));
+// 轮换只管默认目录：自定义输出位置是调用者自己的地盘，不动。
+if (!customOut) {
+  const backupsRoot = join(dataDir, 'backups');
+  const stamps = readdirSync(backupsRoot).sort();
+  for (const old of stamps.slice(0, Math.max(0, stamps.length - KEEP)))
+    rmSync(join(backupsRoot, old), { recursive: true, force: true });
+}
 console.log(`backup ok: ${outDir}`);
 
 function copyDir(from: string, to: string): void {
