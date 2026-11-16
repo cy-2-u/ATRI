@@ -498,10 +498,10 @@
           <div id="issues-list" class="drawer-body-inner stack-tight"></div>
         </div>
       </div>
-
-      <div id="notice" class="toast" hidden></div>
     </div>
 
+    <!-- toast 必须在 #dashboard 外：登录页 dashboard 隐藏时，[hidden] 会连子树一起吞掉错误提示。 -->
+    <div id="notice" class="toast" hidden></div>
     <script src="/app.js" defer></script>
   </body>
 </html>
