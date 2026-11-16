@@ -82,14 +82,14 @@ export class Stickers {
       !/^[a-z0-9_-]{1,40}$/.test(input.slug) ||
       this.list(true).some((s) => s.slug === input.slug)
     )
-      throw new Error('表情 slug 无效或已经存在');
-    if (this.list().length >= 32) throw new Error('最多启用 32 个表情，请先停用不常用的素材');
+      throw new TypeError('表情 slug 无效或已经存在');
+    if (this.list().length >= 32) throw new TypeError('最多启用 32 个表情，请先停用不常用的素材');
     if (!input.description.trim() || input.description.length > 200)
-      throw new Error('请填写不超过 200 字的表情含义');
+      throw new TypeError('请填写不超过 200 字的表情含义');
     const bytes = Buffer.from(input.base64, 'base64'),
       mime = sniffMediaMime(bytes);
     if (!bytes.length || bytes.length > 3 * 1024 * 1024 || !isVisionMime(mime))
-      throw new Error('支持 3 MB 以内的 PNG、JPEG、GIF、WebP');
+      throw new TypeError('支持 3 MB 以内的 PNG、JPEG、GIF、WebP');
     const file = `custom/${randomUUID()}.${mime!.split('/')[1]}`;
     mkdirSync(join(this.dataDir, 'custom'), { recursive: true });
     writeFileSync(join(this.dataDir, file), bytes);
@@ -103,7 +103,7 @@ export class Stickers {
     this.journal.setSetting('stickers:custom', list);
   }
   disable(slug: string) {
-    if (!this.list(true).some((s) => s.slug === slug)) throw new Error('表情不存在');
+    if (!this.list(true).some((s) => s.slug === slug)) throw new TypeError('表情不存在');
     this.journal.setSetting('stickers:disabled', [
       ...new Set([...this.journal.setting<string[]>('stickers:disabled', []), slug]),
     ]);
@@ -113,7 +113,7 @@ export class Stickers {
   remove(slug: string) {
     const custom = this.journal.setting<Sticker[]>('stickers:custom', []);
     const item = custom.find((s) => s.slug === slug);
-    if (!item) throw new Error('内置表情不能删除，只能停用');
+    if (!item) throw new TypeError('内置表情不能删除，只能停用');
     this.journal.setSetting(
       'stickers:custom',
       custom.filter((s) => s.slug !== slug),
@@ -130,7 +130,7 @@ export class Stickers {
   }
   enable(slug: string) {
     const item = this.list(true).find((s) => s.slug === slug);
-    if (!item) throw new Error('表情不存在');
+    if (!item) throw new TypeError('表情不存在');
     if (!item.disabled) return;
     if (this.list().length >= 32) throw new Error('最多启用 32 个表情，请先停用不常用的素材');
     this.journal.setSetting(

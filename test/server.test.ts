@@ -46,6 +46,7 @@ async function fixture() {
     embeddingProbe: async () => ({ ok: true, latencyMs: 1, dims: 3, model: 'm' }),
     staticRoot: '.',
     assetsRoot: '.',
+    customStickersRoot: '.',
   });
   await app.ready();
   const login = await app.inject({

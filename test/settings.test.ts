@@ -59,3 +59,25 @@ test('配置快照不能从外部修改运行态', () => {
     journal.close();
   }
 });
+
+test('地址留空保持旧值，首次缺地址给中文报错', () => {
+  const { journal, settings } = fixture();
+  try {
+    // 主渠道清空地址：保持旧值（默认 deepseek），不是裸 Invalid URL。
+    settings.update({ primary: { baseUrl: '' } });
+    assert.equal(settings.routes().primary.baseUrl, 'https://api.deepseek.com');
+    // 向量/画图：有旧值时空串保持旧值；没有旧值时中文报错。
+    settings.update({ embedding: { model: 'm', apiKey: 'k', baseUrl: 'https://e.example' } });
+    settings.update({ embedding: { model: 'm2' } });
+    assert.equal(settings.get().embedding?.model, 'm2');
+    assert.equal(settings.get().embedding?.baseUrl, 'https://e.example');
+    settings.update({ embedding: null });
+    assert.throws(
+      () => settings.update({ embedding: { model: 'm', apiKey: 'k' } }),
+      /向量服务地址/,
+    );
+    assert.throws(() => settings.update({ image: { model: 'm', apiKey: 'k' } }), /画图服务地址/);
+  } finally {
+    journal.close();
+  }
+});

@@ -236,3 +236,32 @@ test('视觉注入只给最近两条含图消息，更早的图留文字', async
     await env.close();
   }
 });
+
+test('chat 思考失败重试一次为限：持续故障不变成无限循环', async () => {
+  const broken: Model = {
+    async complete() {
+      throw new Error('渠道持续故障');
+    },
+  };
+  const env = setup(broken, async () => 'sent');
+  try {
+    env.runtime.start();
+    env.runtime.receive('peer', 'k1', '在吗');
+    // 第一次失败：留下 failure 记录，并排一次 60 秒后的重试。
+    await until(() => env.journal.events('peer').some((event) => event.kind === 'failure'));
+    await until(() => env.journal.jobs().some((job) => job.peer === 'peer' && job.kind === 'chat'));
+    // 他等不及又发了一条（覆盖 job 立即到期）：第二次失败后不再有重试排期。
+    env.runtime.receive('peer', 'k2', '还在吗');
+    await until(
+      () => env.journal.events('peer').filter((event) => event.kind === 'failure').length >= 2,
+    );
+    await delay(60);
+    assert.equal(
+      env.journal.jobs().some((job) => job.peer === 'peer' && job.kind === 'chat'),
+      false,
+      '重试链的第二次失败后不应再排新的 chat job',
+    );
+  } finally {
+    await env.close();
+  }
+});

@@ -15,7 +15,7 @@ import { beatDelay } from './domain/state.js';
 import {
   dayKeyOf,
   eveningArousalMinutes,
-  minutesOfDay,
+  localMidnightOf,
   nextWakeAfter,
   sleepDayKeyOf,
 } from './domain/rhythm.js';
@@ -200,8 +200,10 @@ const tonightArousal = (): number => {
   const now = Date.now();
   const day = sleepDayKeyOf(now, c.timezone, c.sleepStart, c.sleepEnd);
   if (arousalMemo?.day === day && now - arousalMemo.at < 30_000) return arousalMemo.value;
-  const midnightGuess = Date.parse(`${day}T00:00:00Z`);
-  const midnight = midnightGuess - minutesOfDay(midnightGuess, c.timezone) * 60000;
+  // 归属好的那一晚：now 在凌晨尾段时属于昨晚（sleepDayKeyOf），昨晚的
+  // 日历日零点从当日中午时刻反推——负偏移时区里 UTC 零点会落到前一日。
+  const nightNoon = day === dayKeyOf(now, c.timezone) ? now : Date.parse(`${day}T12:00:00Z`);
+  const midnight = localMidnightOf(nightNoon, c.timezone);
   const evening = journal
     .peers()
     .flatMap((peer) =>
@@ -312,8 +314,7 @@ function ensureRecurringJobs(): void {
 
 /** 目标时区里下一个 hour 点整。DST 变更日最多偏一小时，中国时区无此问题。 */
 function nextLocalHour(now: number, hour: number, timeZone: string): number {
-  const midnightGuess = Date.parse(`${dayKeyOf(now, timeZone)}T00:00:00Z`);
-  const midnight = midnightGuess - minutesOfDay(midnightGuess, timeZone) * 60000;
+  const midnight = localMidnightOf(now, timeZone);
   let candidate = midnight + hour * 3_600_000;
   if (candidate <= now) candidate += 86_400_000;
   return candidate;
@@ -349,6 +350,7 @@ const app = createServer({
   embeddingProbe,
   staticRoot: join(root, 'public'),
   assetsRoot: join(root, 'assets', 'stickers'),
+  customStickersRoot: join(dataDir, 'custom'),
 });
 
 const port = Number(process.env.ATRI_PORT || 3000);

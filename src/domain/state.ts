@@ -163,12 +163,6 @@ export function rehearseMemory(memory: MemoryStrength, now: number): MemoryStren
   };
 }
 
-export function sleepContains(minute: number, start: number, end: number): boolean {
-  const normalize = (value: number) => ((value % 1440) + 1440) % 1440;
-  const length = normalize(end - start);
-  return length > 0 && normalize(minute - start) < length;
-}
-
 export function beatDelay(
   state: SelfState,
   now: number,

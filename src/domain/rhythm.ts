@@ -20,9 +20,18 @@ export function minutesOfDay(at: number, timeZone: string): number {
   return Number(h) * 60 + Number(m);
 }
 
+/** 某时刻所在本地日的零点时刻。从 at 反推（at 减去它的本地分钟数），
+ *  任何偏移（含负偏移/DST）的时区都对；此前"UTC 零点猜再回退偏移"的
+ *  写法在负偏移时区会把窗口整体挪到前一天。 */
+export function localMidnightOf(at: number, timeZone: string): number {
+  return at - minutesOfDay(at, timeZone) * 60000;
+}
+
 /** 当天睡眠窗口的生理抖动：按本地日期哈希把入睡与醒来时刻各平移
  *  ±45 分钟。同一天内稳定，跨天缓慢变化——她不会每天在同一分钟睡着。
- *  startMin === endMin 仍表示整日不眠，抖动不得凭空造出睡眠窗。 */
+ *  startMin === endMin 仍表示整日不眠，抖动不得凭空造出睡眠窗。
+ *  出口把两端都归一到 0–1439：午夜附近的配置抖出负值时，未归一的
+ *  endMin 会让跨午夜判定的凌晨分支恒假，凌晨被误判为醒。 */
 export function jitteredSleepWindow(
   day: string,
   startMin: number,
@@ -35,9 +44,10 @@ export function jitteredSleepWindow(
     hash = Math.imul(hash, 16777619);
   }
   const unsigned = hash >>> 0;
+  const normalize = (value: number) => ((value % 1440) + 1440) % 1440;
   return {
-    startMin: startMin + ((unsigned % 91) - 45),
-    endMin: endMin + ((Math.floor(unsigned / 91) % 91) - 45),
+    startMin: normalize(startMin + ((unsigned % 91) - 45)),
+    endMin: normalize(endMin + ((Math.floor(unsigned / 91) % 91) - 45)),
   };
 }
 

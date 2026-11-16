@@ -79,6 +79,12 @@ function endpoint(value: unknown, previous: Endpoint): Endpoint {
   const merged = { ...previous, ...patch };
   if (!['openai', 'anthropic', 'gemini'].includes(String(merged.format)))
     throw new TypeError('模型协议无效');
+  // 地址留空保持旧值（与密钥同一语义）；首次连旧值都没有才报人话，
+  // 不让用户对着裸 Invalid URL 猜。
+  if (!String(merged.baseUrl).trim()) {
+    if (!previous.baseUrl) throw new TypeError('请填写渠道地址');
+    merged.baseUrl = previous.baseUrl;
+  }
   const url = new URL(String(merged.baseUrl));
   if (
     !['http:', 'https:'].includes(url.protocol) ||
@@ -146,6 +152,11 @@ function embeddingConfig(
       throw new TypeError(`embedding.${key} 必须是字符串`);
   if (!merged.model && !merged.apiKey) return undefined;
   if (!merged.model || !merged.apiKey) throw new TypeError('向量检索需要 model 与 apiKey 同时配置');
+  // baseUrl 留空保持旧值（前端另有"退主渠道地址"的兜底，这里守 API 直调）。
+  if (!String(merged.baseUrl).trim()) {
+    if (!previous?.baseUrl) throw new TypeError('请填写向量服务地址');
+    merged.baseUrl = previous.baseUrl;
+  }
   const url = new URL(String(merged.baseUrl));
   if (
     !['http:', 'https:'].includes(url.protocol) ||
@@ -171,6 +182,11 @@ function imageConfig(value: unknown, previous: ImageConfig | undefined): ImageCo
       throw new TypeError(`image.${key} 必须是字符串`);
   if (!merged.model && !merged.apiKey) return undefined;
   if (!merged.model || !merged.apiKey) throw new TypeError('画图需要 model 与 apiKey 同时配置');
+  // baseUrl 留空保持旧值（前端另有"退主渠道地址"的兜底，这里守 API 直调）。
+  if (!String(merged.baseUrl).trim()) {
+    if (!previous?.baseUrl) throw new TypeError('请填写画图服务地址');
+    merged.baseUrl = previous.baseUrl;
+  }
   const url = new URL(String(merged.baseUrl));
   if (
     !['http:', 'https:'].includes(url.protocol) ||

@@ -1,6 +1,6 @@
 import type { Journal } from '../storage/journal.js';
 import { clamp } from './state.js';
-import { dayKeyOf, minutesOfDay } from './rhythm.js';
+import { dayKeyOf, localMidnightOf } from './rhythm.js';
 
 /** 关系是长出来的，不是设置出来的：黏人度（closeness）是她自己的属性，
  *  每个本地日根据真实的相处统计走一小步。配置里的数值只是第一次的种子。
@@ -12,11 +12,6 @@ const BURST_MS = 5 * 60000; // 与材料层的连发判定同窗：连发的"说
 const ANSWER_MS = 12 * 3600000; // 开口后半天内有回应都算被接住——隔夜回复是常态。
 const DRIFT = 0.06; // 每天最多走目标差距的 6%：急不来的东西才像关系。
 const FLOOR = 0.15;
-
-function localMidnight(at: number, timeZone: string): number {
-  const guess = Date.parse(`${dayKeyOf(at, timeZone)}T00:00:00Z`);
-  return guess - minutesOfDay(guess, timeZone) * 60000;
-}
 
 /** 配置值只在第一次起作用：之后它就不是旋钮了。 */
 export function seedCloseness(journal: Journal, seedPercent: number): void {
@@ -31,7 +26,7 @@ export function evolveCloseness(journal: Journal, now: number, timeZone: string)
   const self = journal.self();
   const day = dayKeyOf(now, timeZone);
   if (self.closenessDay === day) return;
-  const from = localMidnight(now, timeZone) - 86_400_000;
+  const from = localMidnightOf(now, timeZone) - 86_400_000;
   const to = from + 86_400_000;
   const stats = journal
     .peers()

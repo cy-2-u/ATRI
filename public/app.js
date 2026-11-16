@@ -130,6 +130,8 @@ const minutesToHM = (minutes) =>
   `${String(Math.floor(minutes / 60) % 24).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
 const hmToMinutes = (value) => {
   const text = String(value).trim();
+  // 清空不是 00:00：静默把入睡改到午夜比报错更糟。
+  if (!text) throw new Error('时间不能为空（HH:MM）');
   const parsed = /^(\d{1,2}):(\d{1,2})$/.exec(text);
   if (parsed) {
     const minutes = Number(parsed[1]) * 60 + Number(parsed[2]);

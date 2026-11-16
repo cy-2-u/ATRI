@@ -30,9 +30,5 @@
     "prettier": "^3.9.10",
     "tsx": "^4.20.0",
     "typescript": "^5.9.3"
-  },
-  "allowScripts": {
-    "esbuild@0.25.12": true,
-    "esbuild@0.28.2": true
   }
 }

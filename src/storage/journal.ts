@@ -563,6 +563,22 @@ export class Journal {
     return out.slice(0, 128);
   }
 
+  /** 待补嵌入的精确计数（管理页用）：searchable 会把语料截到一批的
+   *  上限，拿它的 length 当积压数会在 128 处封顶。 */
+  searchablePendingCount(peer: string, model: string): number {
+    const events = this.statement(
+      `SELECT count(*) AS n FROM kernel_events
+       WHERE peer=? AND kind IN ('received','said','diary')
+         AND NOT EXISTS (SELECT 1 FROM kernel_embeddings x WHERE x.id=kernel_events.id AND x.model=?)`,
+    ).get(peer, model) as { n: number };
+    const memories = this.statement(
+      `SELECT count(*) AS n FROM kernel_memories
+       WHERE peer=? AND status='active'
+         AND NOT EXISTS (SELECT 1 FROM kernel_embeddings x WHERE x.id=kernel_memories.id AND x.model=?)`,
+    ).get(peer, model) as { n: number };
+    return Number(events.n) + Number(memories.n);
+  }
+
   recordUsage(purpose: string, model: string, input: number, output: number, cached: number): void {
     this.statement(
       'INSERT INTO kernel_usage(purpose,model,input,output,cached,at) VALUES(?,?,?,?,?,?)',
@@ -1070,8 +1086,10 @@ export class Journal {
         ).run(fresh, old.length + 1, old.length, old);
       }
       // 以 peer 为键的设置：mood 是瞬态（衰减自愈），旧账号的值直接退场，
-      // 新账号已长出的现值保留；历史与上下文键无冲突照搬。旧账号的联系人
-      // 册与同步游标随账号退场——账号换了，它们不再被任何路径读到。
+      // 新账号已长出的现值保留；其余 per-peer 键（心情轨迹、心智模型、
+      // 话题笔记及其游标）整体照搬——它们是她的资产，换绑不能丢。
+      // 旧账号的联系人册与同步游标随账号退场——账号换了，它们不再被任何
+      // 路径读到。
       this.statement(
         "DELETE FROM kernel_settings WHERE key LIKE 'mood:%' AND instr(key, ?1) > 0",
       ).run(old);
@@ -1082,7 +1100,7 @@ export class Journal {
         `wechat:cursor:${oldAccount}`,
       );
       this.statement(
-        "UPDATE kernel_settings SET key = replace(key, ?1, ?2) WHERE instr(key, ?1) > 0 AND (key LIKE 'mood-history:%' OR key LIKE 'wechat:context:%')",
+        "UPDATE kernel_settings SET key = replace(key, ?1, ?2) WHERE instr(key, ?1) > 0 AND (key LIKE 'mood-history:%' OR key LIKE 'peer-model:%' OR key LIKE 'notes:%' OR key LIKE 'wechat:context:%')",
       ).run(old, fresh);
       this.statement('DELETE FROM kernel_peers WHERE id LIKE ?').run(`${old}%`);
     });

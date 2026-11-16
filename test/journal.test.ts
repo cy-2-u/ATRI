@@ -172,6 +172,12 @@ test('账号换绑：记忆与对话整体搬到新账号 peer，旧 peer 退场
     } as never);
     env.journal.setSetting(`mood:${oldPeer}`, { pleasure: 0.4, energy: 0, patience: 0, at: 1000 });
     env.journal.setSetting(`wechat:context:${oldPeer}`, 'ctx-token');
+    env.journal.savePeerModel(oldPeer, {
+      beliefs: [{ text: '他在忙项目', basis: ['event-1'] }],
+      updatedAt: 1000,
+    });
+    env.journal.setSetting(`notes:${oldPeer}`, '最近在聊装修');
+    env.journal.setSetting(`notes:seq:${oldPeer}`, 42);
     env.journal.schedule(oldPeer, 'beat', 5000);
     // 换绑前新账号已长出自己的心情瞬态：保留现值，不被旧值覆盖。
     env.journal.setSetting(`mood:${newPeer}`, { pleasure: 0.8, energy: 0, patience: 0, at: 2000 });
@@ -181,6 +187,10 @@ test('账号换绑：记忆与对话整体搬到新账号 peer，旧 peer 退场
     assert.equal(env.journal.events(newPeer).length, 1);
     assert.equal(env.journal.events(oldPeer).length, 0);
     assert.equal(env.journal.memories(newPeer).length, 1);
+    // 心智模型与话题笔记是她的资产：换绑账号不能丢（连同笔记游标）。
+    assert.equal(env.journal.peerModel(newPeer)?.beliefs[0]?.text, '他在忙项目');
+    assert.equal(env.journal.setting(`notes:${newPeer}`, ''), '最近在聊装修');
+    assert.equal(env.journal.setting(`notes:seq:${newPeer}`, 0), 42);
     assert.equal(
       (
         env.journal.setting<{ pleasure: number }>(`mood:${newPeer}`, { pleasure: 0 }) as {
@@ -264,6 +274,21 @@ test('媒体引用集：SQL 侧只筛含 media 的行，误报文本不炸', () 
     const referenced = env.journal.referencedMedia('peer');
     assert.equal(referenced.size, 1);
     assert.ok(referenced.has('media/a.jpg'));
+  } finally {
+    env.close();
+  }
+});
+
+test('待补嵌入计数不随一批语料的上限截断', () => {
+  const env = fixture();
+  try {
+    for (let i = 0; i < 300; i++) env.journal.receive('peer', `k${i}`, `消息${i}`);
+    // searchable 是"一批嵌入语料"（截到 128），计数是真实积压。
+    assert.equal(env.journal.searchable('peer', 'embed-model', 4096).length, 128);
+    assert.equal(env.journal.searchablePendingCount('peer', 'embed-model'), 300);
+    const first = env.journal.searchable('peer', 'embed-model', 1)[0]!;
+    env.journal.setEmbedding(first.id, 'embed-model', new Float32Array([1, 0]));
+    assert.equal(env.journal.searchablePendingCount('peer', 'embed-model'), 299);
   } finally {
     env.close();
   }

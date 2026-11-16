@@ -61,8 +61,11 @@ export function splitInlineStickers(
     const match = re.exec(text);
     if (!match) break;
     pushText(text.slice(cursor, match.index) + (match[1] ?? ''));
-    const slug = resolve((match[2] ?? '').trim());
+    const inner = (match[2] ?? '').trim();
+    const slug = resolve(inner);
     if (slug) out.push({ type: 'sticker', slug });
+    // 目录里对不上就剥壳留下内容：她原本想说的字不能跟着壳一起消失。
+    else pushText(inner);
     cursor = match.index + match[0].length;
   }
   pushText(text.slice(cursor));

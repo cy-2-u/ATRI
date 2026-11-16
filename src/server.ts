@@ -37,6 +37,8 @@ export interface ServerOptions {
   staticRoot: string;
   /** 表情等只读资产的根（仅放行 assets/stickers/ 前缀）。 */
   assetsRoot: string;
+  /** 自定义表情文件的根（dataDir/custom）：管理页预览用。 */
+  customStickersRoot: string;
   secureCookie?: boolean;
 }
 
@@ -120,10 +122,14 @@ export function createServer(options: ServerOptions) {
       // assetsRoot 本身就是 assets/stickers：剥壳必须剥到同层——只剥
       // '/assets/' 会多拼一层 stickers，全部表情图 404 成"（自定义文件）"。
       // 前端把 file 编码为 memes%2F002.jpg：resolve 前先解码（解码后的
-      // 路径仍要过下面的越界检查，%2e%2e 同样被拦）。
+      // 路径仍要过下面的越界检查，%2e%2e 同样被拦）。自定义表情的
+      // custom/ 前缀落在数据目录（stickers.add 只写 dataDir/custom）。
       const rel = decodeURIComponent(raw.slice('/assets/stickers/'.length));
-      const target = resolve(options.assetsRoot, rel);
-      if (!target.startsWith(resolve(options.assetsRoot) + sep))
+      const base = rel.startsWith('custom/')
+        ? { root: options.customStickersRoot, rel: rel.slice('custom/'.length) }
+        : { root: options.assetsRoot, rel };
+      const target = resolve(base.root, base.rel);
+      if (!target.startsWith(resolve(base.root) + sep))
         return reply.code(403).send({ error: '路径无效' });
       if (!existsSync(target) || !statSync(target).isFile())
         return reply.code(404).send({ error: '不存在' });
@@ -358,7 +364,7 @@ export function createServer(options: ServerOptions) {
     const peer = (request.query as { peer?: string } | undefined)?.peer || firstPeer();
     const model = options.settings.get().embedding?.model ?? '';
     if (!model) return { model: '', pending: 0 };
-    return { model, pending: options.journal.searchable(peer, model, 4096).length };
+    return { model, pending: options.journal.searchablePendingCount(peer, model) };
   });
 
   return app;

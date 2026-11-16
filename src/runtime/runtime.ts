@@ -297,8 +297,19 @@ export class Runtime {
         this.options.onError(error);
         // 思考一失败就终态会吞掉他刚说的话（模型超时、网络抖动都算）：
         // 给 chat 轮一次 60 秒后的重试——重排 job 而不是回滚 turn，期间
-        // 他若有新消息，重试轮会连着新消息一起作答。重试再失败保持终态。
-        if (turn.kind === 'chat') this.journal.schedule(turn.peer, 'chat', Date.now() + 60_000);
+        // 他若有新消息，重试轮会连着新消息一起作答。窗口内除当前这条
+        // 外还有失败记录，说明这是重试链的第二次：到此为止，渠道持续
+        // 故障不该变成每分钟一次的无限烧钱循环（fail 落库在先，这里数得到）。
+        if (
+          turn.kind === 'chat' &&
+          this.journal.eventsBetween(
+            turn.peer,
+            ['failure'],
+            Date.now() - 15 * 60_000,
+            Date.now() + 1,
+          ).length <= 1
+        )
+          this.journal.schedule(turn.peer, 'chat', Date.now() + 60_000);
       }
     } finally {
       if (!this.stopped) {

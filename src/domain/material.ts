@@ -6,6 +6,7 @@ import {
   dayKeyOf,
   eveningArousalMinutes,
   inSleepMinutes,
+  localMidnightOf,
   minutesOfDay,
   sleepDayKeyOf,
   sleepWindow,
@@ -222,7 +223,9 @@ const YOUR_TIME_NOTE =
 const MILESTONE_DAYS = [30, 100, 200, 365, 500, 730, 1000];
 
 /** 本轮打断的静默真正开始的时刻：回溯过整段连发与未获回应的主动消息，
- *  锚点挂在对方最后说话的时刻。 */
+ *  锚点挂在对方最后说话的时刻。整段对话都在连发窗内（新关系的第一场
+ *  聊天、热聊中的连续问答）时退到首条消息时刻——静默锚点可以近似，
+ *  "还没聊过天"的渲染不行。 */
 export function silenceBasis(events: { kind: string; created_at: number }[]): number | undefined {
   let i = events.length - 1;
   while (i > 0 && events[i]!.kind === 'said') i--;
@@ -230,7 +233,8 @@ export function silenceBasis(events: { kind: string; created_at: number }[]): nu
   let j = i;
   while (j > 0 && events[j - 1]!.kind === 'said') j--;
   if (j > 0 && events[j - 1]!.kind === 'received') return events[j - 1]!.created_at;
-  return i > 0 ? events[i - 1]!.created_at : undefined;
+  if (i > 0) return events[i - 1]!.created_at;
+  return events[0]?.created_at;
 }
 
 function renderTimeGap(now: number, lastAt: number | undefined, timeZone: string): string {
@@ -421,7 +425,9 @@ export class LifeMaterial {
     for (let back = 1; back <= 3 && out.length < 2; back++) {
       const guess = Date.parse(`${year - back}${monthDay}T00:00:00Z`);
       if (!Number.isFinite(guess)) continue;
-      const start = guess - minutesOfDay(guess, timeZone) * 60000;
+      // 目标日的本地零点：从该日中午反推（UTC 零点在负偏移时区属于
+      // 前一日，直接反推会把窗口挪早一天）。
+      const start = localMidnightOf(guess + 12 * 3_600_000, timeZone);
       const rows = this.deps.journal.eventsBetween(
         peer,
         ['received', 'said', 'diary'],
@@ -518,7 +524,8 @@ export class LifeMaterial {
       let arousal = arousalCache.get(night);
       if (arousal === undefined) {
         const midnightGuess = Date.parse(`${night}T00:00:00Z`);
-        const midnight = midnightGuess - minutesOfDay(midnightGuess, timeZone) * 60000;
+        // 该晚日历日的本地零点：从中午反推，负偏移时区里 UTC 零点属于前一日。
+        const midnight = localMidnightOf(midnightGuess + 12 * 3_600_000, timeZone);
         arousal = eveningArousalMinutes(
           this.deps.journal.eventsBetween(
             peer,
@@ -795,7 +802,7 @@ export class LifeMaterial {
         content: plainText(e, (slug) => this.stickerName(slug)),
         at: e.created_at,
       })),
-      lastDiary: lastDiary.map((e) => e.content),
+      lastDiary: lastDiary.map((e) => plainText(e, (slug) => this.stickerName(slug))),
       recentMemories: recentMemories.map((m) => ({ id: m.id, content: m.content, kind: m.kind })),
       instructions:
         '以第一人称回看上面的真实对话，为这一天写日记。用 write_journal 工具提交：{"sections":[{"content":"一段日记正文","sources":["实际支持这一段的消息或事件 ID"],"emotion":-1到1}]}，sections 最多六段，每段必须带真实来源 ID；没有值得写的就一段都不写。主观感受属于"我当时的理解"，不把对方没说过的事写成事实；只记录给出的消息，不为离线时间虚构。也可以用 remember 工具把"后来形成的认识"（kind 用 interpretation，至少两处真实来源支撑）存进记忆；如果这段时间沉淀出了定义"你是谁"的长期认识（少而精，比如一个月也不出现几次），用 kind:"identity" 写下来——它会成为你不随时间淡去的自我，同样至少两处来源。夜里只整理已发生的事，不发明新计划。写完用 action=nothing、parts 空数组收尾。',

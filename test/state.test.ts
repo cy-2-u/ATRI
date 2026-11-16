@@ -9,7 +9,6 @@ import {
   projectMemory,
   projectSelf,
   rehearseMemory,
-  sleepContains,
   type MemoryStrength,
 } from '../src/domain/state.js';
 
@@ -68,15 +67,6 @@ test('回想巩固残存记忆，不恢复已经遗失的细节', () => {
   const again = rehearseMemory(rehearsed, now + hour);
   assert.equal(again.consolidation, rehearsed.consolidation);
   assert.ok(again.detail <= rehearsed.detail);
-});
-
-test('睡眠窗支持负起点及跨午夜抖动，结束边界不算睡眠', () => {
-  assert.equal(sleepContains(1435, -20, 400), true);
-  assert.equal(sleepContains(0, -20, 400), true);
-  assert.equal(sleepContains(400, -20, 400), false);
-  assert.equal(sleepContains(700, -20, 400), false);
-  assert.equal(sleepContains(60, 1380, 420), true);
-  assert.equal(sleepContains(60, 60, 60), false);
 });
 
 test('警觉窗只在他说话而她未接时生效，接完即回正常节拍', () => {

@@ -6,10 +6,11 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Journal } from '../src/storage/journal.js';
 import { Mind, parseThought, type ToolHandler } from '../src/domain/mind.js';
-import { LifeMaterial } from '../src/domain/material.js';
+import { LifeMaterial, silenceBasis } from '../src/domain/material.js';
 import {
   inSleepMinutes,
   jitteredSleepWindow,
+  localMidnightOf,
   minutesOfDay,
   nextWakeAfter,
   sleepDayKeyOf,
@@ -110,12 +111,13 @@ test('内联表情幻觉捞回：标记壳、整段 JSON、描述匹配与未知
     resolve,
   );
   assert.deepEqual(c.parts, [{ type: 'sticker', slug: 'cat009' }]);
-  // 目录里没有的：剥壳丢掉整个标记，绝不把标记发进微信。
+  // 目录里没有的：剥掉壳留下内容——标记本身绝不发进微信，她原本的
+  // 文字也不能跟着壳一起消失。
   const d = parseThought(
     '{"action":"speak","parts":[{"type":"text","text":"好耶[sticker:unknown_x]"}]}',
     resolve,
   );
-  assert.deepEqual(d.parts, [{ type: 'text', text: '好耶' }]);
+  assert.deepEqual(d.parts, [{ type: 'text', text: '好耶 unknown_x' }]);
   // 无解析器时行为不变。
   const e = parseThought('{"action":"speak","parts":[{"type":"text","text":"[表情：x]"}]}');
   assert.deepEqual(e.parts, [{ type: 'text', text: '[表情：x]' }]);
@@ -366,6 +368,45 @@ test('睡眠窗：按日期抖动稳定、分钟判定与醒来时刻', () => {
   const window = jitteredSleepWindow('2026-11-14', 60, 420);
   assert.equal(wake > night, true);
   assert.ok(Math.abs(minutesOfDay(wake, tz) - window.endMin) < 2);
+  // 抖动出口两端都归一到 0–1439：午夜附近的配置（00:30 醒）抖出负值时，
+  // 未归一的 endMin 会让跨午夜判定的凌晨分支恒假——凌晨被误判为醒。
+  for (let d = 1; d <= 31; d++) {
+    const day = `2026-11-${String(d).padStart(2, '0')}`;
+    const win = jitteredSleepWindow(day, 1140, 30);
+    assert.ok(win.startMin >= 0 && win.startMin < 1440, `${day} startMin 归一`);
+    assert.ok(win.endMin >= 0 && win.endMin < 1440, `${day} endMin 归一`);
+  }
+});
+
+test('本地零点换算在负偏移时区也落在目标日', () => {
+  const ny = 'America/New_York';
+  // 纽约 2026-11-16 当地 15:00（UTC 20:00）：本地零点应是当地 00:00。
+  const at = Date.parse('2026-11-16T20:00:00Z');
+  const midnight = localMidnightOf(at, ny);
+  assert.equal(new Date(midnight).toISOString(), '2026-11-16T05:00:00.000Z');
+  // "UTC 零点猜再回退偏移"的旧式在负偏移会落到前一日，这里锁死正确行为。
+  const shanghai = 'Asia/Shanghai';
+  const atCn = Date.parse('2026-11-16T01:00:00Z'); // 当地 09:00
+  assert.equal(new Date(localMidnightOf(atCn, shanghai)).toISOString(), '2026-11-15T16:00:00.000Z');
+});
+
+test('静默锚点：整段连发也有锚，空历史才没有', () => {
+  // 新关系的第一场聊天（全部落在连发窗内）：锚点退到首条消息时刻，
+  // 绝不能渲染成"你们还没有聊过天"。
+  const burst = [
+    { kind: 'received', created_at: 1000 },
+    { kind: 'said', created_at: 61_000 },
+    { kind: 'received', created_at: 121_000 },
+  ];
+  assert.equal(silenceBasis(burst), 1000);
+  // 常规：她的主动开口回溯到他说上一句话的时刻。
+  const spread = [
+    { kind: 'received', created_at: 1000 },
+    { kind: 'said', created_at: 10 * 60_000 },
+    { kind: 'received', created_at: 20 * 60_000 },
+  ];
+  assert.equal(silenceBasis(spread), 1000);
+  assert.equal(silenceBasis([]), undefined);
 });
 
 test('材料：睡着时收到的消息被如实标注，白天消息不标', async () => {
