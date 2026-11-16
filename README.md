@@ -45,7 +45,7 @@ node dist/migrate.js <旧 atri.db> <新内核.db>
 
 ```sh
 node --import tsx scripts/simulate-month.ts   # 假时钟跑 30 天，8 条机制断言
-ATRI_LIVE_URL=… ATRI_LIVE_KEY=… ATRI_LIVE_MODEL=… node --import tsx scripts/_live-probe.ts  # 换渠道后的真机探针（如保留）
+ATRI_LIVE_URL=… ATRI_LIVE_KEY=… ATRI_LIVE_MODEL=… node --import tsx scripts/_live-probe.ts  # 换渠道后的真机探针
 ```
 
 ## 设计公理

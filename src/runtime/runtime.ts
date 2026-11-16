@@ -12,7 +12,10 @@ export interface RuntimeOptions {
   onComposing?(peer: string, active: boolean): Promise<void>;
   onError(error: unknown): void;
   timeoutMs: number | (() => number);
-  debounceMs: number | (() => number);
+  /** 入站消息的可用时刻；缺省 now+debounce。注入时完全接管——睡眠窗
+   *  把深夜消息推迟到醒来是装配层的事，内核不懂时区与睡眠。 */
+  incomingDue?(): number;
+  debounceMs?: number | (() => number);
   concurrency: number | (() => number);
   /** 气泡间隔的行走时间：第 2 条起按长度停顿，像在打字。 */
   pacing: boolean | (() => boolean);
@@ -79,7 +82,7 @@ export class Runtime {
       peer,
       key,
       content,
-      Date.now() + numeric(this.options.debounceMs),
+      this.options.incomingDue?.() ?? Date.now() + numeric(this.options.debounceMs ?? 0),
     );
     if (accepted) {
       this.active.get(peer)?.controller.abort();

@@ -708,6 +708,14 @@ export class Journal {
     }[];
   }
 
+  /** 第一条收到消息的时刻：你们认识的纪元（里程碑资料用）。 */
+  firstReceivedAt(peer: string): number | undefined {
+    const row = this.statement(
+      "SELECT min(created_at) AS at FROM kernel_events WHERE peer=? AND kind='received'",
+    ).get(peer);
+    return row?.at === undefined || row.at === null ? undefined : Number(row.at);
+  }
+
   /** 该联系人的对话事件总数（received+said，历史窗口自适应用）。 */
   conversationCount(peer: string): number {
     const row = this.statement(

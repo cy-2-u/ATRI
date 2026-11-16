@@ -4,7 +4,7 @@ import { setImmediate as yieldTurn, setTimeout as delay } from 'node:timers/prom
 import { Mind } from '../src/domain/mind.js';
 import type { Model } from '../src/model/types.js';
 import { Journal } from '../src/storage/journal.js';
-import { Runtime } from '../src/runtime/runtime.js';
+import { Runtime, type RuntimeOptions } from '../src/runtime/runtime.js';
 
 async function until(condition: () => boolean): Promise<void> {
   const deadline = Date.now() + 2000;
@@ -15,7 +15,11 @@ async function until(condition: () => boolean): Promise<void> {
   assert.fail('运行时未在预期内推进');
 }
 
-function setup(model: Model, send: (text: string) => Promise<'sent' | 'unknown' | 'failed'>) {
+function setup(
+  model: Model,
+  send: (text: string) => Promise<'sent' | 'unknown' | 'failed'>,
+  extra?: Partial<RuntimeOptions>,
+) {
   const journal = new Journal(':memory:');
   const errors: unknown[] = [];
   const runtime = new Runtime(journal, new Mind(model, journal), {
@@ -31,6 +35,7 @@ function setup(model: Model, send: (text: string) => Promise<'sent' | 'unknown' 
     stickerSlugs: () => new Set(),
     vision: () => false,
     readFile: () => Promise.resolve(undefined),
+    ...extra,
   });
   return {
     journal,
@@ -152,6 +157,36 @@ test('新消息取消旧思考，仅发送新版本回复', async () => {
     env.runtime.receive('peer', 'two', 'second');
     await until(() => sent.length === 1);
     assert.equal(calls, 2);
+    assert.deepEqual(sent, ['hello']);
+    assert.equal(env.errors.length, 0);
+  } finally {
+    await env.close();
+  }
+});
+
+test('注入入站可用时刻：到期前不思考，到期后照常回复', async () => {
+  let calls = 0;
+  const model: Model = {
+    async complete(_m, _t, options) {
+      calls++;
+      return reply.complete([], [], options);
+    },
+  };
+  const sent: string[] = [];
+  const env = setup(
+    model,
+    async (text) => {
+      sent.push(text);
+      return 'sent';
+    },
+    { incomingDue: () => Date.now() + 250 },
+  );
+  try {
+    env.runtime.start();
+    env.runtime.receive('peer', 'one', 'hi');
+    await delay(100);
+    assert.equal(calls, 0);
+    await until(() => sent.length === 1);
     assert.deepEqual(sent, ['hello']);
     assert.equal(env.errors.length, 0);
   } finally {

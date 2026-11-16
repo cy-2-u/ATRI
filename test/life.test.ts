@@ -367,3 +367,65 @@ test('睡眠窗：按日期抖动稳定、分钟判定与醒来时刻', () => {
   assert.equal(wake > night, true);
   assert.ok(Math.abs(minutesOfDay(wake, tz) - window.endMin) < 2);
 });
+
+test('材料：睡着时收到的消息被如实标注，白天消息不标', async () => {
+  // 可变假时钟：凌晨 3 点收一条（在 60–420 抖动窗内），上午 10 点取材料。
+  let at = Date.parse('2026-11-16T03:00:00+08:00');
+  const journal = new Journal(':memory:', () => at);
+  try {
+    journal.receive('peer', 'night', '凌晨睡不着给你发的');
+    at = Date.parse('2026-11-16T10:00:00+08:00');
+    journal.receive('peer', 'morning', '早上好');
+    const life = new LifeMaterial({
+      journal,
+      stickers: { list: () => [] } as unknown as Stickers,
+      timeZone: () => 'Asia/Shanghai',
+      sandboxEnabled: () => false,
+      webConfigured: () => false,
+      vision: () => false,
+      sleepStart: () => 60,
+      sleepEnd: () => 420,
+      now: () => at,
+    });
+    const built = await life.build('peer', {
+      id: 't',
+      peer: 'peer',
+      version: 0,
+      kind: 'chat',
+    });
+    const material = built.material as { sleepMissed?: string };
+    assert.ok(material.sleepMissed?.includes('03:00'), '凌晨消息应标注睡着时收到');
+    assert.ok(!material.sleepMissed!.includes('10:00'), '白天消息不标');
+    assert.match(material.sleepMissed!, /睡着时收到/);
+  } finally {
+    journal.close();
+  }
+});
+
+test('材料：认识满 100 天浮出里程碑，非整数日不浮', async () => {
+  let at = Date.parse('2026-08-08T10:00:00+08:00');
+  const journal = new Journal(':memory:', () => at);
+  try {
+    journal.receive('peer', 'first', '你好呀');
+    at = Date.parse('2026-11-16T10:00:00+08:00'); // 恰好第 100 个日历日
+    const life = new LifeMaterial({
+      journal,
+      stickers: { list: () => [] } as unknown as Stickers,
+      timeZone: () => 'Asia/Shanghai',
+      sandboxEnabled: () => false,
+      webConfigured: () => false,
+      vision: () => false,
+      sleepStart: () => 60,
+      sleepEnd: () => 420,
+      now: () => at,
+    });
+    const turn = { id: 't', peer: 'peer', version: 0, kind: 'chat' as const };
+    const hit = (await life.build('peer', turn)).material as { milestone?: string };
+    assert.equal(hit.milestone, '今天你们认识满 100 天。');
+    at = Date.parse('2026-11-17T10:00:00+08:00'); // 第 101 天：不浮
+    const miss = (await life.build('peer', turn)).material as { milestone?: string };
+    assert.equal(miss.milestone, undefined);
+  } finally {
+    journal.close();
+  }
+});

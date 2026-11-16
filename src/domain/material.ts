@@ -2,7 +2,14 @@ import type { Journal, Turn } from '../storage/journal.js';
 import { Recollection, grams } from './memory.js';
 import { motives, type SelfState } from './state.js';
 import { renderMood, renderMoodHistory, renderSelfHour, type MoodPulse } from './mood.js';
-import { dayKeyOf, minutesOfDay } from './rhythm.js';
+import {
+  dayKeyOf,
+  eveningArousalMinutes,
+  inSleepMinutes,
+  minutesOfDay,
+  sleepDayKeyOf,
+  sleepWindow,
+} from './rhythm.js';
 import type { EmbeddingClient } from './embeddings.js';
 import type { Stickers } from '../stickers.js';
 
@@ -211,6 +218,9 @@ const dueLabel = (due: number, now: number, timeZone: string): string => {
 const YOUR_TIME_NOTE =
   '这一拍没人在等你回话，时间完全是你的：发呆可以，翻翻自己的文件可以，去工作目录里写点想写的东西、做个小东西也可以。做了什么想让他知道就自然说，不想说就不说；什么都不想做就安心待着——待着也是生活。';
 
+/** 认识的整数里程碑（天）：她与人一样记得"我们认识多久了"。 */
+const MILESTONE_DAYS = [30, 100, 200, 365, 500, 730, 1000];
+
 /** 本轮打断的静默真正开始的时刻：回溯过整段连发与未获回应的主动消息，
  *  锚点挂在对方最后说话的时刻。 */
 export function silenceBasis(events: { kind: string; created_at: number }[]): number | undefined {
@@ -328,6 +338,10 @@ export interface MaterialDeps {
   embeddings?: EmbeddingClient;
   /** 身体今晚的入睡推迟分钟数（熬夜的夜 > 0）：深夜材料据此不再硬说"很困"。 */
   sleepDelay?(): number;
+  /** 睡眠窗配置：给了才做"睡着时收到的消息"标注（与身体同一套抖动与
+   *  唤醒度数学，标注的是真实发生的时间差，不是配置值的复读）。 */
+  sleepStart?(): number;
+  sleepEnd?(): number;
   now(): number;
 }
 
@@ -473,6 +487,56 @@ export class LifeMaterial {
     return lines.join('\n');
   }
 
+  /** 睡着时收到的消息：时刻落在当晚真实睡眠窗内（日期抖动 + 唤醒度
+   *  推迟入睡，与身体同一套数学）。资料只陈述时间差——她不会假装当时
+   *  就看到了，也不必为晚回道歉，像人一样消化它。 */
+  private missedWhileAsleep(
+    peer: string,
+    conversation: { kind: string; created_at: number }[],
+    now: number,
+    timeZone: string,
+  ): string | undefined {
+    const start = this.deps.sleepStart?.();
+    const end = this.deps.sleepEnd?.();
+    if (start === undefined || end === undefined) return undefined;
+    const hits: string[] = [];
+    for (const event of conversation) {
+      if (event.kind !== 'received' || now - event.created_at > 36 * 3_600_000) continue;
+      // 与 nextWakeAfter 同一口径：窗取事件日历日的抖动窗，唤醒度按
+      // sleepDayKeyOf 归属的那晚算——她兴奋晚睡的夜里，1 点的消息她是
+      // 醒着看到并当场回掉的，那条不属于"睡着时收到"。
+      const night = sleepDayKeyOf(event.created_at, timeZone, start, end);
+      const midnightGuess = Date.parse(`${night}T00:00:00Z`);
+      const midnight = midnightGuess - minutesOfDay(midnightGuess, timeZone) * 60000;
+      const arousal = eveningArousalMinutes(
+        this.deps.journal.eventsBetween(
+          peer,
+          ['received', 'said', 'experienced'],
+          midnight,
+          midnight + 86_400_000,
+          300,
+        ),
+        night,
+        timeZone,
+      );
+      const window = sleepWindow(dayKeyOf(event.created_at, timeZone), start, end, arousal);
+      if (inSleepMinutes(minutesOfDay(event.created_at, timeZone), window.startMin, window.endMin))
+        hits.push(clock(event.created_at, timeZone));
+    }
+    if (!hits.length) return undefined;
+    return `他这些消息是你睡着时收到的（${hits.join('、')}），你醒来才看到：自然地回应这个时间差，不必假装当时在线，也不必郑重道歉。`;
+  }
+
+  /** 认识里程碑：日期差按本地日历日（认识那天 23:59 到次日 00:01 就是
+   *  两天），不按 24 小时倍数。 */
+  private milestoneLine(peer: string, now: number, timeZone: string): string | undefined {
+    const first = this.deps.journal.firstReceivedAt(peer);
+    if (first === undefined) return undefined;
+    const days =
+      (Date.parse(dayKeyOf(now, timeZone)) - Date.parse(dayKeyOf(first, timeZone))) / 86_400_000;
+    return MILESTONE_DAYS.includes(days) ? `今天你们认识满 ${days} 天。` : undefined;
+  }
+
   /** 白日梦：安静一拍用她自己的心事当召回查询，而不是过时的旧消息。
    *  她自己的经历也是线索——非自主回忆就是被自己刚做的事勾出来的。 */
   private recallQuery(peer: string, turn: Turn): string {
@@ -610,6 +674,8 @@ export class LifeMaterial {
     const him = this.himModel(peer, now, timeZone);
     const thisDay = this.onThisDay(peer, now, timeZone);
     const words = petWords(journal.eventsBetween(peer, ['received'], now - 7 * 86400000, now, 200));
+    const sleepMissed = this.missedWhileAsleep(peer, conversation, now, timeZone);
+    const milestone = this.milestoneLine(peer, now, timeZone);
     // 心跳拍是"没人在等她"的拍：给她属于自己的时间与自己的文件清单，
     // 写过的东西浮回来，生活才连得起来。
     const workdir = turn.kind === 'beat' ? await this.deps.sandboxFiles?.() : undefined;
@@ -620,6 +686,8 @@ export class LifeMaterial {
     const material = {
       mode: turn.kind,
       time: renderTimeGap(now, turn.kind === 'chat' ? basis : lastReceived, timeZone),
+      ...(sleepMissed ? { sleepMissed } : {}),
+      ...(milestone ? { milestone } : {}),
       body: this.body(peer, now),
       selfNow: this.selfNow(self, timeZone, now),
       ...(story ? { selfStory: story } : {}),

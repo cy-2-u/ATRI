@@ -235,6 +235,8 @@ const material = new LifeMaterial({
   vision: () => config().primary.vision,
   embeddings: config().embedding ? embeddings : undefined,
   sleepDelay: tonightArousal,
+  sleepStart: () => config().sleepStart,
+  sleepEnd: () => config().sleepEnd,
   now: Date.now,
 });
 
@@ -262,7 +264,15 @@ const runtime = new Runtime(journal, mind, {
   onComposing: (peer, active) => bridge.composing(peer, active),
   onError,
   timeoutMs: () => config().turnTimeoutMs,
-  debounceMs: () => config().debounceMs,
+  // 睡着的她收不到消息：睡眠窗内到达的话推迟到醒来——深夜秒回是机器，
+  // 人早上才看到凌晨的消息。醒来也不必整点爬起来拿手机：加几分钟随机
+  // 的赖床。白天消息照旧只走 debounce。
+  incomingDue: () => {
+    const c = config();
+    const due = Date.now() + c.debounceMs;
+    const wake = nextWakeAfter(due, c.timezone, c.sleepStart, c.sleepEnd, tonightArousal());
+    return wake > due ? wake + Math.floor(Math.random() * 12 * 60_000) : due;
+  },
   concurrency: () => config().concurrency,
   pacing: () => true,
   stickerSlugs: () => new Set(stickers.list().map((item) => item.slug)),
