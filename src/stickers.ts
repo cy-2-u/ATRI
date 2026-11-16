@@ -45,6 +45,19 @@ export class Stickers {
       ? `可用表情（slug：含义——按当下情绪挑最贴的，对不上就不用；发表情用 {"type":"sticker","slug":"…"} 对象，slug 必须原样照抄目录里的写法）：\n${lines.join('\n')}`
       : '';
   }
+  /** 表情解析：slug、含义或标签都能匹配回目录——模型幻觉出的表情
+   *  标记（写了含义或近义标签而不是 slug）的兜底通道。 */
+  resolve(query: string): string | undefined {
+    const q = query.trim().toLowerCase();
+    if (!q) return undefined;
+    const catalog = this.list();
+    return (
+      catalog.find((s) => s.slug.toLowerCase() === q)?.slug ??
+      catalog.find((s) => s.description.toLowerCase().includes(q))?.slug ??
+      catalog.find((s) => (s.tags ?? []).some((t) => t.toLowerCase().includes(q)))?.slug
+    );
+  }
+
   /** 解析目录内路径并证明没有越出所属基目录：目录正常只由 add() 写入，
    *  被篡改/恢复的数据库不能把图片读取变成任意读。 */
   private resolveFile(file: string): { base: string; path: string } {

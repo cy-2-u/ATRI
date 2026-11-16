@@ -132,12 +132,21 @@ export class Runtime {
     return future.length ? Math.min(...future.map((job) => job.due_at)) : undefined;
   }
 
-  /** 历史消息：received/said 事件还原成对话；视觉开启时收到的图片以
-   *  data URI 随消息注入（≤2 张、≤5 MB，读不到就只留文字标记）。 */
+  /** 历史消息：received/said 事件还原成对话；视觉开启时**最近两条**
+   *  含图消息的图片以 data URI 注入（每条 ≤2 张、≤5 MB，读不到就只留
+   *  文字标记）。更早的图只留标记：人不会记得三个月前那张图的样子，
+   *  而历史图片每拍全价计费等于反复为同一张图买单。 */
   private async history(peer: string): Promise<Message[]> {
     const vision = this.options.vision();
+    const conversation = this.journal.conversation(peer, 160);
+    const visualIds = new Set<string>();
+    if (vision)
+      for (let i = conversation.length - 1; i >= 0 && visualIds.size < 2; i--) {
+        const event = conversation[i]!;
+        if (event.kind === 'received' && event.content.includes('"media"')) visualIds.add(event.id);
+      }
     const messages: Message[] = [];
-    for (const event of this.journal.conversation(peer, 160)) {
+    for (const event of conversation) {
       if (event.kind === 'received') {
         let content = event.content;
         const images: string[] = [];
@@ -148,7 +157,7 @@ export class Runtime {
           };
           if (parsed && typeof parsed === 'object' && typeof parsed.text === 'string') {
             content = parsed.text;
-            if (vision && parsed.media?.length)
+            if (vision && visualIds.has(event.id) && parsed.media?.length)
               for (const item of parsed.media.slice(0, 2)) {
                 if (!item.path || !item.mime?.startsWith('image/')) continue;
                 try {

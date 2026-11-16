@@ -238,11 +238,22 @@ export class Mind {
           // 工具可能已在取消前产生真实副作用，先留回执再响应取消。
           const receipt = this.journal.receipt(turn, call.name, result, succeeded);
           abortCheck(options);
+          // 回执限长：run_command 的 stdout 可达 256KB，原样回注会把
+          // 上下文瞬间撑爆（视觉渠道直接预算超限）。超限时降级为截断
+          // 文本——JSON 结构保持合法，模型仍读得懂。
+          let payload = JSON.stringify({ receipt, succeeded, result });
+          if (payload.length > 16_384)
+            payload = JSON.stringify({
+              receipt,
+              succeeded,
+              truncated: true,
+              result: `${JSON.stringify(result).slice(0, 14_000)}…（工具输出过长，已截断）`,
+            });
           messages.push({
             role: 'tool',
             callId: call.id,
             name: call.name,
-            content: JSON.stringify({ receipt, succeeded, result }),
+            content: payload,
           });
         }
         continue;

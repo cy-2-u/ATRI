@@ -185,16 +185,7 @@ const mind = new Mind(
   () => config().primary.inputTokens,
   TOOL_SETS,
   // 内联表情幻觉的兜底解析：slug、描述、标签都能匹配回目录。
-  (query) => {
-    const q = query.trim().toLowerCase();
-    if (!q) return undefined;
-    const catalog = stickers.list();
-    return (
-      catalog.find((s) => s.slug.toLowerCase() === q)?.slug ??
-      catalog.find((s) => s.description.toLowerCase().includes(q))?.slug ??
-      catalog.find((s) => (s.tags ?? []).some((t) => t.toLowerCase() === q))?.slug
-    );
-  },
+  (query) => stickers.resolve(query),
 );
 
 // 黏人度是她自己的属性：配置值只种一次，之后由相处自己长（夜间维护）。
@@ -202,9 +193,13 @@ seedCloseness(journal, config().closeness);
 
 // 今晚的入睡推迟分钟数：18 点后的每段热闹（说话、做事）都让身体多清醒
 // 一会儿（封顶 60，纯身体数学）。心跳排拍与深夜材料共用同一份数据。
+// 同一晚 30 秒内共用一次统计：连发十条不该变成十次全窗扫描。
+let arousalMemo: { day: string; at: number; value: number } | undefined;
 const tonightArousal = (): number => {
   const c = config();
-  const day = sleepDayKeyOf(Date.now(), c.timezone, c.sleepStart, c.sleepEnd);
+  const now = Date.now();
+  const day = sleepDayKeyOf(now, c.timezone, c.sleepStart, c.sleepEnd);
+  if (arousalMemo?.day === day && now - arousalMemo.at < 30_000) return arousalMemo.value;
   const midnightGuess = Date.parse(`${day}T00:00:00Z`);
   const midnight = midnightGuess - minutesOfDay(midnightGuess, c.timezone) * 60000;
   const evening = journal
@@ -218,7 +213,9 @@ const tonightArousal = (): number => {
         300,
       ),
     );
-  return eveningArousalMinutes(evening, day, c.timezone);
+  const value = eveningArousalMinutes(evening, day, c.timezone);
+  arousalMemo = { day, at: now, value };
+  return value;
 };
 
 const material = new LifeMaterial({

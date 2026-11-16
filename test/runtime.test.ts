@@ -5,6 +5,7 @@ import { Mind } from '../src/domain/mind.js';
 import type { Model } from '../src/model/types.js';
 import { Journal } from '../src/storage/journal.js';
 import { Runtime, type RuntimeOptions } from '../src/runtime/runtime.js';
+import type { Message } from '../src/model/types.js';
 
 async function until(condition: () => boolean): Promise<void> {
   const deadline = Date.now() + 2000;
@@ -189,6 +190,48 @@ test('注入入站可用时刻：到期前不思考，到期后照常回复', as
     await until(() => sent.length === 1);
     assert.deepEqual(sent, ['hello']);
     assert.equal(env.errors.length, 0);
+  } finally {
+    await env.close();
+  }
+});
+
+test('视觉注入只给最近两条含图消息，更早的图留文字', async () => {
+  // 直接落三条带 media 的 received 事件，readFile 恒返回最小 PNG。每条
+  // 消息各触发一轮思考——断言只看最后一轮（此时三条都已在历史里）。
+  let lastMessages: Message[] = [];
+  const model: Model = {
+    async complete(messages, _t, options) {
+      lastMessages = messages;
+      return reply.complete([], [], options);
+    },
+  };
+  const png = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex');
+  const env = setup(model, async () => 'sent', {
+    vision: () => true,
+    readFile: () => Promise.resolve(png),
+  });
+  try {
+    env.runtime.start();
+    for (const [i, label] of ['一', '二', '三'].entries()) {
+      env.runtime.receive(
+        'peer',
+        `k${i}`,
+        JSON.stringify({
+          text: `图${label}`,
+          media: [{ path: `media/${i}.png`, mime: 'image/png' }],
+        }),
+      );
+      await delay(80);
+    }
+    await until(() => env.journal.events('peer').some((event) => event.kind === 'said'));
+    const withImages = lastMessages.filter(
+      (message) => message.role === 'user' && message.images?.length,
+    );
+    assert.equal(withImages.length, 2, '只有最近两条含图消息注入图片');
+    assert.deepEqual(
+      withImages.map((message) => message.content),
+      ['图二', '图三'],
+    );
   } finally {
     await env.close();
   }

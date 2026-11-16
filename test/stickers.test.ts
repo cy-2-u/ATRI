@@ -54,3 +54,19 @@ test('停用的表情退出目录，自定义表情进入目录', () => {
     env.close();
   }
 });
+
+test('表情解析：slug、含义片段与近义标签都能命中，未匹配返回空', () => {
+  const env = fixture();
+  try {
+    const target = env.stickers.list().find((s) => s.slug === 'cat009');
+    assert.ok(target, '内置目录应含 cat009');
+    assert.equal(env.stickers.resolve('cat009'), 'cat009');
+    // 含义片段（模型常写描述而非 slug）。
+    assert.equal(env.stickers.resolve('举着牌'), 'cat009');
+    // 标签命中（tag 全等/包含皆可）。
+    assert.equal(env.stickers.resolve('加油'), 'cat009');
+    assert.equal(env.stickers.resolve('不存在的东西'), undefined);
+  } finally {
+    env.close();
+  }
+});

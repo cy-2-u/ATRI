@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Journal } from '../src/storage/journal.js';
-import { Mind, parseThought } from '../src/domain/mind.js';
+import { Mind, parseThought, type ToolHandler } from '../src/domain/mind.js';
 import { LifeMaterial } from '../src/domain/material.js';
 import {
   inSleepMinutes,
@@ -425,6 +425,55 @@ test('材料：认识满 100 天浮出里程碑，非整数日不浮', async () 
     at = Date.parse('2026-11-17T10:00:00+08:00'); // 第 101 天：不浮
     const miss = (await life.build('peer', turn)).material as { milestone?: string };
     assert.equal(miss.milestone, undefined);
+  } finally {
+    journal.close();
+  }
+});
+
+test('思考循环：工具回执超限降级为截断文本，不把巨量输出灌进上下文', async () => {
+  const journal = new Journal(':memory:');
+  try {
+    journal.receive('peer', 'seed', 'hello');
+    const spew: ToolHandler = {
+      definition: {
+        name: 'spew',
+        description: '输出巨量结果',
+        parameters: { type: 'object', properties: {}, additionalProperties: false },
+      },
+      async execute() {
+        return { blob: 'x'.repeat(60_000) };
+      },
+    };
+    const model: Model = {
+      async complete(messages) {
+        const last = messages.at(-1)!;
+        if (last.role === 'user')
+          return {
+            message: {
+              role: 'assistant',
+              content: '',
+              calls: [{ id: 'c1', name: 'spew', arguments: {} }],
+            },
+            usage: { input: 1, output: 1, cached: 0 },
+          };
+        assert.equal(last.role, 'tool');
+        const payload = JSON.parse(last.content) as {
+          truncated?: boolean;
+          result?: unknown;
+        };
+        assert.equal(payload.truncated, true);
+        assert.ok(String(payload.result).length < 20_000);
+        assert.ok(String(payload.result).includes('已截断'));
+        return {
+          message: { role: 'assistant', content: '{"action":"nothing"}' },
+          usage: { input: 1, output: 1, cached: 0 },
+        };
+      },
+    };
+    const mind = new Mind(model, journal, [spew]);
+    const turn = journal.begin('peer', 'chat');
+    const thought = await mind.think(turn, '', [], {}, { deadlineAt: Date.now() + 5000 });
+    assert.equal(thought.action, 'nothing');
   } finally {
     journal.close();
   }
