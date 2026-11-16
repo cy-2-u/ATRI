@@ -716,6 +716,48 @@ export class Journal {
     return row?.at === undefined || row.at === null ? undefined : Number(row.at);
   }
 
+  /** 收到事件里引用的媒体路径集（孤儿媒体清扫用）：SQL 先筛出含 media
+   *  字段的行，不再为几条图片引用 JSON.parse 整部聊天史。 */
+  referencedMedia(peer: string): Set<string> {
+    const out = new Set<string>();
+    for (const row of this.statement(
+      "SELECT content FROM kernel_events WHERE peer=? AND kind='received' AND content LIKE '%\"media\":%'",
+    ).all(peer) as unknown as { content: string }[])
+      try {
+        const media = JSON.parse(row.content)?.media;
+        if (Array.isArray(media))
+          for (const item of media) if (typeof item?.path === 'string') out.add(item.path);
+      } catch {
+        /* 文本里恰好包含 "media": 字样，不是 JSON */
+      }
+    return out;
+  }
+
+  /** 终态念头（已表达/已放下）超龄退场：材料与检索不再拖着永远不会
+   *  回来的尸体。idle 的一律保留——那是还活着的期待。 */
+  pruneThoughts(olderThanMs: number): number {
+    const cutoff = this.now() - olderThanMs;
+    let removed = 0;
+    for (const peer of this.peers())
+      for (const thought of this.thoughts(peer))
+        if (thought.state !== 'idle' && thought.updatedAt < cutoff) {
+          this.statement('DELETE FROM kernel_thoughts WHERE peer=? AND topic=?').run(
+            peer,
+            thought.topic,
+          );
+          removed++;
+        }
+    return removed;
+  }
+
+  /** 用量流水超龄退场：查询窗口本来只有 90 天，行没有理由比它活得更久。 */
+  pruneUsage(olderThanMs: number): number {
+    return Number(
+      this.statement('DELETE FROM kernel_usage WHERE at <= ?').run(this.now() - olderThanMs)
+        .changes,
+    );
+  }
+
   /** 该联系人的对话事件总数（received+said，历史窗口自适应用）。 */
   conversationCount(peer: string): number {
     const row = this.statement(

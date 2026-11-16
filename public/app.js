@@ -720,6 +720,14 @@ function fillSystemForm(config) {
   $('embedding-key').value = '';
   $('embedding-key-state').textContent = embedding?.hasApiKey ? '（已保存）' : '（未设置）';
   $('embedding-key').placeholder = embedding?.hasApiKey ? '••••••••' : '';
+  const image = config.image;
+  $('image-on').checked = Boolean(image);
+  $('image-fields').hidden = !image;
+  $('image-model').value = image?.model ?? '';
+  $('image-url').value = image?.baseUrl ?? '';
+  $('image-key').value = '';
+  $('image-key-state').textContent = image?.hasApiKey ? '（已保存）' : '（未设置）';
+  $('image-key').placeholder = image?.hasApiKey ? '••••••••' : '';
   const sandbox = config.sandbox ?? {};
   $('sandbox-on').checked = Boolean(sandbox.enabled);
   $('sandbox-net').checked = Boolean(sandbox.network);
@@ -731,6 +739,9 @@ $('fallback-on').onchange = () => {
 };
 $('embedding-on').onchange = () => {
   $('embedding-fields').hidden = !$('embedding-on').checked;
+};
+$('image-on').onchange = () => {
+  $('image-fields').hidden = !$('image-on').checked;
 };
 
 $('save-system').onclick = () =>
@@ -787,6 +798,20 @@ $('save-system').onclick = () =>
           configCache?.primary?.baseUrl ||
           '',
         ...($('embedding-key').value.trim() ? { apiKey: $('embedding-key').value.trim() } : {}),
+      };
+    }
+    if (!$('image-on').checked) body.image = null;
+    else {
+      const model = $('image-model').value.trim();
+      if (!model) throw new Error('启用画笔需要填写画图模型');
+      body.image = {
+        model,
+        baseUrl:
+          $('image-url').value.trim() ||
+          configCache?.image?.baseUrl ||
+          configCache?.primary?.baseUrl ||
+          '',
+        ...($('image-key').value.trim() ? { apiKey: $('image-key').value.trim() } : {}),
       };
     }
     await api('/api/config', { method: 'PUT', body });

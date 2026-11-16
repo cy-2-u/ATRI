@@ -16,10 +16,18 @@ export interface EmbeddingConfig {
   model: string;
 }
 
+/** 她的画笔：OpenAI 兼容 images/generations 端点。 */
+export interface ImageConfig {
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+}
+
 export interface Config {
   primary: Endpoint;
   fallback?: Endpoint;
   embedding?: EmbeddingConfig;
+  image?: ImageConfig;
   heartbeat: boolean;
   /** 黏人度种子：只在第一次启动时种进她的自我，此后由相处演化（relation.ts）。 */
   closeness: number;
@@ -154,6 +162,31 @@ function embeddingConfig(
   };
 }
 
+function imageConfig(value: unknown, previous: ImageConfig | undefined): ImageConfig | undefined {
+  if (value === null) return undefined;
+  const patch = record(value ?? {});
+  const merged = { baseUrl: '', apiKey: '', model: '', ...(previous ?? {}), ...patch };
+  for (const key of ['baseUrl', 'apiKey', 'model'] as const)
+    if (merged[key] !== undefined && merged[key] !== '' && typeof merged[key] !== 'string')
+      throw new TypeError(`image.${key} 必须是字符串`);
+  if (!merged.model && !merged.apiKey) return undefined;
+  if (!merged.model || !merged.apiKey) throw new TypeError('画图需要 model 与 apiKey 同时配置');
+  const url = new URL(String(merged.baseUrl));
+  if (
+    !['http:', 'https:'].includes(url.protocol) ||
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash
+  )
+    throw new TypeError('画图地址必须是无凭据的 HTTP 地址');
+  return {
+    baseUrl: url.toString().replace(/\/+$/, ''),
+    apiKey: String(merged.apiKey),
+    model: String(merged.model),
+  };
+}
+
 export class Settings {
   private value: Config;
 
@@ -193,10 +226,19 @@ export class Settings {
             model: env.EMBEDDING_MODEL,
           }
         : undefined;
+    const image =
+      env.IMAGE_MODEL && env.IMAGE_API_KEY
+        ? {
+            baseUrl: env.IMAGE_BASE_URL || primary.baseUrl,
+            apiKey: env.IMAGE_API_KEY,
+            model: env.IMAGE_MODEL,
+          }
+        : undefined;
     const base: Config = {
       primary,
       ...(fallback ? { fallback } : {}),
       ...(embedding ? { embedding } : {}),
+      ...(image ? { image } : {}),
       heartbeat: false,
       closeness: 50,
       timezone: env.TZ || 'Asia/Shanghai',
@@ -227,6 +269,7 @@ export class Settings {
       'primary',
       'fallback',
       'embedding',
+      'image',
       'heartbeat',
       'closeness',
       'timezone',
@@ -254,6 +297,8 @@ export class Settings {
       patch.embedding === undefined
         ? previous.embedding
         : embeddingConfig(patch.embedding, previous.embedding);
+    const image =
+      patch.image === undefined ? previous.image : imageConfig(patch.image, previous.image);
     if (typeof patch.webSearchKey !== 'undefined' && typeof patch.webSearchKey !== 'string')
       throw new TypeError('搜索密钥必须是字符串');
     const webSearchKey =
@@ -284,6 +329,7 @@ export class Settings {
       primary,
       ...(fallback ? { fallback } : {}),
       ...(embedding ? { embedding } : {}),
+      ...(image ? { image } : {}),
       heartbeat,
       closeness: integer(mergedNumber(patch, previous, 'closeness'), 'closeness', 0, 100),
       timezone,
@@ -314,7 +360,7 @@ export class Settings {
       const { apiKey, ...safe } = value;
       return { ...safe, hasApiKey: Boolean(apiKey) };
     };
-    const { webSearchKey, embedding, ...rest } = this.get();
+    const { webSearchKey, embedding, image, ...rest } = this.get();
     return {
       ...rest,
       hasWebSearchKey: Boolean(webSearchKey),
@@ -324,6 +370,9 @@ export class Settings {
             model: embedding.model,
             hasApiKey: Boolean(embedding.apiKey),
           }
+        : null,
+      image: image
+        ? { baseUrl: image.baseUrl, model: image.model, hasApiKey: Boolean(image.apiKey) }
         : null,
       primary: redact(this.value.primary),
       fallback: this.value.fallback ? redact(this.value.fallback) : null,

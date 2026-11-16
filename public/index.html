@@ -403,6 +403,29 @@
                   <p id="embeddings-state" class="hint"></p>
                 </div>
               </div>
+              <div class="card">
+                <h2>她的画笔：图片生成</h2>
+                <label class="field field-check"
+                  ><input id="image-on" type="checkbox" class="check" /><span
+                    >启用画笔（draw_image，需要同时开启沙箱）</span
+                  ></label
+                >
+                <div id="image-fields">
+                  <div class="grid-2">
+                    <label class="field"
+                      ><span>画图模型</span><input id="image-model" type="text"
+                    /></label>
+                    <label class="field"
+                      ><span>画图地址（留空复用主渠道）</span><input id="image-url" type="text"
+                    /></label>
+                  </div>
+                  <label class="field">
+                    <span>画图密钥<span id="image-key-state" class="hint"></span></span>
+                    <input id="image-key" type="password" autocomplete="new-password" />
+                  </label>
+                  <p class="hint">OpenAI 兼容 images 接口（gpt-image、即梦、SD 兼容端点等）。</p>
+                </div>
+              </div>
             </div>
             <div class="settings-col">
               <div class="card">

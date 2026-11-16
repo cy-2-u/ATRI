@@ -335,6 +335,8 @@ export interface MaterialDeps {
   sandboxFiles?(): Promise<{ name: string; kind: string; size: number }[] | undefined>;
   webConfigured(): boolean;
   vision(): boolean;
+  /** 画笔可用（画图渠道配置了且沙箱开着——图要落进沙箱才能发）。 */
+  imageConfigured?(): boolean;
   embeddings?: EmbeddingClient;
   /** 身体今晚的入睡推迟分钟数（熬夜的夜 > 0）：深夜材料据此不再硬说"很困"。 */
   sleepDelay?(): number;
@@ -484,6 +486,11 @@ export class LifeMaterial {
         ? '他发来的图片你能直接看到画面。'
         : '他发来的图片你看不到画面内容，如实说看不到，不要假装看到了。',
     );
+    lines.push(
+      this.deps.imageConfigured?.()
+        ? '你有画笔：draw_image 把想画的东西画成真实图片（存在你的 pictures/ 目录），画好的图可以直接发给他——画得慢，值得画的东西再画。'
+        : '你没有画笔（画图未配置）：画不了图，想画就如实说想画。',
+    );
     return lines.join('\n');
   }
 
@@ -500,25 +507,31 @@ export class LifeMaterial {
     const end = this.deps.sleepEnd?.();
     if (start === undefined || end === undefined) return undefined;
     const hits: string[] = [];
+    // 同一晚的消息共用一次唤醒度查询：一晚连发多条不该变成多次全窗扫描。
+    const arousalCache = new Map<string, number>();
     for (const event of conversation) {
       if (event.kind !== 'received' || now - event.created_at > 36 * 3_600_000) continue;
       // 与 nextWakeAfter 同一口径：窗取事件日历日的抖动窗，唤醒度按
       // sleepDayKeyOf 归属的那晚算——她兴奋晚睡的夜里，1 点的消息她是
       // 醒着看到并当场回掉的，那条不属于"睡着时收到"。
       const night = sleepDayKeyOf(event.created_at, timeZone, start, end);
-      const midnightGuess = Date.parse(`${night}T00:00:00Z`);
-      const midnight = midnightGuess - minutesOfDay(midnightGuess, timeZone) * 60000;
-      const arousal = eveningArousalMinutes(
-        this.deps.journal.eventsBetween(
-          peer,
-          ['received', 'said', 'experienced'],
-          midnight,
-          midnight + 86_400_000,
-          300,
-        ),
-        night,
-        timeZone,
-      );
+      let arousal = arousalCache.get(night);
+      if (arousal === undefined) {
+        const midnightGuess = Date.parse(`${night}T00:00:00Z`);
+        const midnight = midnightGuess - minutesOfDay(midnightGuess, timeZone) * 60000;
+        arousal = eveningArousalMinutes(
+          this.deps.journal.eventsBetween(
+            peer,
+            ['received', 'said', 'experienced'],
+            midnight,
+            midnight + 86_400_000,
+            300,
+          ),
+          night,
+          timeZone,
+        );
+        arousalCache.set(night, arousal);
+      }
       const window = sleepWindow(dayKeyOf(event.created_at, timeZone), start, end, arousal);
       if (inSleepMinutes(minutesOfDay(event.created_at, timeZone), window.startMin, window.endMin))
         hits.push(clock(event.created_at, timeZone));

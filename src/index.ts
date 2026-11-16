@@ -25,6 +25,7 @@ import { WechatBridge } from './wechat/bridge.js';
 import { Stickers } from './stickers.js';
 import { Sandbox } from './sandbox.js';
 import { TavilyWeb } from './web.js';
+import { ImagePainter } from './image.js';
 import { createServer } from './server.js';
 
 /** 装配层：把内核、身体、感官与管理面接成一个可运行的进程。
@@ -66,6 +67,13 @@ const sandbox = new Sandbox(sandboxDir, {
   network: () => config().sandbox.network,
 });
 const web = new TavilyWeb(() => config().webSearchKey);
+// 画笔与搜索/向量一样恒注册，工具内部现读配置与开关——管理页中途
+// 配好画图渠道后，她下一拍就长出画笔，不用重启。
+const painter = new ImagePainter(() => ({
+  baseUrl: config().image?.baseUrl ?? '',
+  apiKey: config().image?.apiKey ?? '',
+  model: config().image?.model ?? '',
+}));
 const embeddings = new EmbeddingClient(() => ({
   baseUrl: config().embedding?.baseUrl ?? '',
   apiKey: config().embedding?.apiKey ?? '',
@@ -165,7 +173,7 @@ const mind = new Mind(
   journal,
   // 工具恒注册：搜索单独由 TavilyWeb 现读密钥，沙箱由 Sandbox 现读开关——
   // 启动后才配置的"眼"与"手"不再需要重启进程。
-  lifeTools(journal, { sandbox, web }),
+  lifeTools(journal, { sandbox, web, image: painter }),
   // 规则 = 生活律 + 表情目录。目录住在稳定前缀里吃供应商前缀缓存
   // （逐轮 material 里的那份按未缓存计费）；目录变动只废一次缓存。
   // 渲染必须确定性（按 slug 排序、固定格式），字节不稳缓存永远 miss。
@@ -233,6 +241,8 @@ const material = new LifeMaterial({
   },
   webConfigured: () => Boolean(config().webSearchKey),
   vision: () => config().primary.vision,
+  // 画笔 = 画图渠道 + 手（画好的图要落进沙箱才发得出去）。
+  imageConfigured: () => Boolean(config().image) && sandbox.enabled,
   embeddings: config().embedding ? embeddings : undefined,
   sleepDelay: tonightArousal,
   sleepStart: () => config().sleepStart,
@@ -353,10 +363,14 @@ const port = Number(process.env.ATRI_PORT || 3000);
 const host = process.env.ATRI_BIND || '127.0.0.1';
 
 function startBackgroundMaintenance(): void {
-  // 夜间排期、关系演化与向量滴灌都是分钟级维护：低频定时器，空闲时零开销。
+  // 夜间排期、关系演化、终态清扫与向量滴灌都是分钟级维护：低频定时器，
+  // 空闲时零开销。清扫幂等且便宜（旧库迁入后引用集与念头量会放大，
+  // 这里是它们唯一的退场通道）。
   const night = setInterval(() => {
     evolveCloseness(journal, Date.now(), config().timezone);
     journal.expireUnknown(24 * 3_600_000);
+    journal.pruneThoughts(30 * 86_400_000);
+    journal.pruneUsage(90 * 86_400_000);
     ensureRecurringJobs();
   }, 10 * 60_000);
   night.unref();
@@ -383,16 +397,10 @@ function sweepMedia(): void {
   } catch {
     return;
   }
+  // 引用集在 SQL 侧先筛含 media 字段的行，不再逐条解析整部聊天史。
   const referenced = new Set<string>();
   for (const peer of journal.peers())
-    for (const event of journal.events(peer, ['received']))
-      try {
-        const media = JSON.parse(event.content)?.media;
-        if (Array.isArray(media))
-          for (const item of media) if (typeof item?.path === 'string') referenced.add(item.path);
-      } catch {
-        /* 纯文本 */
-      }
+    for (const path of journal.referencedMedia(peer)) referenced.add(path);
   let swept = 0;
   for (const file of files)
     if (!referenced.has(`media/${file}`)) {

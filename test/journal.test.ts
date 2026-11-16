@@ -15,8 +15,8 @@ function fixture() {
     get journal() {
       return journal;
     },
-    advance() {
-      now += 1000;
+    advance(step = 1000) {
+      now += step;
     },
     reopen() {
       journal.close();
@@ -195,6 +195,75 @@ test('账号换绑：记忆与对话整体搬到新账号 peer，旧 peer 退场
       env.journal.peers().some((peer) => peer === oldPeer),
       false,
     );
+  } finally {
+    env.close();
+  }
+});
+
+test('终态念头超龄退场，idle 的一律保留', () => {
+  const env = fixture();
+  try {
+    env.journal.receive('peer', '1', 'hello');
+    const base = { sources: ['event-1'], evidence: 'e', createdAt: 1000 };
+    env.journal.saveThought('peer', {
+      ...base,
+      id: 't-old',
+      topic: '旧的已表达',
+      meaning: '说过了',
+      state: 'expressed',
+      updatedAt: 1000,
+    });
+    env.journal.saveThought('peer', {
+      ...base,
+      id: 't-idle',
+      topic: '还惦记着',
+      meaning: '等一个时机',
+      state: 'idle',
+      updatedAt: 1000,
+    });
+    // 推进 31 天（一天 = 86_400_000 ms，别再少写三个零），再存"此刻"的终态。
+    for (let i = 0; i < 31; i++) env.advance(86_400_000);
+    env.journal.saveThought('peer', {
+      ...base,
+      id: 't-fresh',
+      topic: '刚表达',
+      meaning: '刚说完',
+      state: 'expressed',
+      updatedAt: 2_678_401_000,
+    });
+    assert.equal(env.journal.pruneThoughts(30 * 86_400_000), 1);
+    const left = env.journal.thoughts('peer').map((thought) => thought.id);
+    assert.deepEqual([...left].sort(), ['t-fresh', 't-idle']);
+  } finally {
+    env.close();
+  }
+});
+
+test('用量流水超龄退场', () => {
+  const env = fixture();
+  try {
+    env.journal.recordUsage('primary', 'm', 10, 5, 0); // at = 1000
+    for (let i = 0; i < 91; i++) env.advance(86_400_000); // now = 1000 + 91d
+    assert.equal(env.journal.pruneUsage(90 * 86_400_000), 1);
+    assert.deepEqual(env.journal.usage(7), []);
+  } finally {
+    env.close();
+  }
+});
+
+test('媒体引用集：SQL 侧只筛含 media 的行，误报文本不炸', () => {
+  const env = fixture();
+  try {
+    env.journal.receive(
+      'peer',
+      'with-media',
+      JSON.stringify({ text: '看这张', media: [{ path: 'media/a.jpg', mime: 'image/jpeg' }] }),
+    );
+    env.journal.receive('peer', 'plain', '他聊到 "media": 这个词，不是附件');
+    env.journal.receive('peer', 'text', '普通一句话');
+    const referenced = env.journal.referencedMedia('peer');
+    assert.equal(referenced.size, 1);
+    assert.ok(referenced.has('media/a.jpg'));
   } finally {
     env.close();
   }

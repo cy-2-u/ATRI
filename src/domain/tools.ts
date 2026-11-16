@@ -3,6 +3,7 @@ import { Recollection, type PeerBelief } from './memory.js';
 import type { ToolHandler } from './mind.js';
 import type { Sandbox } from '../sandbox.js';
 import type { WebTools } from '../web.js';
+import type { ImagePainter } from '../image.js';
 
 function text(value: unknown, name: string): string {
   if (typeof value !== 'string' || !value.trim()) throw new TypeError(`${name} 必须是非空文本`);
@@ -15,11 +16,11 @@ function ids(value: unknown): string[] {
   return value;
 }
 
-/** 聊天/心跳工具集（记忆与约定）+ 手（沙箱）+ 眼（联网）+ 日记。
+/** 聊天/心跳工具集（记忆与约定）+ 手（沙箱）+ 眼（联网）+ 画笔 + 日记。
  *  全部工具注册进同一个 Mind，按 turn.kind 的工具集决定本轮谁可用。 */
 export function lifeTools(
   journal: Journal,
-  deps: { sandbox?: Sandbox; web?: WebTools },
+  deps: { sandbox?: Sandbox; web?: WebTools; image?: ImagePainter },
 ): ToolHandler[] {
   const recollection = new Recollection(journal);
   const tools: ToolHandler[] = [
@@ -488,10 +489,53 @@ export function lifeTools(
       },
     );
   }
+  // 画笔需要手：画好的图是沙箱里的真实文件，没有落盘处就没有"画成"。
+  if (deps.image && deps.sandbox) {
+    const painter = deps.image;
+    const sandbox = deps.sandbox;
+    tools.push({
+      definition: {
+        name: 'draw_image',
+        description:
+          '把想画的东西画成一张真实图片文件（存在你的 pictures/ 目录里）。想给他看就用 {"type":"image","path":"pictures/文件名"} 发送。画得慢（最多两分钟）；画不成如实说。',
+        parameters: {
+          type: 'object',
+          properties: { prompt: { type: 'string' } },
+          required: ['prompt'],
+          additionalProperties: false,
+        },
+      },
+      async execute(args, options) {
+        const painted = await painter.paint(text(args.prompt, 'prompt'), options.signal);
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const saved = await sandbox.writeBytes(
+          `pictures/${stamp}-${Math.random().toString(36).slice(2, 6)}.${painted.ext}`,
+          painted.bytes,
+        );
+        return {
+          path: saved.path,
+          mime: painted.mime,
+          bytes: painted.bytes.length,
+          note: '画好了，在 pictures/ 里；想给他看就发 image 气泡',
+        };
+      },
+    });
+  }
   return tools;
 }
 
 /** 各思考类型可用的工具集（未列出的类型用全部工具）。 */
+const HAND_AND_EYE = [
+  'run_command',
+  'write_file',
+  'read_file',
+  'list_files',
+  'delete_file',
+  'web_search',
+  'open_page',
+  'draw_image',
+] as const;
+
 export const TOOL_SETS = {
   chat: [
     'search_memory',
@@ -500,13 +544,7 @@ export const TOOL_SETS = {
     'keep_commitment',
     'resolve_commitment',
     'consider',
-    'run_command',
-    'write_file',
-    'read_file',
-    'list_files',
-    'delete_file',
-    'web_search',
-    'open_page',
+    ...HAND_AND_EYE,
   ],
   beat: [
     'search_memory',
@@ -515,13 +553,7 @@ export const TOOL_SETS = {
     'keep_commitment',
     'resolve_commitment',
     'consider',
-    'run_command',
-    'write_file',
-    'read_file',
-    'list_files',
-    'delete_file',
-    'web_search',
-    'open_page',
+    ...HAND_AND_EYE,
   ],
   reminder: [
     'search_memory',
@@ -530,13 +562,7 @@ export const TOOL_SETS = {
     'keep_commitment',
     'resolve_commitment',
     'consider',
-    'run_command',
-    'write_file',
-    'read_file',
-    'list_files',
-    'delete_file',
-    'web_search',
-    'open_page',
+    ...HAND_AND_EYE,
   ],
   diary: ['search_memory', 'read_history', 'remember', 'write_journal'],
   tidy: ['remember', 'search_memory', 'update_peer_model', 'update_topic_notes'],

@@ -205,14 +205,12 @@ export class Sandbox {
     return target;
   }
 
-  async write(path: string, content: string): Promise<{ bytes: number; path: string }> {
-    if (!this.enabled) throw new Error('沙箱未启用');
-    // 内容不限长：配额才是真边界。
-    this.assertWithinQuota(Buffer.byteLength(content));
+  /** 文本与二进制共用的开柄：路径守卫 + 配额外的叶子竞速防护
+   *  （沙箱命令可以把叶子换成 FIFO：O_NOFOLLOW/O_NONBLOCK + fstat 封掉
+   *  检查与打开之间被换叶子的窗口）。调用方负责 close(fd)。 */
+  private openForWrite(path: string): { fd: number; target: string } {
     const target = this.safePath(path);
     mkdirSync(dirname(target), { recursive: true });
-    // 沙箱命令可以把叶子换成 FIFO：O_NOFOLLOW/O_NONBLOCK + fstat 封掉
-    // 检查与打开之间被换叶子的竞速。
     if (existsSync(target) && !lstatSync(target).isFile()) throw new Error('只能写入普通文件');
     const fd = openSync(
       target,
@@ -225,11 +223,37 @@ export class Sandbox {
     );
     try {
       if (!fstatSync(fd).isFile()) throw new Error('只能写入普通文件');
+    } catch (error) {
+      closeSync(fd);
+      throw error;
+    }
+    return { fd, target };
+  }
+
+  async write(path: string, content: string): Promise<{ bytes: number; path: string }> {
+    if (!this.enabled) throw new Error('沙箱未启用');
+    // 内容不限长：配额才是真边界。
+    this.assertWithinQuota(Buffer.byteLength(content));
+    const { fd, target } = this.openForWrite(path);
+    try {
       writeFileSync(fd, content, 'utf8');
     } finally {
       closeSync(fd);
     }
     return { path: relative(this.root, target) || '.', bytes: Buffer.byteLength(content) };
+  }
+
+  /** 写二进制（画笔产物的落盘）：与 write 同一套守卫，只是不做文本解码。 */
+  async writeBytes(path: string, bytes: Buffer): Promise<{ bytes: number; path: string }> {
+    if (!this.enabled) throw new Error('沙箱未启用');
+    this.assertWithinQuota(bytes.length);
+    const { fd, target } = this.openForWrite(path);
+    try {
+      writeFileSync(fd, bytes);
+    } finally {
+      closeSync(fd);
+    }
+    return { path: relative(this.root, target).split(sep).join('/') || '.', bytes: bytes.length };
   }
 
   async read(path: string): Promise<{ content: string; path: string }> {
