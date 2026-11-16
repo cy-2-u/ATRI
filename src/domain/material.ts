@@ -78,12 +78,27 @@ const SEASONS = [
 ];
 const seasonOf = (at: number, timeZone: string): string => SEASONS[monthOf(at, timeZone) - 1] ?? '';
 
-/** 事件内容还原成可读文本（received/said/diary 各自的 JSON 形状）。 */
+/** 事件内容还原成可读文本（received/said/diary 各自的 JSON 形状）。
+ *  表情与图片渲染成展示标记——裸 JSON 会成为模型的模仿源，它会把
+ *  {"type":"sticker",…} 整段抄进一条 text 气泡发到微信里。 */
 function plainText(row: { kind: string; content: string }): string {
   try {
-    const parsed = JSON.parse(row.content) as { text?: string; content?: string };
+    const parsed = JSON.parse(row.content) as {
+      text?: string;
+      content?: string;
+      type?: string;
+      slug?: string;
+      path?: string;
+      media?: { mime?: string }[];
+    };
     if (row.kind === 'diary') return parsed?.content ?? row.content;
-    return parsed?.text ?? row.content;
+    if (parsed?.type === 'sticker') return `[表情：${parsed.slug ?? ''}]`;
+    if (parsed?.type === 'image') return `[图片：${parsed.path ?? ''}]`;
+    const text = parsed?.text ?? row.content;
+    const media = (parsed?.media ?? [])
+      .map((m) => (m.mime?.startsWith('image/') ? '[图片]' : '[附件]'))
+      .join('');
+    return media ? `${text} ${media}` : text;
   } catch {
     return row.content;
   }
@@ -572,7 +587,7 @@ export class LifeMaterial {
       ...(words.length >= 2 ? { hisWords: `他最近常说的词：${words.join('、')}` } : {}),
       sources: conversation
         .slice(-12)
-        .map((e) => ({ id: e.id, kind: e.kind, content: e.content, at: e.created_at })),
+        .map((e) => ({ id: e.id, kind: e.kind, content: plainText(e), at: e.created_at })),
       stickers: this.deps.stickers
         .list()
         .map((s) => ({ slug: s.slug, meaning: s.description, tags: s.tags })),

@@ -279,7 +279,13 @@ export class Runtime {
         this.journal.appendEvent(turn.peer, turn.id, 'muse', { content: thought.thought });
     } catch (error) {
       this.journal.fail(turn, error instanceof Error ? error.message : '思考失败');
-      if (!signal.aborted) this.options.onError(error);
+      if (!signal.aborted) {
+        this.options.onError(error);
+        // 思考一失败就终态会吞掉他刚说的话（模型超时、网络抖动都算）：
+        // 给 chat 轮一次 60 秒后的重试——重排 job 而不是回滚 turn，期间
+        // 他若有新消息，重试轮会连着新消息一起作答。重试再失败保持终态。
+        if (turn.kind === 'chat') this.journal.schedule(turn.peer, 'chat', Date.now() + 60_000);
+      }
     } finally {
       if (!this.stopped) {
         // 心跳节拍与提醒的重排：beat 由人格参数决定下一拍，reminder 重算
