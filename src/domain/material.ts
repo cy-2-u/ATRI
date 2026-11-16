@@ -529,7 +529,10 @@ export class LifeMaterial {
     const now = this.deps.now();
     const timeZone = this.deps.timeZone();
     const self = journal.self();
-    const conversation = journal.conversation(peer, 160);
+    // 历史超卷时收窄逐字窗口：氛围职责已移交给话题笔记（夜间蒸馏），
+    // 硬窗口只留逐字事实——160 条全量注入随历史增长会把每轮请求拖爆。
+    const total = journal.conversationCount(peer);
+    const conversation = journal.conversation(peer, total > 2000 ? 120 : 160);
     const basis = silenceBasis(
       conversation.map((e) => ({ kind: e.kind, created_at: e.created_at })),
     );
@@ -583,6 +586,9 @@ export class LifeMaterial {
         })),
       commitments,
       memories: recall.list,
+      ...(journal.setting<string>(`notes:${peer}`, '')
+        ? { topicNotes: journal.setting<string>(`notes:${peer}`, '') }
+        : {}),
       ...(thisDay.length ? { onThisDay: thisDay } : {}),
       ...(words.length >= 2 ? { hisWords: `他最近常说的词：${words.join('、')}` } : {}),
       sources: conversation
@@ -640,6 +646,23 @@ export class LifeMaterial {
             b: { id: actives[j]!.id, content: actives[j]!.content },
           });
       }
+    // 话题笔记的增量：上次笔记之后的新对话。蒸馏搭整理拍的夜车，没有
+    // 新对话就不给，笔记是滚动摘要不是档案。
+    const previousNotes = journal.setting<string>(`notes:${peer}`, '');
+    const lastSeq = journal.setting<number>(`notes:seq:${peer}`, 0);
+    const fresh = journal.conversationAfter(peer, lastSeq);
+    const notesTask =
+      fresh.length >= 6
+        ? {
+            previous: previousNotes || '（还没有笔记）',
+            newChats: fresh.map((e) => ({
+              id: e.id,
+              kind: e.kind,
+              content: plainText(e),
+              at: e.created_at,
+            })),
+          }
+        : undefined;
     return {
       mode: 'tidy',
       time: `夜深了（${fullMoment(now, this.deps.timeZone())}），你在整理自己的记忆。下面这些是你自己的记忆条目，两两相近：可能说的是同一件事，也可能互相矛盾。`,
@@ -652,7 +675,10 @@ export class LifeMaterial {
         sources: m.sources,
       })),
       instructions:
-        '用 remember 工具整理：同一件事记了两遍就合并成一条更完整的（supersedes 写被合并的旧条 id，可以写两条）；互相矛盾时以有真实来源、较新的那条为准，supersedes 掉被推翻的旧条；情况真的变了就 supersede 旧条，"他变了"的感想不属于整理拍；只是措辞相近其实是两件事就跳过；拿不准就跳过。每条 update 的 supersedes 必须写上面出现过的记忆 id——不替代任何旧条目的更新是凭空新增，会被整体丢弃：夜里只理旧事，不写新事。整理是核对与归拢，不是重新评价对方。如果记忆里沉淀出了关于"你是谁"的长期认识（最近这段经历反复指向的、打算一直带着的自我），可以用 remember 的 kind:"identity" 晋升它（至少两处来源，supersedes 掉被它吸收的旧条）。也可以用 update_peer_model 重写你对他此刻状态的认识：最多八条、每条一句话、每条 basis 都写上面出现过的真实 ID（消息、事件或记忆）；没有新的认识就不调用它。没有任何要做的就什么都不调用，action 用 nothing、parts 空数组。',
+        '用 remember 工具整理：同一件事记了两遍就合并成一条更完整的（supersedes 写被合并的旧条 id，可以写两条）；互相矛盾时以有真实来源、较新的那条为准，supersedes 掉被推翻的旧条；情况真的变了就 supersede 旧条，"他变了"的感想不属于整理拍；只是措辞相近其实是两件事就跳过；拿不准就跳过。每条 update 的 supersedes 必须写上面出现过的记忆 id——不替代任何旧条目的更新是凭空新增，会被整体丢弃：夜里只理旧事，不写新事。整理是核对与归拢，不是重新评价对方。如果记忆里沉淀出了关于"你是谁"的长期认识（最近这段经历反复指向的、打算一直带着的自我），可以用 remember 的 kind:"identity" 晋升它（至少两处来源，supersedes 掉被它吸收的旧条）。也可以用 update_peer_model 重写你对他此刻状态的认识：最多八条、每条一句话、每条 basis 都写上面出现过的真实 ID（消息、事件或记忆）；没有新的认识就不调用它。' +
+        '资料里有 notesTask 时用 update_topic_notes 重写话题笔记：笔记是"你们最近在聊什么"的滚动摘要（正在聊的话题、刚立的梗、彼此的状态与未完的话头），三百字以内，站在她的视角、口语一点——这是她自己的备忘，不是档案；在 previous 的基础上融入 newChats 里还新鲜的内容，已经了结或过时的顺手划掉；没有值得更新的就不调用。' +
+        '没有任何要做的就什么都不调用，action 用 nothing、parts 空数组。',
+      ...(notesTask ? { notesTask } : {}),
     };
   }
 }

@@ -689,6 +689,33 @@ export class Journal {
     }[];
   }
 
+  /** seq 大于 after 的对话事件（话题笔记的增量查询）。 */
+  conversationAfter(
+    peer: string,
+    after: number,
+    limit = 200,
+  ): { id: string; seq: number; kind: string; content: string; created_at: number }[] {
+    return this.statement(
+      `SELECT id,seq,kind,content,created_at FROM kernel_events
+       WHERE peer=? AND kind IN ('received','said') AND seq>?
+       ORDER BY seq LIMIT ?`,
+    ).all(peer, after, Math.max(1, Math.min(500, Math.floor(limit)))) as unknown as {
+      id: string;
+      seq: number;
+      kind: string;
+      content: string;
+      created_at: number;
+    }[];
+  }
+
+  /** 该联系人的对话事件总数（received+said，历史窗口自适应用）。 */
+  conversationCount(peer: string): number {
+    const row = this.statement(
+      "SELECT COUNT(*) AS n FROM kernel_events WHERE peer=? AND kind IN ('received','said')",
+    ).get(peer);
+    return Number(row?.n ?? 0);
+  }
+
   /** 信念与认识的依据可以是事件，也可以是已立住的记忆（心智模型的整理
    *  发生在夜里，那时候模型手里是记忆条目而不是原始事件）。 */
   supports(peer: string, ids: string[]): number {

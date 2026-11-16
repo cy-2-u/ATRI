@@ -243,6 +243,31 @@ export function lifeTools(
     },
     {
       definition: {
+        name: 'update_topic_notes',
+        description:
+          '重写"你们最近在聊什么"的话题笔记（滚动摘要，三百字内）。只在夜里整理时可用；资料里有 notesTask 才值得调用。',
+        parameters: {
+          type: 'object',
+          properties: { content: { type: 'string' } },
+          required: ['content'],
+          additionalProperties: false,
+        },
+      },
+      async execute(args, _options, turn) {
+        if (turn.kind !== 'tidy') throw new TypeError('话题笔记只在夜里的整理拍重写');
+        const content = text(args.content, 'content');
+        if (content.length > 600) throw new TypeError('笔记太长了，三百字以内');
+        const lastSeq = journal.setting<number>(`notes:seq:${turn.peer}`, 0);
+        // 游标取增量材料的末条；没给 notesTask 时（无新对话）只允许改写文本。
+        const fresh = journal.conversationAfter(turn.peer, lastSeq);
+        if (fresh.length >= 6)
+          journal.setSetting(`notes:seq:${turn.peer}`, fresh[fresh.length - 1]!.seq);
+        journal.setSetting(`notes:${turn.peer}`, content.trim());
+        return { saved: true };
+      },
+    },
+    {
+      definition: {
         name: 'write_journal',
         description: '把日记段落提交进你的日记；每段都必须有真实来源。只在夜里写日记时使用。',
         parameters: {
@@ -472,5 +497,5 @@ export const TOOL_SETS = {
     'open_page',
   ],
   diary: ['search_memory', 'read_history', 'remember', 'write_journal'],
-  tidy: ['remember', 'search_memory', 'update_peer_model'],
+  tidy: ['remember', 'search_memory', 'update_peer_model', 'update_topic_notes'],
 } as const;

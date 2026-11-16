@@ -38,3 +38,25 @@ test('记忆工具使用当前联系人来源，检索结果不泄露隐藏原�
     journal.close();
   }
 });
+
+test('话题笔记只在整理拍写，落地时推进 seq 游标', async () => {
+  const journal = new Journal(':memory:');
+  try {
+    for (let i = 0; i < 8; i++) journal.receive('peer', `m${i}`, `消息${i}`);
+    const tools = new Map(lifeTools(journal, {}).map((tool) => [tool.definition.name, tool]));
+    const chatTurn = journal.begin('peer', 'chat');
+    await assert.rejects(
+      tools.get('update_topic_notes')!.execute({ content: '笔记' }, options(), chatTurn),
+    );
+    journal.fail(chatTurn, '测试收口');
+    // 8 条增量 ≥ 6：工具落地时游标推进到末条 seq（全局自增，第 8 条 = 8）。
+    const tidyTurn = journal.begin('peer', 'tidy');
+    await tools
+      .get('update_topic_notes')!
+      .execute({ content: '在聊期末和猫' }, options(), tidyTurn);
+    assert.equal(journal.setting<string>('notes:peer', ''), '在聊期末和猫');
+    assert.equal(journal.setting<number>('notes:seq:peer', 0), 8);
+  } finally {
+    journal.close();
+  }
+});
