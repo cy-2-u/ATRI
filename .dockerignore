@@ -14,6 +14,5 @@ coverage
 **/*.db-shm
 restore.compose.yaml
 sandbox
-xing-sandbox-*
 test
 docs
