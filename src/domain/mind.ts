@@ -39,7 +39,40 @@ const clampAxis = (value: unknown): number => {
   return Number.isFinite(n) ? Math.max(-1, Math.min(1, n)) : 0;
 };
 
-export function parseThought(text: string): Thought {
+/** 文字里混进的内联表情标记捞回成真表情气泡：模型偶尔把历史展示格式
+ *  （[表情：举牌子打气]、[sticker:cat009]、{"type":"sticker",…}）抄进
+ *  text 字符串——按 slug/描述/标签匹配回目录，匹配不上的剥壳留文字，
+ *  绝不让幻觉标记原样发进微信。有界字符类防二次方回溯。 */
+export function splitInlineStickers(
+  text: string,
+  resolve: (query: string) => string | undefined,
+): Bubble[] {
+  const out: Bubble[] = [];
+  const pushText = (value: string) => {
+    const body = value.trim();
+    if (!body) return;
+    const last = out.at(-1);
+    if (last?.type === 'text') last.text = `${last.text} ${body}`.trim();
+    else out.push({ type: 'text', text: body.slice(0, 6000) });
+  };
+  const re = /(\s*)[(\[{【]\s*(?:表情|sticker)\s*[：:]\s*([^\]】)}]{1,40}?)\s*[\]】)}](\s*)/gi;
+  let cursor = 0;
+  for (;;) {
+    const match = re.exec(text);
+    if (!match) break;
+    pushText(text.slice(cursor, match.index) + (match[1] ?? ''));
+    const slug = resolve((match[2] ?? '').trim());
+    if (slug) out.push({ type: 'sticker', slug });
+    cursor = match.index + match[0].length;
+  }
+  pushText(text.slice(cursor));
+  return out;
+}
+
+export function parseThought(
+  text: string,
+  stickerQuery?: (query: string) => string | undefined,
+): Thought {
   const cleaned = text
     .trim()
     .replace(/^```(?:json)?\s*/i, '')
@@ -50,22 +83,41 @@ export function parseThought(text: string): Thought {
   const data = value as Record<string, unknown>;
   if (!['speak', 'muse', 'nothing'].includes(String(data.action)))
     throw new Error('思考结果缺少有效 action');
-  const parts: Bubble[] = (Array.isArray(data.parts) ? data.parts : []).slice(0, 6).map((value) => {
-    if (!value || typeof value !== 'object') throw new Error('气泡必须是对象');
-    const part = value as Record<string, unknown>;
-    if (part.type === 'text' && typeof part.text === 'string' && part.text.trim())
-      return { type: 'text', text: part.text.trim() };
-    if (part.type === 'sticker' && typeof part.slug === 'string' && /^[\w-]+$/.test(part.slug))
-      return { type: 'sticker', slug: part.slug };
-    if (
-      part.type === 'image' &&
-      typeof part.path === 'string' &&
-      part.path &&
-      !/^(?:[a-z]:|[\\/])|(?:^|[\\/])\.\.(?:[\\/]|$)/i.test(part.path)
-    )
-      return { type: 'image', path: part.path };
-    throw new Error('气泡类型或内容无效');
-  });
+  const parts: Bubble[] = (Array.isArray(data.parts) ? data.parts : [])
+    .slice(0, 6)
+    .flatMap<Bubble>((value) => {
+      if (!value || typeof value !== 'object') throw new Error('气泡必须是对象');
+      const part = value as Record<string, unknown>;
+      if (part.type === 'text' && typeof part.text === 'string' && part.text.trim()) {
+        const raw = part.text.trim();
+        // 整段就是一条 sticker JSON：直接解析回表情，别当文字发出去。
+        if (/^\{[\s\S]*\}$/.test(raw)) {
+          try {
+            const inner = JSON.parse(raw) as { type?: string; slug?: string };
+            if (inner?.type === 'sticker' && typeof inner.slug === 'string') {
+              const slug = stickerQuery?.(inner.slug) ?? inner.slug;
+              if (/^[\w-]+$/.test(slug)) return [{ type: 'sticker', slug }];
+            }
+          } catch {
+            /* 普通带花括号的文字 */
+          }
+        }
+        // 内联标记（[表情：…]/[sticker:…]）捞回成表情气泡。
+        return stickerQuery
+          ? splitInlineStickers(raw, stickerQuery)
+          : [{ type: 'text', text: raw }];
+      }
+      if (part.type === 'sticker' && typeof part.slug === 'string' && /^[\w-]+$/.test(part.slug))
+        return [{ type: 'sticker', slug: part.slug }];
+      if (
+        part.type === 'image' &&
+        typeof part.path === 'string' &&
+        part.path &&
+        !/^(?:[a-z]:|[\\/])|(?:^|[\\/])\.\.(?:[\\/]|$)/i.test(part.path)
+      )
+        return [{ type: 'image', path: part.path }];
+      throw new Error('气泡类型或内容无效');
+    });
   if (data.action === 'speak' ? !parts.length : parts.length > 0)
     throw new Error('action 与气泡不一致');
   if (data.action === 'muse' && (typeof data.thought !== 'string' || !data.thought.trim()))
@@ -118,6 +170,8 @@ export class Mind {
     private readonly rules: string = '',
     private readonly inputBudget: () => number = () => 24_000,
     private readonly sets: ToolSet = {},
+    /** 表情解析：内联标记/JSON 幻觉按 slug、描述或标签匹配回目录。 */
+    private readonly stickerQuery: (query: string) => string | undefined = () => undefined,
   ) {
     this.handlers = new Map(tools.map((tool) => [tool.definition.name, tool]));
     if (this.handlers.size !== tools.length) throw new Error('工具名称重复');
@@ -191,7 +245,7 @@ export class Mind {
         continue;
       }
       try {
-        return parseThought(completion.message.content);
+        return parseThought(completion.message.content, this.stickerQuery);
       } catch (error) {
         if (repaired) throw error;
         repaired = true;

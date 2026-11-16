@@ -35,6 +35,50 @@ test('思考输出解析：心情/在做/在追/表情形状与拒绝', () => {
   );
 });
 
+test('内联表情幻觉捞回：标记壳、整段 JSON、描述匹配与未知剥壳', () => {
+  // 解析器：slug 或描述都能命中目录（与 index.ts 接线同逻辑）。
+  const catalog: Record<string, string> = { cat009: '猫猫举牌', dog001: '狗狗握爪' };
+  const resolve = (query: string): string | undefined => {
+    const q = query.trim().toLowerCase();
+    if (!q) return undefined;
+    if (catalog[q]) return q;
+    return Object.entries(catalog).find(([, name]) => name.includes(q))?.[0];
+  };
+  // 她自创的 [sticker:cat009] 壳：捞回真表情。
+  const a = parseThought(
+    '{"action":"speak","parts":[{"type":"text","text":"再撑最后半小时，放学必须狠狠吃顿好的补偿一下[sticker:cat009]"}]}',
+    resolve,
+  );
+  assert.deepEqual(a.parts, [
+    { type: 'text', text: '再撑最后半小时，放学必须狠狠吃顿好的补偿一下' },
+    { type: 'sticker', slug: 'cat009' },
+  ]);
+  // 目录描述命中。
+  const b = parseThought(
+    '{"action":"speak","parts":[{"type":"text","text":"哈哈[表情：猫猫举牌]"}]}',
+    resolve,
+  );
+  assert.deepEqual(b.parts, [
+    { type: 'text', text: '哈哈' },
+    { type: 'sticker', slug: 'cat009' },
+  ]);
+  // 整段 sticker JSON 抄进 text：直接解析回表情。
+  const c = parseThought(
+    '{"action":"speak","parts":[{"type":"text","text":"{\\"type\\":\\"sticker\\",\\"slug\\":\\"cat009\\"}"}]}',
+    resolve,
+  );
+  assert.deepEqual(c.parts, [{ type: 'sticker', slug: 'cat009' }]);
+  // 目录里没有的：剥壳丢掉整个标记，绝不把标记发进微信。
+  const d = parseThought(
+    '{"action":"speak","parts":[{"type":"text","text":"好耶[sticker:unknown_x]"}]}',
+    resolve,
+  );
+  assert.deepEqual(d.parts, [{ type: 'text', text: '好耶' }]);
+  // 无解析器时行为不变。
+  const e = parseThought('{"action":"speak","parts":[{"type":"text","text":"[表情：x]"}]}');
+  assert.deepEqual(e.parts, [{ type: 'text', text: '[表情：x]' }]);
+});
+
 test('心情与在做/在追经 runtime 落库，影响下一拍材料', async () => {
   const journal = new Journal(':memory:');
   const response =

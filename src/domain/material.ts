@@ -80,8 +80,12 @@ const seasonOf = (at: number, timeZone: string): string => SEASONS[monthOf(at, t
 
 /** 事件内容还原成可读文本（received/said/diary 各自的 JSON 形状）。
  *  表情与图片渲染成展示标记——裸 JSON 会成为模型的模仿源，它会把
- *  {"type":"sticker",…} 整段抄进一条 text 气泡发到微信里。 */
-function plainText(row: { kind: string; content: string }): string {
+ *  {"type":"sticker",…} 整段抄进一条 text 气泡发到微信里。表情用描述
+ *  而非 slug：slug 是内部标识，漏出去她就学着自创 [sticker:cat009] 壳。 */
+function plainText(
+  row: { kind: string; content: string },
+  stickerName: (slug: string) => string,
+): string {
   try {
     const parsed = JSON.parse(row.content) as {
       text?: string;
@@ -92,8 +96,9 @@ function plainText(row: { kind: string; content: string }): string {
       media?: { mime?: string }[];
     };
     if (row.kind === 'diary') return parsed?.content ?? row.content;
-    if (parsed?.type === 'sticker') return `[表情：${parsed.slug ?? ''}]`;
-    if (parsed?.type === 'image') return `[图片：${parsed.path ?? ''}]`;
+    if (parsed?.type === 'sticker')
+      return `[表情：${stickerName(parsed.slug ?? '') || '一张表情'}]`;
+    if (parsed?.type === 'image') return '[图片]';
     const text = parsed?.text ?? row.content;
     const media = (parsed?.media ?? [])
       .map((m) => (m.mime?.startsWith('image/') ? '[图片]' : '[附件]'))
@@ -336,6 +341,11 @@ export class LifeMaterial {
     this.recollection = new Recollection(deps.journal, deps.now);
   }
 
+  /** slug → 描述：表情在材料里只以含义出现，slug 是内部标识不外漏。 */
+  private stickerName(slug: string): string {
+    return this.deps.stickers.list().find((s) => s.slug === slug)?.description ?? '';
+  }
+
   private body(peer: string, now: number): string {
     const self = this.deps.journal.self();
     const mood = this.deps.journal.mood(peer);
@@ -408,7 +418,7 @@ export class LifeMaterial {
           when: labels[back - 1]!,
           text: rows
             .slice(-3)
-            .map((row) => plainText(row))
+            .map((row) => plainText(row, (slug) => this.stickerName(slug)))
             .join('；'),
         });
     }
@@ -617,9 +627,12 @@ export class LifeMaterial {
         : {}),
       ...(thisDay.length ? { onThisDay: thisDay } : {}),
       ...(words.length >= 2 ? { hisWords: `他最近常说的词：${words.join('、')}` } : {}),
-      sources: conversation
-        .slice(-12)
-        .map((e) => ({ id: e.id, kind: e.kind, content: plainText(e), at: e.created_at })),
+      sources: conversation.slice(-12).map((e) => ({
+        id: e.id,
+        kind: e.kind,
+        content: plainText(e, (slug) => this.stickerName(slug)),
+        at: e.created_at,
+      })),
       stickers: this.deps.stickers
         .list()
         .map((s) => ({ slug: s.slug, meaning: s.description, tags: s.tags })),
@@ -684,7 +697,7 @@ export class LifeMaterial {
             newChats: fresh.map((e) => ({
               id: e.id,
               kind: e.kind,
-              content: plainText(e),
+              content: plainText(e, (slug) => this.stickerName(slug)),
               at: e.created_at,
             })),
           }

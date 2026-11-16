@@ -169,6 +169,17 @@ const mind = new Mind(
   readPrompt('life.md', ''),
   () => config().primary.inputTokens,
   TOOL_SETS,
+  // 内联表情幻觉的兜底解析：slug、描述、标签都能匹配回目录。
+  (query) => {
+    const q = query.trim().toLowerCase();
+    if (!q) return undefined;
+    const catalog = stickers.list();
+    return (
+      catalog.find((s) => s.slug.toLowerCase() === q)?.slug ??
+      catalog.find((s) => s.description.toLowerCase().includes(q))?.slug ??
+      catalog.find((s) => (s.tags ?? []).some((t) => t.toLowerCase() === q))?.slug
+    );
+  },
 );
 
 // 黏人度是她自己的属性：配置值只种一次，之后由相处自己长（夜间维护）。
