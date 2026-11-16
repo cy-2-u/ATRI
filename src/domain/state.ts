@@ -15,13 +15,6 @@ export interface SelfState {
   closenessDay: string;
 }
 
-export interface Mood {
-  pleasure: number;
-  energy: number;
-  patience: number;
-  at: number;
-}
-
 export const clamp = (value: number, min = 0, max = 1): number =>
   Math.min(max, Math.max(min, value));
 
@@ -101,28 +94,6 @@ export function motives(state: SelfState, now: number): { boredom: number; longi
   return {
     boredom: clamp((now - state.stimulatedAt) / (4 * 3_600_000)),
     longing: state.lastReceivedAt ? clamp((now - state.lastReceivedAt) / (20 * 3_600_000)) : 0.5,
-  };
-}
-
-export function projectMood(mood: Mood, now: number): Mood {
-  const decay = 2 ** (-Math.max(0, now - mood.at) / (4 * 3_600_000));
-  return {
-    pleasure: mood.pleasure * decay,
-    energy: mood.energy * decay,
-    patience: mood.patience * decay,
-    at: Math.max(now, mood.at),
-  };
-}
-
-export function affect(mood: Mood, pulse: Omit<Mood, 'at'>, now: number): Mood {
-  const current = projectMood(mood, now);
-  const fold = (base: number, value: number) =>
-    clamp(base + clamp(value, -1, 1) * (1 - Math.abs(base)), -1, 1);
-  return {
-    pleasure: fold(current.pleasure, pulse.pleasure),
-    energy: fold(current.energy, pulse.energy),
-    patience: fold(current.patience, pulse.patience),
-    at: now,
   };
 }
 

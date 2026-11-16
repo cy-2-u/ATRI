@@ -4,7 +4,7 @@ import type { Journal } from '../storage/journal.js';
  *  向量只影响召回排序：任何失败都降级为纯词面（bigram），聊天主链路
  *  不因此中断；待补语料从数据本身派生（缺嵌入行的语料永远是待补）。 */
 
-export function decodeEmbedding(value: unknown): Float32Array {
+function decodeEmbedding(value: unknown): Float32Array {
   if (Array.isArray(value)) {
     if (!value.length || value.some((n) => typeof n !== 'number' || !Number.isFinite(n)))
       throw new Error('向量服务返回了无效向量');

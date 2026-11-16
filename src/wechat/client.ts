@@ -60,13 +60,13 @@ export function wechatBase(value: string): string {
 
 // ---------- CDN 媒体加密（微信图片通道：AES-128-ECB + c2c CDN） ----------
 
-export function encryptAes128Ecb(plaintext: Buffer, key: Buffer): Buffer {
+function encryptAes128Ecb(plaintext: Buffer, key: Buffer): Buffer {
   if (key.length !== 16) throw new Error(`AES-128 key must be 16 bytes, got ${key.length}`);
   const cipher = createCipheriv('aes-128-ecb', key, null);
   cipher.setAutoPadding(true);
   return Buffer.concat([cipher.update(plaintext), cipher.final()]);
 }
-export function decryptAes128Ecb(ciphertext: Buffer, key: Buffer): Buffer {
+function decryptAes128Ecb(ciphertext: Buffer, key: Buffer): Buffer {
   if (key.length !== 16) throw new Error(`AES-128 key must be 16 bytes, got ${key.length}`);
   const decipher = createDecipheriv('aes-128-ecb', key, null);
   decipher.setAutoPadding(true);
@@ -80,7 +80,7 @@ const randomFileKey = () => randomBytes(16).toString('hex');
 const encodeAesKeyField = (aesKey: Buffer) =>
   Buffer.from(aesKey.toString('hex'), 'utf8').toString('base64');
 /** 入站 aes_key 兼容三种形态：base64(裸 16 字节)/base64(hex 文本)/裸 hex。 */
-export function parseAesKey(aesKeyField: string): Buffer {
+function parseAesKey(aesKeyField: string): Buffer {
   const raw = aesKeyField.trim();
   if (/^[0-9a-fA-F]{32}$/.test(raw)) return Buffer.from(raw, 'hex');
   const decoded = Buffer.from(raw, 'base64');

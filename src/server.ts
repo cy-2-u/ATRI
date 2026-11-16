@@ -289,7 +289,12 @@ export function createServer(options: ServerOptions) {
       .filter((kind) =>
         ['received', 'said', 'diary', 'muse', 'failure', 'experienced', 'attempted'].includes(kind),
       );
-    return options.journal.events(peer, kinds.length ? kinds : undefined);
+    const limit = Number((request.query as { limit?: string } | undefined)?.limit ?? 500);
+    return options.journal.events(
+      peer,
+      kinds.length ? kinds : undefined,
+      Number.isFinite(limit) ? limit : 500,
+    );
   });
   app.get('/api/memories', async (request) => {
     const peer = (request.query as { peer?: string } | undefined)?.peer || firstPeer();

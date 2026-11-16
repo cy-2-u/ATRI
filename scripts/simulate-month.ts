@@ -292,7 +292,8 @@ for (let day = 0; day < 30; day++) {
 await advanceTo(Date.parse('2026-12-01T08:00:00+08:00'));
 await fireDue();
 
-const events = journal.events(PEER);
+// 统计口径要全量：events() 的默认上限是给 4 秒轮询的管理页用的。
+const events = journal.events(PEER, undefined, 2000);
 const received = events.filter((e) => e.kind === 'received');
 const diaries = events.filter((e) => e.kind === 'diary');
 const muses = events.filter((e) => e.kind === 'muse');

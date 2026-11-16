@@ -702,6 +702,7 @@ export class LifeMaterial {
     // 防撞车指纹：近两天她主动开过的口。同一话头换个说法再来就是机器人。
     const openers =
       turn.kind === 'beat' ? journal.recentBeatOpeners(peer, now - 48 * 3_600_000) : [];
+    const topicNotes = journal.setting<string>(`notes:${peer}`, '');
     const hoursLine = this.hisHours(peer, now, timeZone);
     const material = {
       mode: turn.kind,
@@ -742,9 +743,7 @@ export class LifeMaterial {
             })),
           }
         : {}),
-      ...(journal.setting<string>(`notes:${peer}`, '')
-        ? { topicNotes: journal.setting<string>(`notes:${peer}`, '') }
-        : {}),
+      ...(topicNotes ? { topicNotes } : {}),
       ...(thisDay.length ? { onThisDay: thisDay } : {}),
       ...(words.length >= 2 ? { hisWords: `他最近常说的词：${words.join('、')}` } : {}),
       sources: conversation.slice(-12).map((e) => ({

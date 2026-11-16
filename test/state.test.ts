@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  affect,
   beatDelay,
   evolveSelf,
   initialSelf,
@@ -39,12 +38,6 @@ test('表达消耗表达欲，真实经历增加表达欲', () => {
   const state = evolveSelf(initialSelf(hour), hour, { kind: 'experienced', salience: 1 });
   assert.equal(state.expression, 0.2);
   assert.ok(Math.abs(evolveSelf(state, hour, { kind: 'delivered' }).expression - 0.08) < 1e-12);
-});
-
-test('微弱情绪输入只产生微弱变化，重复同号不会固定跃升', () => {
-  const mood = { pleasure: 0.5, energy: 0, patience: 0, at: hour };
-  const next = affect(mood, { pleasure: 0.001, energy: 0, patience: 0 }, hour);
-  assert.ok(next.pleasure > 0.5 && next.pleasure < 0.501);
 });
 
 test('回想巩固残存记忆，不恢复已经遗失的细节', () => {

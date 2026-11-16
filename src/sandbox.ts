@@ -28,7 +28,7 @@ const exec = promisify(execFile);
  *  "降级隔离"，是带着数据库与全部密钥的任意代码执行。 */
 
 /** 单流输出上限：跑飞的 yes 不能把 API 进程堆吃穿。 */
-export const SANDBOX_OUTPUT_LIMIT = 256 * 1024;
+const SANDBOX_OUTPUT_LIMIT = 256 * 1024;
 const SANDBOX_READ_LIMIT = 2 * 1024 * 1024;
 
 export interface SandboxResult {
@@ -63,7 +63,7 @@ export interface SandboxOptions {
   network: () => boolean;
 }
 
-export class SandboxQuotaError extends Error {}
+class SandboxQuotaError extends Error {}
 
 const NSJAIL = '/usr/local/bin/nsjail';
 const SANDBOX_PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';

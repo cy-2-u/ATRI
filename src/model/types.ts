@@ -80,7 +80,7 @@ export class RequestError extends Error {
   }
 }
 
-export function tokenEstimate(text: string): number {
+function tokenEstimate(text: string): number {
   let count = 0;
   for (const char of text) count += char.codePointAt(0)! < 128 ? 1 / 3 : 2;
   return Math.ceil(count);

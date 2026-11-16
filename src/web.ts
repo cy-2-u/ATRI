@@ -82,11 +82,11 @@ export interface WebTools {
     signal?: AbortSignal,
   ): Promise<{ url: string; content: string; fetchedAt: string }>;
 }
-export const isPublicAddress = (address: string) => !isPrivateAddress(address);
+const isPublicAddress = (address: string) => !isPrivateAddress(address);
 
 /** 读取公开网页：协议/端口/私网校验（DNS 逐地址），跟随至多 3 次重定向，
  *  共享整轮截止时间，正文抽成纯文本并限量。 */
-export async function fetchPublicPage(
+async function fetchPublicPage(
   rawUrl: string,
   signal?: AbortSignal,
   redirects = 0,

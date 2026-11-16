@@ -43,7 +43,7 @@ const clampAxis = (value: unknown): number => {
  *  （[表情：举牌子打气]、[sticker:cat009]、{"type":"sticker",…}）抄进
  *  text 字符串——按 slug/描述/标签匹配回目录，匹配不上的剥壳留文字，
  *  绝不让幻觉标记原样发进微信。有界字符类防二次方回溯。 */
-export function splitInlineStickers(
+function splitInlineStickers(
   text: string,
   resolve: (query: string) => string | undefined,
 ): Bubble[] {

@@ -653,24 +653,27 @@ export class Journal {
     ).reverse();
   }
 
+  /** 管理页事件读取。事件流只增不减（muse 每轮都可能写一条），默认只给
+   *  最近 500 条——4 秒轮询不该随相处年限线性变贵。 */
   events(
     peer: string,
     kinds?: string[],
+    limit = 500,
   ): { id: string; kind: string; content: string; created_at: number }[] {
-    if (kinds?.length) {
-      const placeholders = kinds.map(() => '?').join(',');
-      return this.statement(
-        `SELECT id,kind,content,created_at FROM kernel_events WHERE peer=? AND kind IN (${placeholders}) ORDER BY seq`,
-      ).all(peer, ...kinds) as unknown as {
-        id: string;
-        kind: string;
-        content: string;
-        created_at: number;
-      }[];
-    }
-    return this.statement(
-      'SELECT id,kind,content,created_at FROM kernel_events WHERE peer=? ORDER BY seq',
-    ).all(peer) as unknown as { id: string; kind: string; content: string; created_at: number }[];
+    const size = Math.max(1, Math.min(2000, Math.floor(limit)));
+    const rows = (kinds?.length
+      ? this.statement(
+          `SELECT id,kind,content,created_at FROM kernel_events WHERE peer=? AND kind IN (${kinds.map(() => '?').join(',')}) ORDER BY seq DESC LIMIT ?`,
+        ).all(peer, ...kinds, size)
+      : this.statement(
+          'SELECT id,kind,content,created_at FROM kernel_events WHERE peer=? ORDER BY seq DESC LIMIT ?',
+        ).all(peer, size)) as unknown as {
+      id: string;
+      kind: string;
+      content: string;
+      created_at: number;
+    }[];
+    return rows.reverse();
   }
 
   evidence(peer: string, ids: string[]): { id: string; kind: string }[] {
