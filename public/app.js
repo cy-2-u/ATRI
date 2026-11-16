@@ -390,7 +390,6 @@ async function refreshChat() {
       '还没有对话。她的第一句话会出现在这里——这里只读：她聊天的对象在微信那头，不在管理页里。',
     );
   if (nearBottom) list.scrollTop = list.scrollHeight;
-  $('chat-hint').textContent = `${visible.length} 条记录`;
 }
 
 function entryDate(at) {

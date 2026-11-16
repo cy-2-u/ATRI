@@ -180,8 +180,16 @@ export class Runtime {
     // "输入中"的生命周期 = 从她开始想到气泡说出口：思考（含主动拍）一
     // 开始就显示——想的时候就是在打字（v3 语义）；气泡到达前清除；多气
     // 泡之间重新显示并按长度停顿。夜里独处的 diary/tidy 不显示。
+    // 打字请求带 8 秒硬顶：fetch 偶发挂起时不守 timeout，一条卡住的指示
+    // 请求曾把整条思考链冻在 active 里，她对谁都再也不回。
     const composing = (active: boolean): Promise<void> =>
-      Promise.resolve(this.options.onComposing?.(peer, active)).catch(() => undefined);
+      Promise.race([
+        Promise.resolve(this.options.onComposing?.(peer, active)).then(
+          () => undefined,
+          () => undefined,
+        ),
+        delay(8000),
+      ]);
     const pacingOn =
       typeof this.options.pacing === 'function' ? this.options.pacing() : this.options.pacing;
     let first = true;
