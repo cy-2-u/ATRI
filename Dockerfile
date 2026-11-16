@@ -19,7 +19,7 @@ RUN npm run typecheck && npm run build && npm prune --omit=dev --no-audit --no-f
 
 FROM node:24-bookworm-slim
 WORKDIR /app
-ENV NODE_ENV=production XING_PORT=3000
+ENV NODE_ENV=production ATRI_PORT=3000
 COPY --from=nsjail /src/nsjail/nsjail /usr/local/bin/nsjail
 RUN apt-get update && apt-get install -y --no-install-recommends \
       libprotobuf32 libnl-route-3-200 \

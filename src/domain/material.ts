@@ -491,14 +491,31 @@ export class LifeMaterial {
       .conversation(peer, 12)
       .filter((e) => e.kind === 'received')
       .slice(-3);
-    return recent.map((e) => e.content).join('\n');
+    // 可读文本进查询：received 行是 JSON，原始串会污染词面与向量。
+    return recent.map((e) => plainText(e, (slug) => this.stickerName(slug))).join('\n');
+  }
+
+  /** 记忆的情绪染色：残留够强才显形，用措辞不用数值。 */
+  private static emotionalTint(residue: number): string {
+    if (residue <= -0.55) return '想起来心里还是很难受';
+    if (residue <= -0.3) return '想起来还是有点不好受';
+    if (residue >= 0.55) return '想起来还是会笑';
+    if (residue >= 0.3) return '想起来会开心';
+    return '';
   }
 
   private async recall(
     peer: string,
     turn: Turn,
   ): Promise<{
-    list: { id: string; text: string; certainty: string; kind: string; sources: string[] }[];
+    list: {
+      id: string;
+      text: string;
+      certainty: string;
+      kind: string;
+      sources: string[];
+      feeling?: string;
+    }[];
     ids: string[];
   }> {
     const query = this.recallQuery(peer, turn);
@@ -521,18 +538,23 @@ export class LifeMaterial {
         hits.map((hit) => hit.memory.id),
       );
     return {
-      list: hits.map((hit) => ({
-        id: hit.memory.id,
-        text: hit.text,
-        certainty:
-          hit.memory.detail >= 0.75
-            ? '清晰'
-            : hit.memory.detail >= 0.5
-              ? '大致记得'
-              : '只有模糊的印象',
-        kind: hit.memory.kind,
-        sources: hit.memory.sources,
-      })),
+      list: hits.map((hit) => {
+        // projected.emotion 已是按 10 天半衰残留后的值。
+        const tint = LifeMaterial.emotionalTint(hit.memory.emotion);
+        return {
+          id: hit.memory.id,
+          text: hit.text,
+          certainty:
+            hit.memory.detail >= 0.75
+              ? '清晰'
+              : hit.memory.detail >= 0.5
+                ? '大致记得'
+                : '只有模糊的印象',
+          kind: hit.memory.kind,
+          sources: hit.memory.sources,
+          ...(tint ? { feeling: tint } : {}),
+        };
+      }),
       ids: hits.map((hit) => hit.memory.id),
     };
   }
@@ -591,6 +613,10 @@ export class LifeMaterial {
     // 心跳拍是"没人在等她"的拍：给她属于自己的时间与自己的文件清单，
     // 写过的东西浮回来，生活才连得起来。
     const workdir = turn.kind === 'beat' ? await this.deps.sandboxFiles?.() : undefined;
+    // 防撞车指纹：近两天她主动开过的口。同一话头换个说法再来就是机器人。
+    const openers =
+      turn.kind === 'beat' ? journal.recentBeatOpeners(peer, now - 48 * 3_600_000) : [];
+    const hoursLine = this.hisHours(peer, now, timeZone);
     const material = {
       mode: turn.kind,
       time: renderTimeGap(now, turn.kind === 'chat' ? basis : lastReceived, timeZone),
@@ -601,6 +627,12 @@ export class LifeMaterial {
       abilities: this.abilities(),
       ...(turn.kind === 'beat' ? { yourTime: YOUR_TIME_NOTE } : {}),
       ...(workdir?.length ? { workdir: workdir.slice(0, 30) } : {}),
+      ...(openers.length
+        ? {
+            recentOpeners: `你近两天主动说过的话头（别再用同样的主题或句式开场）：${openers.join(' / ')}`,
+          }
+        : {}),
+      ...(hoursLine ? { hisHours: hoursLine } : {}),
       lifeLog: journal.experiences(peer, 10).map((e) => renderExperience(e, timeZone)),
       thoughts: journal
         .thoughts(peer)
@@ -633,13 +665,34 @@ export class LifeMaterial {
         content: plainText(e, (slug) => this.stickerName(slug)),
         at: e.created_at,
       })),
-      stickers: this.deps.stickers
-        .list()
-        .map((s) => ({ slug: s.slug, meaning: s.description, tags: s.tags })),
+      // 表情目录已移入系统提示的稳定前缀（前缀缓存），不再逐轮进材料。
       uncertain: journal.unresolved(peer),
       waitingDrafts: journal.pending(peer),
     };
     return { material };
+  }
+
+  /** 他的活跃时段（近两周 received 的钟点直方图）：资料不是指令，
+   *  想不想在他活跃时说话仍由她定。样本太少时静默省略。 */
+  private hisHours(peer: string, now: number, timeZone: string): string {
+    const rows = this.deps.journal.eventsBetween(peer, ['received'], now - 14 * 86400000, now, 300);
+    if (rows.length < 12) return '';
+    const formatter = new Intl.DateTimeFormat('en-GB', {
+      timeZone,
+      hour: '2-digit',
+      hourCycle: 'h23',
+    });
+    const buckets = new Map<number, number>();
+    for (const row of rows) {
+      const hour = Number(formatter.format(new Date(row.created_at)));
+      buckets.set(hour, (buckets.get(hour) ?? 0) + 1);
+    }
+    const top = [...buckets.entries()]
+      .filter(([, n]) => n >= 3)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 4)
+      .map(([hour]) => `${hour} 点`);
+    return top.length >= 2 ? `他最近常在这些钟点说话：${top.join('、')}前后` : '';
   }
 
   /** 日记材料：最近一天收到的与说过的话 + 最近一篇日记。 */
@@ -655,7 +708,12 @@ export class LifeMaterial {
     return {
       mode: 'diary',
       time: `现在是${fullMoment(now, timeZone)}，夜深了，你在整理自己的一天。`,
-      day: day.map((e) => ({ id: e.id, kind: e.kind, content: e.content, at: e.created_at })),
+      day: day.map((e) => ({
+        id: e.id,
+        kind: e.kind,
+        content: plainText(e, (slug) => this.stickerName(slug)),
+        at: e.created_at,
+      })),
       lastDiary: lastDiary.map((e) => e.content),
       recentMemories: recentMemories.map((m) => ({ id: m.id, content: m.content, kind: m.kind })),
       instructions:

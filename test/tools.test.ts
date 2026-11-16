@@ -5,6 +5,59 @@ import { lifeTools } from '../src/domain/tools.js';
 
 const options = () => ({ deadlineAt: Date.now() + 1000 });
 
+test('read_history：按 ids 精确取原文，气泡渲染成可读文本', async () => {
+  const journal = new Journal(':memory:');
+  try {
+    journal.receive('peer', 'one', '我们养了一只猫叫年糕');
+    const source = journal.events('peer')[0]!.id;
+    const chat = journal.begin('peer', 'chat');
+    await new Map(lifeTools(journal, {}).map((t) => [t.definition.name, t]))
+      .get('remember')!
+      .execute(
+        { content: '养了猫叫年糕', gist: '养猫', kind: 'stated', sources: [source] },
+        options(),
+        chat,
+      );
+    journal.fail(chat, '收口');
+    const turn = journal.begin('peer', 'chat');
+    const tools = new Map(lifeTools(journal, {}).map((tool) => [tool.definition.name, tool]));
+    // 通道一：给 ids（记忆 sources 的核对路径）。
+    const byIds = (await tools
+      .get('read_history')!
+      .execute({ ids: [source] }, options(), turn)) as { who: string; text: string }[];
+    assert.equal(byIds.length, 1);
+    assert.equal(byIds[0]!.who, '他');
+    assert.equal(byIds[0]!.text, '我们养了一只猫叫年糕');
+    // 通道二：最近 N 条同样渲染（不是裸 JSON）。
+    const recent = (await tools.get('read_history')!.execute({ limit: 5 }, options(), turn)) as {
+      text: string;
+    }[];
+    assert.ok(recent.every((row) => !row.text.startsWith('{"')));
+  } finally {
+    journal.close();
+  }
+});
+
+test('心跳开场指纹：beat 产出的气泡可查，chat 产出的不混入', () => {
+  const journal = new Journal(':memory:');
+  try {
+    journal.receive('peer', 'one', '早');
+    // said 事件在投递成功时落库：模拟完整链路。
+    const deliver = (turn: ReturnType<typeof journal.begin>) => {
+      journal.draft(turn, [{ type: 'text', text: `开场:${turn.kind}` }], {});
+      const envelope = journal.pending('peer')[0]!;
+      journal.startDelivery(envelope.id);
+      journal.delivery(envelope.id, 'sent');
+    };
+    deliver(journal.begin('peer', 'beat'));
+    deliver(journal.begin('peer', 'chat'));
+    const openers = journal.recentBeatOpeners('peer', Date.now() - 48 * 3_600_000);
+    assert.deepEqual(openers, ['开场:beat']);
+  } finally {
+    journal.close();
+  }
+});
+
 test('记忆工具使用当前联系人来源，检索结果不泄露隐藏原文', async () => {
   const journal = new Journal(':memory:');
   try {

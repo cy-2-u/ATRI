@@ -15,8 +15,50 @@ import {
   sleepDayKeyOf,
 } from '../src/domain/rhythm.js';
 import { Runtime } from '../src/runtime/runtime.js';
+import { lifeTools } from '../src/domain/tools.js';
 import type { Model } from '../src/model/types.js';
 import type { Stickers } from '../src/stickers.js';
+
+test('材料：记忆的情绪残留随召回显形成 feeling', async () => {
+  const journal = new Journal(':memory:');
+  const root = mkdtempSync(join(tmpdir(), 'atri-tint-'));
+  try {
+    journal.receive('peer', 'one', '年糕今天出院回家啦');
+    const source = journal.events('peer')[0]!.id;
+    const turn = journal.begin('peer', 'chat');
+    await new Map(lifeTools(journal, {}).map((t) => [t.definition.name, t]))
+      .get('remember')!
+      .execute(
+        {
+          content: '他家的猫年糕出院回家了',
+          gist: '年糕出院',
+          kind: 'stated',
+          sources: [source],
+          emotion: 0.9,
+        },
+        { deadlineAt: Date.now() + 1000 },
+        turn,
+      );
+    journal.fail(turn, '收口');
+    const life = new LifeMaterial({
+      journal,
+      stickers: { list: () => [] } as unknown as Stickers,
+      timeZone: () => 'Asia/Shanghai',
+      sandboxEnabled: () => false,
+      webConfigured: () => false,
+      vision: () => false,
+      now: Date.now,
+    });
+    const built = await life.build('peer', { id: 't', peer: 'peer', version: 0, kind: 'chat' });
+    const memories = (built.material as { memories: { text: string; feeling?: string }[] })
+      .memories;
+    assert.ok(memories.length >= 1, '应召回那条记忆');
+    assert.equal(memories[0]!.feeling, '想起来还是会笑');
+  } finally {
+    journal.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test('思考输出解析：心情/在做/在追/表情形状与拒绝', () => {
   const thought = parseThought(

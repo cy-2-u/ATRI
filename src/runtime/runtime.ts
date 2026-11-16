@@ -259,7 +259,9 @@ export class Runtime {
       const thought = await this.mind.think(
         turn,
         this.options.persona(),
-        await this.history(turn.peer),
+        // 夜里的 diary/tidy 自带完整材料（当日窗口/记忆清单），对话历史
+        // 对它们只是白拖的 token；对外的轮次照旧带全量对话。
+        turn.kind === 'diary' || turn.kind === 'tidy' ? [] : await this.history(turn.peer),
         material,
         options,
       );

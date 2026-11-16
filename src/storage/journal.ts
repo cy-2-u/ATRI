@@ -716,6 +716,44 @@ export class Journal {
     return Number(row?.n ?? 0);
   }
 
+  /** 她近两天主动开过的口（心跳拍产出的气泡）：防同一话头反复出现的
+   *  指纹清单。返回按时间先后、每条截短的可读文本。 */
+  recentBeatOpeners(peer: string, sinceMs: number): string[] {
+    const rows = this.statement(
+      `SELECT e.content AS content FROM kernel_events e
+       JOIN kernel_turns t ON t.id = e.turn_id
+       WHERE e.peer=? AND e.kind='said' AND t.kind='beat' AND e.created_at>=?
+       ORDER BY e.seq DESC LIMIT 6`,
+    ).all(peer, sinceMs) as unknown as { content: string }[];
+    const out: string[] = [];
+    for (const row of rows.reverse()) {
+      try {
+        const part = JSON.parse(row.content) as { type?: string; text?: string };
+        if (part?.type === 'text' && part.text?.trim())
+          out.push(part.text.trim().replace(/\s+/g, ' ').slice(0, 40));
+      } catch {
+        /* 非气泡行跳过 */
+      }
+    }
+    return out;
+  }
+
+  /** 按 ID 精确取事件（read_history 的原文核对通道），保持传入顺序，
+   *  不存在的 ID 静默跳过。 */
+  eventsByIds(
+    peer: string,
+    ids: string[],
+  ): { id: string; kind: string; content: string; created_at: number }[] {
+    return ids.flatMap((id) => {
+      const row = this.statement(
+        'SELECT id,kind,content,created_at FROM kernel_events WHERE peer=? AND id=?',
+      ).get(peer, id);
+      return row
+        ? [row as unknown as { id: string; kind: string; content: string; created_at: number }]
+        : [];
+    });
+  }
+
   /** 信念与认识的依据可以是事件，也可以是已立住的记忆（心智模型的整理
    *  发生在夜里，那时候模型手里是记忆条目而不是原始事件）。 */
   supports(peer: string, ids: string[]): number {

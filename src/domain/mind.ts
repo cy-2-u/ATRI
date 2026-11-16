@@ -167,7 +167,9 @@ export class Mind {
     private readonly model: Model,
     private readonly journal: Journal,
     tools: ToolHandler[] = [],
-    private readonly rules: string = '',
+    /** 生活规则。传函数时每轮现取：拼在稳定前缀里的表情目录等随管理
+     *  面改动即时生效，字节不变时供应商前缀缓存仍然命中。 */
+    private readonly rules: string | (() => string) = '',
     private readonly inputBudget: () => number = () => 24_000,
     private readonly sets: ToolSet = {},
     /** 表情解析：内联标记/JSON 幻觉按 slug、描述或标签匹配回目录。 */
@@ -193,7 +195,8 @@ export class Mind {
     material: unknown,
     options: RequestOptions,
   ): Promise<Thought> {
-    const system = [persona.trim(), this.rules.trim(), protocol].filter(Boolean).join('\n\n');
+    const rules = typeof this.rules === 'function' ? this.rules() : this.rules;
+    const system = [persona.trim(), rules.trim(), protocol].filter(Boolean).join('\n\n');
     let messages: Message[] = [
       { role: 'system', content: system, cache: true },
       ...history.map((message) => ({ ...message })),

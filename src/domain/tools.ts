@@ -59,18 +59,48 @@ export function lifeTools(
     {
       definition: {
         name: 'read_history',
-        description: '查阅最近实际收到和确认送达的聊天记录；这是查到的原文。',
+        description:
+          '查阅聊天记录：给 ids 就精确取回那几条（记忆或念头 sources 里的原文用它核对），不给则返回最近若干条。',
         parameters: {
           type: 'object',
-          properties: { limit: { type: 'integer', minimum: 1, maximum: 50 } },
+          properties: {
+            limit: { type: 'integer', minimum: 1, maximum: 50 },
+            ids: { type: 'array', items: { type: 'string' }, maxItems: 8 },
+          },
           additionalProperties: false,
         },
       },
       async execute(args, _options, turn) {
+        const render = (row: { id: string; kind: string; content: string; created_at: number }) => {
+          let text = row.content;
+          try {
+            const part = JSON.parse(row.content) as {
+              type?: string;
+              text?: string;
+              content?: string;
+            };
+            if (part?.type === 'sticker') text = '[发了个表情]';
+            else if (part?.type === 'image') text = '[发了张图片]';
+            else if (typeof part?.text === 'string') text = part.text;
+            else if (typeof part?.content === 'string') text = part.content;
+          } catch {
+            /* 纯文本 */
+          }
+          return {
+            id: row.id,
+            who: row.kind === 'received' ? '他' : '你',
+            text,
+            at: row.created_at,
+          };
+        };
+        if (Array.isArray(args.ids)) {
+          const wanted = args.ids.filter((id): id is string => typeof id === 'string').slice(0, 8);
+          if (wanted.length) return journal.eventsByIds(turn.peer, wanted).map(render);
+        }
         const limit = args.limit === undefined ? 20 : args.limit;
         if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1 || limit > 50)
           throw new TypeError('limit 必须在 1–50 之间');
-        return journal.conversation(turn.peer, limit);
+        return journal.conversation(turn.peer, limit).map(render);
       },
     },
     {
