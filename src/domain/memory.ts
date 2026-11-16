@@ -190,6 +190,60 @@ export class Recollection {
         this.journal.saveMemory(peer, { ...memory, ...rehearseMemory(memory, this.now()) });
   }
 
+  /** 翻日记：日记是她写下的情绪档案，理应能被想起。日记没有演练跟踪
+   *  （纯衰减），情绪浓的淡得慢；detail 低的只剩一段模糊印象。 */
+  diaryRecall(
+    peer: string,
+    query: string,
+    limit = 3,
+  ): { id: string; text: string; at: number; emotion: number; detail: number }[] {
+    const terms = grams(query);
+    if (!terms.size) return [];
+    const now = this.now();
+    return this.journal
+      .recentEvents(peer, ['diary'], 120)
+      .map((row) => {
+        let content = row.content,
+          emotion = 0;
+        try {
+          const parsed = JSON.parse(row.content) as { content?: string; emotion?: number };
+          content = parsed?.content ?? row.content;
+          emotion = Number.isFinite(parsed?.emotion) ? Number(parsed.emotion) : 0;
+        } catch {
+          /* 旧格式纯文本 */
+        }
+        // 与记忆同一套衰减数学：日记没有演练，consolidation 恒 0。
+        const projected = projectMemory(
+          {
+            detail: 0.9,
+            importance: 0.45,
+            emotion,
+            consolidation: 0,
+            interference: 0.1,
+            createdAt: row.created_at,
+            evaluatedAt: row.created_at,
+            lastRehearsedAt: 0,
+          },
+          now,
+        );
+        const words = grams(content);
+        let overlap = 0;
+        for (const word of terms) if (words.has(word)) overlap++;
+        const relevance = overlap / Math.sqrt(terms.size * Math.max(1, words.size));
+        return {
+          id: row.id,
+          text: content,
+          at: row.created_at,
+          emotion,
+          detail: projected.detail,
+          relevance,
+        };
+      })
+      .filter((hit) => hit.relevance > 0 && hit.detail > 0.35)
+      .sort((a, b) => b.relevance - a.relevance || b.at - a.at)
+      .slice(0, Math.max(0, Math.min(10, Math.floor(limit))));
+  }
+
   consider(
     peer: string,
     topic: string,

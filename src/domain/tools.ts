@@ -26,15 +26,27 @@ export function lifeTools(
     {
       definition: {
         name: 'search_memory',
-        description: '按主题回想；模糊记忆只返回要旨，精确原文需查历史。',
+        description:
+          '按主题回想记忆或翻自己写过的日记（kind:"diary"）；模糊记忆只返回要旨，精确原文需查历史。',
         parameters: {
           type: 'object',
-          properties: { query: { type: 'string' } },
+          properties: {
+            query: { type: 'string' },
+            kind: { type: 'string', enum: ['memory', 'diary'] },
+          },
           required: ['query'],
           additionalProperties: false,
         },
       },
       async execute(args, _options, turn) {
+        if (args.kind === 'diary')
+          return recollection.diaryRecall(turn.peer, text(args.query, 'query')).map((hit) => ({
+            id: hit.id,
+            text: hit.text,
+            certainty: hit.detail >= 0.75 ? 'clear' : 'gist',
+            kind: 'diary',
+            at: hit.at,
+          }));
         return recollection.recall(turn.peer, text(args.query, 'query')).map((hit) => ({
           id: hit.memory.id,
           text: hit.text,

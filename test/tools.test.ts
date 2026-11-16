@@ -60,3 +60,38 @@ test('话题笔记只在整理拍写，落地时推进 seq 游标', async () => 
     journal.close();
   }
 });
+
+test('日记召回：词面命中、情绪随行、detail 分级渲染', async () => {
+  const journal = new Journal(':memory:');
+  try {
+    const tools = new Map(lifeTools(journal, {}).map((tool) => [tool.definition.name, tool]));
+    journal.receive('peer', 'seed', '我们在聊猫');
+    const source = journal.events('peer')[0]!.id;
+    const turn = journal.begin('peer', 'diary');
+    await tools.get('write_journal')!.execute(
+      {
+        sections: [{ content: '今天聊了猫咪罐头的事，很开心', emotion: 0.6, sources: [source] }],
+      },
+      options(),
+      turn,
+    );
+    journal.draft(turn, [], {});
+    const chatTurn = journal.begin('peer', 'chat');
+    const hits = (await tools
+      .get('search_memory')!
+      .execute({ query: '猫咪罐头', kind: 'diary' }, options(), chatTurn)) as {
+      text: string;
+      certainty: string;
+    }[];
+    assert.equal(hits.length, 1);
+    assert.ok(hits[0]!.text.includes('罐头'));
+    assert.equal(hits[0]!.certainty, 'clear');
+    // 词面不相干的查询翻不到。
+    const none = (await tools
+      .get('search_memory')!
+      .execute({ query: '完全无关的词', kind: 'diary' }, options(), chatTurn)) as unknown[];
+    assert.equal(none.length, 0);
+  } finally {
+    journal.close();
+  }
+});

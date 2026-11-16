@@ -415,6 +415,12 @@ export class LifeMaterial {
     return out;
   }
 
+  /** 翻日记（非自主回忆）：写到过的心事被自己此刻的状态勾起来。 */
+  private diaryEchoes(peer: string, query: string, limit: number) {
+    if (!query.trim()) return [];
+    return this.recollection.diaryRecall(peer, query, limit);
+  }
+
   private selfNow(self: SelfState, timeZone: string, now: number): string {
     const parts: string[] = [];
     if (self.activity) {
@@ -538,6 +544,18 @@ export class LifeMaterial {
     );
     const lastReceived = [...conversation].reverse().find((e) => e.kind === 'received')?.created_at;
     const recall = await this.recall(peer, turn);
+    // 翻日记：beat 拍她独处，自己的心事是天然的检索词——写到过的心事
+    // 浮回来；chat 拍只有在记忆召回很薄（<2 条）时补一条，不抢记忆的戏。
+    const diaryEchoes =
+      turn.kind === 'beat'
+        ? this.diaryEchoes(
+            peer,
+            [self.activity, self.pursuit, recall.list[0]?.text ?? ''].filter(Boolean).join(' '),
+            2,
+          )
+        : recall.list.length < 2
+          ? this.diaryEchoes(peer, this.recallQuery(peer, turn), 1)
+          : [];
     const commitments = journal
       .commitments(peer)
       .filter((item) => item.state === 'open')
@@ -586,6 +604,14 @@ export class LifeMaterial {
         })),
       commitments,
       memories: recall.list,
+      ...(diaryEchoes.length
+        ? {
+            diaryEchoes: diaryEchoes.map((e) => ({
+              at: clock(e.at, timeZone),
+              text: e.detail >= 0.75 ? e.text : `（日记细节已经模糊）${e.text.slice(0, 80)}……`,
+            })),
+          }
+        : {}),
       ...(journal.setting<string>(`notes:${peer}`, '')
         ? { topicNotes: journal.setting<string>(`notes:${peer}`, '') }
         : {}),
