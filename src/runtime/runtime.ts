@@ -211,7 +211,9 @@ export class Runtime {
     const turn = this.journal.claim(peer, job.kind);
     if (!turn) return;
     const showsTyping = turn.kind !== 'diary' && turn.kind !== 'tidy';
-    if (showsTyping) void composing(true);
+    // true 也必须等待：火后不管的 true 走网络慢了会迟到——false 清完指示
+    // 它才到，把指示重新点亮，气泡发完了"输入中"还挂着。
+    if (showsTyping) await composing(true);
     try {
       await this.think(turn, signal);
     } finally {
