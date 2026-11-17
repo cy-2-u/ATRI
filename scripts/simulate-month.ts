@@ -1,5 +1,6 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { Journal } from '../src/storage/journal.js';
 import { Mind } from '../src/domain/mind.js';
@@ -25,7 +26,9 @@ import type { Model, Message } from '../src/model/types.js';
  *  不均，人味断言只针对机制能保证的部分。 */
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const dataDir = mkdtempSync(join(root, 'sim-'));
+// 临时库放系统临时区：Windows 上句柄释放滞后会让收尾删除失败，落在
+// 项目根就是一具 sim-* 尸体（gitignore 都盖不住它的存在感）。
+const dataDir = mkdtempSync(join(tmpdir(), 'atri-sim-'));
 mkdirSync(join(dataDir, 'sandbox'), { recursive: true });
 
 // ---------- 假时钟：单点推进，定时器登记后手动到期 ----------
