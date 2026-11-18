@@ -33,6 +33,10 @@ function render(notes) {
       img.loading = 'lazy';
       img.onclick = () => window.open(img.src, '_blank');
       item.append(img);
+      const saveHint = document.createElement('span');
+      saveHint.className = 'save-hint';
+      saveHint.textContent = '长按（或右键）图片可保存';
+      item.append(saveHint);
     }
     const time = document.createElement('time');
     time.textContent = `${note.from === 'her' ? '她' : '他'} · ${timeText(note.at)}`;

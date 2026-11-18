@@ -730,6 +730,12 @@ function fillSystemForm(config) {
   $('image-key').value = '';
   $('image-key-state').textContent = image?.hasApiKey ? '（已保存）' : '（未设置）';
   $('image-key').placeholder = image?.hasApiKey ? '••••••••' : '';
+  const webdav = config.webdav;
+  $('webdav-url').value = webdav?.url ?? '';
+  $('webdav-user').value = webdav?.user ?? '';
+  $('webdav-password').value = '';
+  $('webdav-password-state').textContent = webdav?.hasPassword ? '（已保存）' : '（未设置）';
+  $('webdav-password').placeholder = webdav?.hasPassword ? '••••••••' : '';
   const sandbox = config.sandbox ?? {};
   $('sandbox-on').checked = Boolean(sandbox.enabled);
   $('sandbox-net').checked = Boolean(sandbox.network);
@@ -816,6 +822,17 @@ $('save-system').onclick = () =>
         ...($('image-key').value.trim() ? { apiKey: $('image-key').value.trim() } : {}),
       };
     }
+    // WebDAV：三项全空 = 关闭备份；半空沿用旧值（密码留空保持已存的）。
+    const webdavUrl = $('webdav-url').value.trim();
+    const webdavUser = $('webdav-user').value.trim();
+    const webdavPassword = $('webdav-password').value.trim();
+    if (!webdavUrl && !webdavPassword) body.webdav = null;
+    else
+      body.webdav = {
+        url: webdavUrl || configCache?.webdav?.url || '',
+        user: webdavUser || configCache?.webdav?.user || '',
+        ...(webdavPassword ? { password: webdavPassword } : {}),
+      };
     await api('/api/config', { method: 'PUT', body });
     configCache = null;
     // 保存后的重填与刚提交的值一致（协议下拉会回到"自动"），且解禁下一次
@@ -851,6 +868,25 @@ $('test-embedding').onclick = () =>
     if (!result.ok) throw new Error(result.error);
     show(`向量连通正常：${result.model} · 维度 ${result.dims} · 延迟 ${result.latencyMs} ms`);
   }, $('test-embedding'));
+
+// ---------- WebDAV 备份 ----------
+// 备份状态跟系统表单一起刷；"立即备份"绕过每日闸门当场跑一轮。
+
+function backupStateText(state) {
+  if (!state?.configured) return '';
+  if (state.error) return `上次失败（${state.failedAt ?? ''}）：${state.error}`;
+  if (state.at) return `上次备份：${state.at}`;
+  return '尚未备份过';
+}
+function renderBackupState(state) {
+  $('backup-state').textContent = backupStateText(state);
+}
+$('backup-now').onclick = () =>
+  perform(async () => {
+    const state = await api('/api/backup', { method: 'POST' });
+    renderBackupState(state);
+    show(`备份完成：atri-backup/${state.at}`);
+  }, $('backup-now'));
 
 // 拉取模型列表（v5 回归）：面板可筛选，点选填入模型框。
 let fetchedModels = null;
@@ -911,6 +947,7 @@ async function refreshSystem() {
   const config = configCache ?? (await api('/api/config'));
   configCache = config;
   fillSystemForm(config);
+  renderBackupState(await api('/api/backup').catch(() => null));
   // 沙箱实况与文件
   const sandbox = await api('/api/sandbox').catch(() => null);
   if (sandbox) {

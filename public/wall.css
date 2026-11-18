@@ -90,6 +90,13 @@ h1 {
   margin-top: 4px;
 }
 
+#notes .save-hint {
+  display: block;
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 2px;
+}
+
 #post {
   margin-top: 24px;
   display: flex;

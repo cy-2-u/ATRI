@@ -23,11 +23,19 @@ export interface ImageConfig {
   model: string;
 }
 
+/** WebDAV 每日备份的目的地：地址/账号/密码，填齐即启用。 */
+export interface WebDavConfig {
+  url: string;
+  user: string;
+  password: string;
+}
+
 export interface Config {
   primary: Endpoint;
   fallback?: Endpoint;
   embedding?: EmbeddingConfig;
   image?: ImageConfig;
+  webdav?: WebDavConfig;
   heartbeat: boolean;
   /** 黏人度种子：只在第一次启动时种进她的自我，此后由相处演化（relation.ts）。 */
   closeness: number;
@@ -203,6 +211,30 @@ function imageConfig(value: unknown, previous: ImageConfig | undefined): ImageCo
   };
 }
 
+function webdavConfig(
+  value: unknown,
+  previous: WebDavConfig | undefined,
+): WebDavConfig | undefined {
+  if (value === null) return undefined;
+  const patch = record(value ?? {});
+  const merged = { url: '', user: '', password: '', ...(previous ?? {}), ...patch };
+  for (const key of ['url', 'user', 'password'] as const)
+    if (merged[key] !== undefined && merged[key] !== '' && typeof merged[key] !== 'string')
+      throw new TypeError(`webdav.${key} 必须是字符串`);
+  // 三项全空 = 没配备份；半空报人话，不让用户对着 HTTP 401 猜。
+  if (!String(merged.url).trim() && !String(merged.password).trim()) return undefined;
+  if (!String(merged.url).trim()) throw new TypeError('备份需要 WebDAV 地址');
+  if (!String(merged.password).trim()) throw new TypeError('备份需要 WebDAV 密码');
+  const url = new URL(String(merged.url).trim());
+  if (!['http:', 'https:'].includes(url.protocol))
+    throw new TypeError('WebDAV 地址必须是 HTTP 地址');
+  return {
+    url: url.toString().replace(/\/+$/, ''),
+    user: String(merged.user ?? '').trim(),
+    password: String(merged.password),
+  };
+}
+
 export class Settings {
   private value: Config;
 
@@ -255,6 +287,15 @@ export class Settings {
       ...(fallback ? { fallback } : {}),
       ...(embedding ? { embedding } : {}),
       ...(image ? { image } : {}),
+      ...(env.WEBDAV_URL && env.WEBDAV_PASSWORD
+        ? {
+            webdav: {
+              url: env.WEBDAV_URL,
+              user: env.WEBDAV_USER || '',
+              password: env.WEBDAV_PASSWORD,
+            },
+          }
+        : {}),
       heartbeat: false,
       closeness: 50,
       timezone: env.TZ || 'Asia/Shanghai',
@@ -286,6 +327,7 @@ export class Settings {
       'fallback',
       'embedding',
       'image',
+      'webdav',
       'heartbeat',
       'closeness',
       'timezone',
@@ -315,6 +357,8 @@ export class Settings {
         : embeddingConfig(patch.embedding, previous.embedding);
     const image =
       patch.image === undefined ? previous.image : imageConfig(patch.image, previous.image);
+    const webdav =
+      patch.webdav === undefined ? previous.webdav : webdavConfig(patch.webdav, previous.webdav);
     if (typeof patch.webSearchKey !== 'undefined' && typeof patch.webSearchKey !== 'string')
       throw new TypeError('搜索密钥必须是字符串');
     const webSearchKey =
@@ -346,6 +390,7 @@ export class Settings {
       ...(fallback ? { fallback } : {}),
       ...(embedding ? { embedding } : {}),
       ...(image ? { image } : {}),
+      ...(webdav ? { webdav } : {}),
       heartbeat,
       closeness: integer(mergedNumber(patch, previous, 'closeness'), 'closeness', 0, 100),
       timezone,
@@ -376,7 +421,7 @@ export class Settings {
       const { apiKey, ...safe } = value;
       return { ...safe, hasApiKey: Boolean(apiKey) };
     };
-    const { webSearchKey, embedding, image, ...rest } = this.get();
+    const { webSearchKey, embedding, image, webdav, ...rest } = this.get();
     return {
       ...rest,
       hasWebSearchKey: Boolean(webSearchKey),
@@ -389,6 +434,9 @@ export class Settings {
         : null,
       image: image
         ? { baseUrl: image.baseUrl, model: image.model, hasApiKey: Boolean(image.apiKey) }
+        : null,
+      webdav: webdav
+        ? { url: webdav.url, user: webdav.user, hasPassword: Boolean(webdav.password) }
         : null,
       primary: redact(this.value.primary),
       fallback: this.value.fallback ? redact(this.value.fallback) : null,

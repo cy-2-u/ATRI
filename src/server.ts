@@ -12,6 +12,7 @@ import { WechatBridge } from './wechat/bridge.js';
 import { Stickers } from './stickers.js';
 import { Sandbox } from './sandbox.js';
 import type { Wall } from './wall.js';
+import type { WebDavBackup } from './backup.js';
 
 export interface ServerOptions {
   password: string;
@@ -42,6 +43,8 @@ export interface ServerOptions {
   customStickersRoot: string;
   /** 留言墙（免登录公开页 /wall）：她 publish、他直接写。 */
   wall?: Wall;
+  /** WebDAV 每日备份：管理页透出状态与"立即备份"。 */
+  backup?: WebDavBackup;
   secureCookie?: boolean;
 }
 
@@ -96,7 +99,9 @@ export function createServer(options: ServerOptions) {
     if (
       request.url === '/healthz' ||
       request.url === '/api/login' ||
-      request.url.startsWith('/api/wall') ||
+      // 墙的放行必须精确到路径边界：startsWith 会把 /api/wall-admin 这类
+      // 未来同名前缀端点一并裸奔出去。
+      /^\/api\/wall(\/|$)/.test(request.url) ||
       !request.url.startsWith('/api/')
     )
       return;
@@ -181,18 +186,34 @@ export function createServer(options: ServerOptions) {
     reply.header('content-type', 'text/html; charset=utf-8');
     return wallHtml;
   });
-  app.get('/api/wall', async () => wallGet());
-  app.post('/api/wall', async (request, reply) => {
-    if (!options.wall) return reply.code(404).send({ error: '没有墙' });
+  const wallLimit = (
+    request: { ip: string },
+    reply: { code: (n: number) => { send: (v: unknown) => unknown } },
+    weight = 1,
+  ) => {
+    // 伪造 IP 只会让驱逐逻辑踢掉假桶，真桶计数不受影响（与 login 同款上限）。
     const now = Date.now();
     for (const [key, value] of wallRate) if (value.resetAt <= now) wallRate.delete(key);
+    if (wallRate.size >= 1024 && !wallRate.has(request.ip))
+      wallRate.delete(wallRate.keys().next().value!);
     const bucket = wallRate.get(request.ip) ?? { count: 0, resetAt: now + 60_000 };
-    if (bucket.count >= 5) return reply.code(429).send({ error: '留言太快了，歇一会' });
-    bucket.count++;
+    if (bucket.count + weight > 5) return reply.code(429).send({ error: '太快了，歇一会' });
+    bucket.count += weight;
     wallRate.set(request.ip, bucket);
+    return undefined;
+  };
+  app.get('/api/wall', async (request, reply) => {
+    // 读也要限速：列表是一次 SQL 查询，公开端点不白送。
+    if (wallLimit(request, reply, 0.2) !== undefined) return;
+    return wallGet();
+  });
+  app.post('/api/wall', async (request, reply) => {
+    if (!options.wall) return reply.code(404).send({ error: '没有墙' });
+    if (wallLimit(request, reply) !== undefined) return;
     const body = request.body as { text?: unknown } | undefined;
     if (typeof body?.text !== 'string' || !body.text.trim())
       throw new TypeError('留言必须是非空文本');
+    if (body.text.length > 500) throw new TypeError('留言最长 500 字');
     return options.wall.post('him', body.text);
   });
   app.get('/api/wall/images/:name', async (request, reply) => {
@@ -256,6 +277,18 @@ export function createServer(options: ServerOptions) {
   app.post('/api/test-llm', async () => options.channelProbe());
   app.post('/api/test-system', async () => options.systemProbe());
   app.post('/api/test-embedding', async () => options.embeddingProbe());
+
+  // WebDAV 备份：状态给管理页，"立即备份"绕过每日闸门当场跑一轮。
+  app.get('/api/backup', async () => ({
+    configured: options.backup?.configured ?? false,
+    ...(options.backup?.state ?? {}),
+  }));
+  app.post('/api/backup', async () => {
+    if (!options.backup) throw new TypeError('备份未装配');
+    if (!options.backup.configured) throw new TypeError('请先在系统设置里填写 WebDAV');
+    await options.backup.run(Date.now());
+    return options.backup.state;
+  });
 
   // 拉取模型列表（v5 回归）：主渠道必须是 OpenAI 兼容接口才有 /models。
   app.get('/api/models', async () => {

@@ -28,6 +28,7 @@ import { TavilyWeb } from './web.js';
 import { ImagePainter } from './image.js';
 import { createServer } from './server.js';
 import { Wall } from './wall.js';
+import { WebDavBackup } from './backup.js';
 
 /** 装配层：把内核、身体、感官与管理面接成一个可运行的进程。
  *  她的一切都在这里获得宿主：数据库、人格、心跳、夜与手眼。 */
@@ -81,6 +82,12 @@ const embeddings = new EmbeddingClient(() => ({
   apiKey: config().embedding?.apiKey ?? '',
   model: config().embedding?.model ?? '',
 }));
+// WebDAV 备份：配置现读（管理页填好即生效，不用重启），失败落状态。
+const backup = new WebDavBackup(
+  dataDir,
+  () => config().webdav,
+  () => config().timezone,
+);
 
 const onError = (error: unknown): void => {
   console.error('[atri]', error instanceof Error ? error.message : error);
@@ -351,6 +358,7 @@ const app = createServer({
   channelProbe,
   systemProbe,
   embeddingProbe,
+  backup,
   staticRoot: join(root, 'public'),
   assetsRoot: join(root, 'assets', 'stickers'),
   customStickersRoot: join(dataDir, 'custom'),
@@ -389,6 +397,14 @@ function startBackgroundMaintenance(): void {
   const sweep = setInterval(sweepMedia, 24 * 3_600_000);
   sweep.unref();
   sweepMedia();
+  // WebDAV 每日备份：凌晨 4 点（错开 3 点她的日记与 4 点+1h 的整理），
+  // 定时器 10 分钟一查，过点即补；同一日期只备一次。失败不中断进程，
+  // 状态在管理页可见，明天同一时间自动重试。
+  const backupTimer = setInterval(() => {
+    backup.tick(Date.now()).catch(onError);
+  }, 10 * 60_000);
+  backupTimer.unref();
+  backup.tick(Date.now()).catch(onError); // 启动即查：停机跨天的缺口当天补上
 }
 
 function sweepMedia(): void {

@@ -133,9 +133,38 @@ test('留言墙免登录：页面/列表/发布公开可达，管理 API 仍需�
     );
     // 管理 API 依然要登录（wall 放行不能漏成全局放行）。
     assert.equal((await env.app.inject('/api/status')).statusCode, 401);
+    // 放行前缀必须带路径边界：/api/wall-admin 这类同名前缀端点不能裸奔。
+    assert.equal((await env.app.inject('/api/wall-admin')).statusCode, 401);
+    assert.equal((await env.app.inject('/api/wallx')).statusCode, 401);
     // 图片名不存在的 404。
     assert.equal((await env.app.inject('/api/wall/images/nope.png')).statusCode, 404);
     assert.equal((await env.app.inject('/api/wall/images/..%2Fsecret')).statusCode, 404);
+    // 超长文本（>500 字）在服务端也被拒，不只靠前端 maxlength——
+    // 趁限速额度没打满先测（它同样计权）。
+    assert.equal(
+      (
+        await env.app.inject({
+          method: 'POST',
+          url: '/api/wall',
+          payload: { text: 'a'.repeat(600) },
+        })
+      ).statusCode,
+      400,
+    );
+    // 发布限速：额度打满后 429（读按 0.2 计权，不挤占写额度）。
+    for (let i = 0; i < 1; i++) {
+      const more = await env.app.inject({
+        method: 'POST',
+        url: '/api/wall',
+        payload: { text: `灌水 ${i}` },
+      });
+      assert.equal(more.statusCode, 200);
+    }
+    assert.equal(
+      (await env.app.inject({ method: 'POST', url: '/api/wall', payload: { text: '第 6 条' } }))
+        .statusCode,
+      429,
+    );
   } finally {
     await env.close();
   }
