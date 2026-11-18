@@ -7,11 +7,14 @@ import type { WebDavConfig } from './settings.js';
 /** WebDAV 每日备份：数据库快照（gzip）+ 自定义表情目录，PUT 到远端
  *  atri-backup/<日期戳>/，保留最近 KEEP 份，旧目录自动删除。
  *  客户端手写（fetch + Basic auth）：WebDAV 只有五个动词，不为此引依赖。
- *  失败不静默：状态与错误存进 lastBackup，管理页可见、可手动重试。 */
+ *  失败不静默：状态与错误存进 state，管理页可见、可手动重试。 */
 
 const KEEP = 30;
 const RETRIES = 2;
+const RETRY_DELAY_MS = 5000;
 const TIMEOUT_MS = 60_000;
+/** 失败后的重试冷却：地址填错时 10 分钟一查会变成 144 次失败/天。 */
+const FAIL_COOLDOWN_MS = 3_600_000;
 
 /** 时区感知的本地日期戳（en-CA = YYYY-MM-DD）：同一份日期只备一次。 */
 function dayKeyOf(now: number, timeZone: string): string {
@@ -21,6 +24,17 @@ function dayKeyOf(now: number, timeZone: string): string {
     month: '2-digit',
     day: '2-digit',
   }).format(now);
+}
+
+/** 本地时钟的小时数（0–23）：备份定在凌晨 4 点后第一个 tick。 */
+function hourOf(now: number, timeZone: string): number {
+  return Number(
+    new Intl.DateTimeFormat('en-GB', {
+      timeZone,
+      hour: '2-digit',
+      hourCycle: 'h23',
+    }).format(new Date(now)),
+  );
 }
 
 export interface BackupState {
@@ -34,6 +48,7 @@ export interface BackupState {
 export class WebDavBackup {
   #state: BackupState = {};
   #lastDay: string | undefined;
+  #lastFailAt = 0;
 
   constructor(
     private readonly dataDir: string,
@@ -51,11 +66,14 @@ export class WebDavBackup {
     return Boolean(cfg?.url && cfg.password);
   }
 
-  /** 每日闸门：同一本地日期只备一次。进程重启后首拍会补上当天缺的备份。 */
-  async tick(now: number, force = false): Promise<BackupState> {
+  /** 每日闸门：凌晨 4 点后、同一本地日期只备一次。进程重启后首拍会补上
+   *  当天缺的备份；失败进入冷却（一小时后下一个 tick 再试）。 */
+  async tick(now: number): Promise<BackupState> {
     if (!this.configured) return this.#state;
     const day = dayKeyOf(now, this.timeZone());
-    if (day === this.#lastDay && !force) return this.#state;
+    if (day === this.#lastDay) return this.#state;
+    if (hourOf(now, this.timeZone()) < 4) return this.#state;
+    if (now - this.#lastFailAt < FAIL_COOLDOWN_MS) return this.#state;
     try {
       await this.run(now, day);
       this.#lastDay = day;
@@ -63,13 +81,14 @@ export class WebDavBackup {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       // 失败保留旧的 at（历史备份还在远端），错误单独记账。
+      this.#lastFailAt = now;
       this.#state = { at: this.#state.at, error: message, failedAt: day };
       this.log(`[atri] backup failed: ${message}`);
     }
     return this.#state;
   }
 
-  /** 立即备份：管理页按钮调用，绕过每日闸门。 */
+  /** 立即备份：管理页按钮调用，绕过每日闸门；成功即记当日已备。 */
   async run(now: number, day = dayKeyOf(now, this.timeZone())): Promise<void> {
     const cfg = this.config();
     if (!cfg?.url || !cfg.password) throw new Error('WebDAV 未配置');
@@ -119,10 +138,22 @@ export class WebDavBackup {
           await this.request('PUT', `${base}custom/${name}`, auth, readFileSync(file));
       }
 
-    await this.prune(auth);
+    // 清理失败不影响备份成败：坚果云这类网盘不支持删非空目录，内容
+    // 已经安全上传，轮转留到下一天再说。
+    try {
+      await this.prune(auth);
+    } catch (error) {
+      this.log(`[atri] backup prune skipped: ${error instanceof Error ? error.message : error}`);
+    }
+    // 手动备份也算当日已备：状态更新 + 闸门记账（前端"备份完成"直接读它）。
+    this.#lastDay = day;
+    this.#state = { at: day };
     this.log(`[atri] backup ok: ${day}`);
   }
 
+  /** WebDAV 只认 2xx：3xx 不能当成功——fetch 对 PUT 的 301/302 会转成
+   *  GET 跟随，内容根本没上传却拿到 200；manual 模式把重定向如实交回
+   *  来当错误。body 必须消费（cancel 也算），否则连接池被占住。 */
   private async request(method: string, url: string, auth: string, body?: Buffer): Promise<void> {
     let lastError: Error = new Error('未知错误');
     for (let attempt = 0; attempt <= RETRIES; attempt++) {
@@ -131,15 +162,17 @@ export class WebDavBackup {
           method,
           headers: { authorization: auth },
           ...(body ? { body: new Uint8Array(body) } : {}),
+          redirect: 'manual',
           signal: AbortSignal.timeout(TIMEOUT_MS),
         });
-        if (res.status < 400) return;
+        await res.body?.cancel().catch(() => undefined);
+        if (res.status >= 200 && res.status < 300) return;
         lastError = new Error(`${method} ${new URL(url).pathname} → HTTP ${res.status}`);
-        if (res.status < 500) break; // 4xx 重试无意义
+        if (res.status < 500) break; // 4xx/3xx 重试无意义
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
       }
-      if (attempt < RETRIES) await new Promise((r) => setTimeout(r, 5000));
+      if (attempt < RETRIES) await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
     }
     throw lastError;
   }
@@ -161,6 +194,7 @@ export class WebDavBackup {
       .filter((day, i, all) => all.indexOf(day) === i)
       .sort();
     for (const old of days.slice(0, Math.max(0, days.length - KEEP)))
-      await this.request('DELETE', `${url}/atri-backup/${old}/`, auth);
+      // 单目录删除失败不中断轮转：有些网盘不删非空目录，逐个尽力而为。
+      await this.request('DELETE', `${url}/atri-backup/${old}/`, auth).catch(() => undefined);
   }
 }

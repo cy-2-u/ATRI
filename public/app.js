@@ -184,7 +184,10 @@ $('logout').onclick = async () => {
 // ---------- 导航 ----------
 
 for (const tab of document.querySelectorAll('#nav .nav-item')) {
-  tab.onclick = () => selectTab(tab.dataset.tab);
+  // 墙的入口是外链（无 data-tab）：新标签打开，本页不切视图。
+  tab.onclick = () => {
+    if (tab.dataset.tab) selectTab(tab.dataset.tab);
+  };
 }
 function selectTab(name) {
   currentTab = name;
@@ -891,6 +894,7 @@ function renderBackupState(state) {
 $('backup-now').onclick = () =>
   perform(async () => {
     const state = await api('/api/backup', { method: 'POST' });
+    if (state.ok === false) throw new Error(state.error || '备份失败');
     renderBackupState(state);
     show(`备份完成：atri-backup/${state.at}`);
   }, $('backup-now'));

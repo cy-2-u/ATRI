@@ -240,7 +240,11 @@ export class Sandbox {
     } finally {
       closeSync(fd);
     }
-    return { path: relative(this.root, target) || '.', bytes: Buffer.byteLength(content) };
+    // 与 writeBytes/readFile 同一契约：路径用正斜杠（不随宿主分隔符漂移）。
+    return {
+      path: relative(this.root, target).split(sep).join('/') || '.',
+      bytes: Buffer.byteLength(content),
+    };
   }
 
   /** 写二进制（画笔产物的落盘）：与 write 同一套守卫，只是不做文本解码。 */

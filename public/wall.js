@@ -8,9 +8,14 @@ const button = form.querySelector('button');
 const lightbox = document.getElementById('lightbox');
 const lightImg = lightbox.querySelector('img');
 
-lightbox.addEventListener('click', () => {
+const closeLightbox = () => {
   lightbox.hidden = true;
-  lightImg.src = '';
+  // 置空字符串会让 src 解析回文档 URL：浏览器拿 HTML 当图片解码报错。
+  lightImg.removeAttribute('src');
+};
+lightbox.addEventListener('click', closeLightbox);
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && !lightbox.hidden) closeLightbox();
 });
 
 const timeText = (at) => {

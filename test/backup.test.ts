@@ -107,9 +107,73 @@ test('WebDAV 备份：每日闸门同日只跑一次，失败留错误不丢旧 
     const again = await env.backup.tick(1_700_000_000_000 + 1_000);
     assert.equal(again.at, '2023-11-15');
     const putsAfterFirst = env.dav.calls.filter((c) => c.method === 'PUT').length;
-    // 强制重跑（管理页按钮走 run，闸门不拦）。
-    await env.backup.run(1_700_000_000_000 + 2_000);
+    // 手动重跑（管理页按钮走 run，闸门不拦），成功后状态即时更新——
+    // 全新实例手动备份也必须拿到 at，前端"备份完成：undefined"是 bug。
+    const fresh = new WebDavBackup(
+      env.dir,
+      () => ({ url: 'https://dav.test/dav', user: 'u', password: 'p' }),
+      () => 'Asia/Shanghai',
+      () => {},
+    );
+    await fresh.run(1_700_000_000_000 + 2_000);
+    assert.equal(fresh.state.at, '2023-11-15');
     assert.ok(env.dav.calls.filter((c) => c.method === 'PUT').length > putsAfterFirst);
+  } finally {
+    env.close();
+  }
+});
+
+test('WebDAV 闸门：凌晨 4 点前不备（tick 语义与注释一致）', async () => {
+  const env = backupFixture();
+  try {
+    // 1_700_000_000_000 = 上海 2023-11-15 06:13 → 会备；取当天凌晨 2 点不备。
+    const before4 = Date.parse('2023-11-15T02:00:00+08:00');
+    const state = await env.backup.tick(before4);
+    assert.equal(state.at, undefined);
+    assert.equal(env.dav.calls.filter((c) => c.method === 'PUT').length, 0);
+    // 4 点过第一个 tick 立刻补上。
+    const after4 = await env.backup.tick(Date.parse('2023-11-15T04:00:00+08:00') + 1);
+    assert.equal(after4.at, '2023-11-15');
+  } finally {
+    env.close();
+  }
+});
+
+test('WebDAV 备份：重定向不当成功（PUT 301 静默丢数据的回归钉）', async () => {
+  const env = backupFixture();
+  try {
+    // 假服务器对 PUT 回 301：旧实现把它当成功（res.status < 400），
+    // 内容根本没存进去却报 ok——这条断言钉死"只有 2xx 算数"。
+    const originalHandler = env.dav.handler;
+    env.dav.handler = (method, url, body) => {
+      if (method === 'PUT') return { status: 301 };
+      return originalHandler(method, url, body);
+    };
+    await assert.rejects(() => env.backup.run(1_700_000_000_000), /HTTP 301/);
+    assert.ok(!env.dav.objects.has('dav/atri-backup/2023-11-15/atri.db.gz'));
+    // run() 只做动作不记状态：诊断经 POST 响应的 {ok:false,error} 当场返回。
+  } finally {
+    env.close();
+  }
+});
+
+test('WebDAV 备份：清理失败不炸主流程（坚果云不删非空目录的场景）', async () => {
+  const env = backupFixture();
+  try {
+    // 塞满 31 份历史目录逼出 prune 的 DELETE，再把 DELETE 一律 403：
+    // 备份主流程必须照样成功（坚果云这类网盘删非空目录就是 403）。
+    for (let d = 1; d <= 31; d++) {
+      const day = `2023-10-${String(d).padStart(2, '0')}`;
+      env.dav.objects.set(`dav/atri-backup/${day}/atri.db.gz`, Buffer.alloc(0));
+    }
+    const originalHandler = env.dav.handler;
+    env.dav.handler = (method, url, body) => {
+      if (method === 'DELETE') return { status: 403 };
+      return originalHandler(method, url, body);
+    };
+    await env.backup.run(1_700_000_000_000);
+    assert.ok(env.dav.objects.has('dav/atri-backup/2023-11-15/atri.db.gz'));
+    assert.equal(env.backup.state.at, '2023-11-15');
   } finally {
     env.close();
   }

@@ -289,7 +289,7 @@ export function lifeTools(
       definition: {
         name: 'update_topic_notes',
         description:
-          '重写"你们最近在聊什么"的话题笔记（滚动摘要，三百字内）。只在夜里整理时可用；资料里有 notesTask 才值得调用。',
+          '重写"你们最近在聊什么"的话题笔记（滚动摘要，六百字内）。只在夜里整理时可用；资料里有 notesTask 才值得调用。',
         parameters: {
           type: 'object',
           properties: { content: { type: 'string' } },

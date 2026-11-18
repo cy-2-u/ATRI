@@ -281,6 +281,7 @@ export function createServer(options: ServerOptions) {
   app.post('/api/test-embedding', async () => options.embeddingProbe());
 
   // WebDAV 备份：状态给管理页，"立即备份"绕过每日闸门当场跑一轮。
+  // 失败随 200 返回 {ok:false,error}——真实诊断就是产出，不走 500 兜底。
   app.get('/api/backup', async () => ({
     configured: options.backup?.configured ?? false,
     ...(options.backup?.state ?? {}),
@@ -288,8 +289,12 @@ export function createServer(options: ServerOptions) {
   app.post('/api/backup', async () => {
     if (!options.backup) throw new TypeError('备份未装配');
     if (!options.backup.configured) throw new TypeError('请先在系统设置里填写 WebDAV');
-    await options.backup.run(Date.now());
-    return options.backup.state;
+    try {
+      await options.backup.run(Date.now());
+      return { ok: true, ...options.backup.state };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
   });
 
   // 拉取模型列表（v5 回归）：主渠道必须是 OpenAI 兼容接口才有 /models。

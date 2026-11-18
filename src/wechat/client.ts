@@ -268,6 +268,9 @@ export class WechatClient {
           ticket: reply.typing_ticket,
           expiresAt: Date.now() + TYPING_TICKET_TTL_MS,
         };
+        // 重取成功后复位：20 小时后缓存过期还要再取，不复位指示会
+        // 永久失效（进程内只剩一次机会）。
+        this.refreshedTicket = false;
         return this.typingTicket.ticket;
       }
     } catch {
