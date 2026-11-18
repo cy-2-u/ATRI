@@ -184,6 +184,12 @@ button:disabled {
   cursor: zoom-out;
 }
 
+/* display:flex 的特异性会压过 [hidden] 的 UA display:none——没有这条，
+   灯箱在页面加载时就以"破图+提示"的形态常驻全屏（真机实锤）。 */
+#lightbox[hidden] {
+  display: none;
+}
+
 #lightbox img {
   max-width: 94vw;
   max-height: 82vh;
