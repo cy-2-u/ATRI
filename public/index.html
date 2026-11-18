@@ -427,30 +427,34 @@
                 </div>
               </div>
               <div class="card">
-                <h2>WebDAV 每日备份</h2>
-                <div class="grid-2">
-                  <label class="field"
-                    ><span>地址</span
-                    ><input
-                      id="webdav-url"
-                      type="text"
-                      placeholder="https://dav.jianguoyun.com/dav/"
-                  /></label>
-                  <label class="field"
-                    ><span>账号</span><input id="webdav-user" type="text" autocomplete="off"
-                  /></label>
-                </div>
-                <label class="field">
-                  <span>密码<span id="webdav-password-state" class="hint"></span></span>
-                  <input id="webdav-password" type="password" autocomplete="new-password" />
-                </label>
-                <p class="hint">
-                  填齐即启用：每天凌晨 4 点把数据库与自定义表情备份到 <b>atri-backup/</b>
-                  目录，自动保留最近 30 份。清空保存即关闭备份。
-                </p>
-                <div class="actions">
-                  <button class="btn ghost" id="backup-now" type="button">立即备份</button>
-                  <p id="backup-state" class="hint"></p>
+                <h2>每日备份</h2>
+                <label class="field field-check"
+                  ><input id="webdav-on" type="checkbox" class="check" /><span
+                    >备份到 WebDAV（每天凌晨 4 点）</span
+                  ></label
+                >
+                <div id="webdav-fields">
+                  <div class="grid-2">
+                    <label class="field"
+                      ><span>地址</span
+                      ><input
+                        id="webdav-url"
+                        type="text"
+                        placeholder="https://dav.jianguoyun.com/dav/"
+                    /></label>
+                    <label class="field"
+                      ><span>账号</span><input id="webdav-user" type="text" autocomplete="off"
+                    /></label>
+                  </div>
+                  <label class="field">
+                    <span>密码<span id="webdav-password-state" class="hint"></span></span>
+                    <input id="webdav-password" type="password" autocomplete="new-password" />
+                  </label>
+                  <p class="hint">自动保留最近 30 份，超出自动清理。坚果云、Alist、群晖等均可。</p>
+                  <div class="actions">
+                    <button class="btn ghost" id="backup-now" type="button">立即备份</button>
+                    <p id="backup-state" class="hint"></p>
+                  </div>
                 </div>
               </div>
             </div>

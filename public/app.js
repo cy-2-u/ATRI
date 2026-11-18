@@ -731,6 +731,8 @@ function fillSystemForm(config) {
   $('image-key-state').textContent = image?.hasApiKey ? '（已保存）' : '（未设置）';
   $('image-key').placeholder = image?.hasApiKey ? '••••••••' : '';
   const webdav = config.webdav;
+  $('webdav-on').checked = Boolean(webdav);
+  $('webdav-fields').hidden = !webdav;
   $('webdav-url').value = webdav?.url ?? '';
   $('webdav-user').value = webdav?.user ?? '';
   $('webdav-password').value = '';
@@ -750,6 +752,9 @@ $('embedding-on').onchange = () => {
 };
 $('image-on').onchange = () => {
   $('image-fields').hidden = !$('image-on').checked;
+};
+$('webdav-on').onchange = () => {
+  $('webdav-fields').hidden = !$('webdav-on').checked;
 };
 
 $('save-system').onclick = () =>
@@ -822,17 +827,19 @@ $('save-system').onclick = () =>
         ...($('image-key').value.trim() ? { apiKey: $('image-key').value.trim() } : {}),
       };
     }
-    // WebDAV：三项全空 = 关闭备份；半空沿用旧值（密码留空保持已存的）。
-    const webdavUrl = $('webdav-url').value.trim();
-    const webdavUser = $('webdav-user').value.trim();
-    const webdavPassword = $('webdav-password').value.trim();
-    if (!webdavUrl && !webdavPassword) body.webdav = null;
-    else
+    // WebDAV：开关关 = 关闭备份；开着沿用旧值（密码留空保持已存的）。
+    if (!$('webdav-on').checked) body.webdav = null;
+    else {
+      const webdavUrl = $('webdav-url').value.trim();
+      if (!webdavUrl && !configCache?.webdav?.url) throw new Error('启用备份需要填写 WebDAV 地址');
       body.webdav = {
         url: webdavUrl || configCache?.webdav?.url || '',
-        user: webdavUser || configCache?.webdav?.user || '',
-        ...(webdavPassword ? { password: webdavPassword } : {}),
+        user: $('webdav-user').value.trim() || configCache?.webdav?.user || '',
+        ...($('webdav-password').value.trim()
+          ? { password: $('webdav-password').value.trim() }
+          : {}),
       };
+    }
     await api('/api/config', { method: 'PUT', body });
     configCache = null;
     // 保存后的重填与刚提交的值一致（协议下拉会回到"自动"），且解禁下一次
