@@ -302,6 +302,11 @@ svg {
   cursor: pointer;
 }
 
+/* 墙的入口是外链（新标签打开），a 的默认下划线/颜色由这里压掉。 */
+a.nav-item {
+  text-decoration: none;
+}
+
 .nav-item svg {
   width: 22px;
   height: 22px;

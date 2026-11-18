@@ -176,9 +176,12 @@ export function createServer(options: ServerOptions) {
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>留言墙</title>
 <link rel="stylesheet" href="/wall.css"></head>
-<body><main id="app"><h1>我们的留言墙</h1><ol id="notes" aria-live="polite"></ol>
-<form id="post"><textarea id="text" maxlength="500" rows="3" placeholder="写点什么贴上墙…" required></textarea>
+<body><main id="app">
+<header class="head"><h1>我们的留言墙</h1><p class="sub">随手留一句话，有画就挂出来。</p></header>
+<ol id="notes" aria-live="polite"></ol>
+<form id="post"><textarea id="text" maxlength="500" rows="2" placeholder="写点什么贴上墙…" required></textarea>
 <button type="submit">贴上墙</button></form></main>
+<div id="lightbox" hidden><img alt="墙上的图片" src=""><span class="tip">长按图片可保存 · 点任意处关闭</span></div>
 <script src="/wall.js"></script></body></html>`;
   const wallGet = async () => options.wall?.list() ?? [];
   app.get('/wall', async (_request, reply) => {

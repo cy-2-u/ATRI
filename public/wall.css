@@ -1,4 +1,5 @@
-/* 留言墙 · 与控制台同一套奶油色视觉（浅色主题） */
+/* 留言墙 · 与控制台同一套奶油色视觉（浅色主题）。
+ * 形态是聊天：留言流在上，输入条固定底部（毛玻璃）；点图页内灯箱。 */
 
 * {
   box-sizing: border-box;
@@ -33,15 +34,30 @@ body {
 main {
   max-width: 640px;
   margin: 0 auto;
-  padding: 24px 16px 48px;
+  padding: 20px 16px calc(96px + env(safe-area-inset-bottom));
+}
+
+/* ---------- 头部 ---------- */
+
+.head {
+  text-align: center;
+  margin-bottom: 18px;
 }
 
 h1 {
   font-size: 22px;
-  text-align: center;
-  margin: 8px 0 20px;
+  margin: 8px 0 4px;
   color: var(--accent-ink);
+  letter-spacing: 1px;
 }
+
+.sub {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+/* ---------- 留言流 ---------- */
 
 #notes {
   list-style: none;
@@ -59,6 +75,7 @@ h1 {
   border: 1px solid;
   word-break: break-word;
   white-space: pre-wrap;
+  box-shadow: 0 1px 3px rgb(43 40 35 / 0.04);
 }
 
 #notes li.her {
@@ -97,27 +114,46 @@ h1 {
   margin-top: 2px;
 }
 
+.empty {
+  text-align: center;
+  color: var(--text-dim);
+  padding: 48px 0;
+}
+
+/* ---------- 底部输入条：毛玻璃固定，留言流不被顶走 ---------- */
+
 #post {
-  margin-top: 24px;
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 10;
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
+  background: color-mix(in srgb, var(--bg) 82%, transparent);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-top: 1px solid var(--border);
 }
 
 #text {
   width: 100%;
-  padding: 12px;
+  padding: 10px 12px;
   border: 1px solid var(--border);
   border-radius: 12px;
   background: var(--surface);
   color: var(--text);
   font: inherit;
-  resize: vertical;
+  resize: none;
 }
 
 button {
   align-self: flex-end;
-  padding: 9px 22px;
+  padding: 8px 22px;
   border: 0;
   border-radius: 999px;
   background: var(--accent);
@@ -132,8 +168,30 @@ button:disabled {
   cursor: wait;
 }
 
-.empty {
-  text-align: center;
-  color: var(--text-dim);
-  padding: 32px 0;
+/* ---------- 灯箱：点图页内放大，长按即存 ---------- */
+
+#lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: rgb(20 18 16 / 0.88);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 16px;
+  cursor: zoom-out;
+}
+
+#lightbox img {
+  max-width: 94vw;
+  max-height: 82vh;
+  object-fit: contain;
+  border-radius: 10px;
+}
+
+#lightbox .tip {
+  font-size: 12px;
+  color: rgb(255 255 255 / 0.75);
 }

@@ -1,9 +1,17 @@
-/* 留言墙 · 拉取渲染与提交；4 秒轮询跟控制台同一节奏。 */
+/* 留言墙 · 拉取渲染与提交；4 秒轮询跟控制台同一节奏。
+ * 图片点击走页内灯箱（不跳新标签），灯箱里长按即可保存。 */
 
 const list = document.getElementById('notes');
 const form = document.getElementById('post');
 const box = document.getElementById('text');
 const button = form.querySelector('button');
+const lightbox = document.getElementById('lightbox');
+const lightImg = lightbox.querySelector('img');
+
+lightbox.addEventListener('click', () => {
+  lightbox.hidden = true;
+  lightImg.src = '';
+});
 
 const timeText = (at) => {
   const date = new Date(at);
@@ -31,11 +39,14 @@ function render(notes) {
       img.src = `/api/wall/images/${encodeURIComponent(note.image)}`;
       img.alt = '墙上的图片';
       img.loading = 'lazy';
-      img.onclick = () => window.open(img.src, '_blank');
+      img.onclick = () => {
+        lightImg.src = img.src;
+        lightbox.hidden = false;
+      };
       item.append(img);
       const saveHint = document.createElement('span');
       saveHint.className = 'save-hint';
-      saveHint.textContent = '长按（或右键）图片可保存';
+      saveHint.textContent = '点开可存图';
       item.append(saveHint);
     }
     const time = document.createElement('time');
