@@ -6,9 +6,14 @@ import { ModelRouter } from '../src/model/router.js';
 import { Mind } from '../src/domain/mind.js';
 import { Runtime } from '../src/runtime/runtime.js';
 import { createServer } from '../src/server.js';
+import { Wall } from '../src/wall.js';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 async function fixture() {
   const journal = new Journal(':memory:');
+  const wallDir = mkdtempSync(join(tmpdir(), 'atri-server-wall-'));
   const settings = new Settings(journal, { LLM_API_KEY: 'primary-secret' });
   const router = new ModelRouter(
     () => settings.routes(),
@@ -47,6 +52,7 @@ async function fixture() {
     staticRoot: '.',
     assetsRoot: '.',
     customStickersRoot: '.',
+    wall: new Wall(journal.db, wallDir),
   });
   await app.ready();
   const login = await app.inject({
@@ -63,6 +69,7 @@ async function fixture() {
       await app.close();
       await runtime.stop();
       journal.close();
+      rmSync(wallDir, { recursive: true, force: true });
     },
   };
 }
@@ -95,6 +102,40 @@ test('管理 API 鉴权、同源保护和主备密钥脱敏', async () => {
       payload: { concurrency: 0 },
     });
     assert.equal(invalid.statusCode, 400);
+  } finally {
+    await env.close();
+  }
+});
+
+test('留言墙免登录：页面/列表/发布公开可达，管理 API 仍需登录', async () => {
+  const env = await fixture();
+  try {
+    const page = await env.app.inject('/wall');
+    assert.equal(page.statusCode, 200);
+    assert.ok(page.body.includes('wall.css'));
+    // 未登录直接发布与读取。
+    const posted = await env.app.inject({
+      method: 'POST',
+      url: '/api/wall',
+      payload: { text: '验收官第一条留言' },
+    });
+    assert.equal(posted.statusCode, 200);
+    assert.equal(posted.json().from, 'him');
+    const list = await env.app.inject('/api/wall');
+    assert.equal(list.statusCode, 200);
+    assert.equal(list.json().length, 1);
+    assert.equal(list.json()[0]!.text, '验收官第一条留言');
+    // 空文本与超长拒。
+    assert.equal(
+      (await env.app.inject({ method: 'POST', url: '/api/wall', payload: { text: '  ' } }))
+        .statusCode,
+      400,
+    );
+    // 管理 API 依然要登录（wall 放行不能漏成全局放行）。
+    assert.equal((await env.app.inject('/api/status')).statusCode, 401);
+    // 图片名不存在的 404。
+    assert.equal((await env.app.inject('/api/wall/images/nope.png')).statusCode, 404);
+    assert.equal((await env.app.inject('/api/wall/images/..%2Fsecret')).statusCode, 404);
   } finally {
     await env.close();
   }

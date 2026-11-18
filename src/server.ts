@@ -96,6 +96,7 @@ export function createServer(options: ServerOptions) {
     if (
       request.url === '/healthz' ||
       request.url === '/api/login' ||
+      request.url.startsWith('/api/wall') ||
       !request.url.startsWith('/api/')
     )
       return;
