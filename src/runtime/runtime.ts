@@ -110,9 +110,10 @@ export class Runtime {
   private async scan(): Promise<number | undefined> {
     if (this.stopped) return;
     const jobs = this.journal.jobs();
-    const due = jobs.filter((job) => job.due_at <= Date.now());
-    console.error(`[probe] scan jobs=${jobs.length} due=${due.length}`);
-    const peers = new Set([...this.journal.deliveryPeers(), ...due.map((job) => job.peer)]);
+    const peers = new Set([
+      ...this.journal.deliveryPeers(),
+      ...jobs.filter((job) => job.due_at <= Date.now()).map((job) => job.peer),
+    ]);
     for (const peer of peers) {
       if (this.active.size >= Math.max(1, numeric(this.options.concurrency))) break;
       if (this.active.has(peer)) continue;
@@ -123,7 +124,6 @@ export class Runtime {
         continue;
       const controller = new AbortController();
       // 微任务启动，确保同步完成路径也能在 finally 前注册 active。
-      console.error(`[probe] scan spawn work peer=${peer}`);
       const promise = Promise.resolve()
         .then(() => this.work(peer, controller.signal))
         .catch(this.options.onError)
@@ -194,7 +194,6 @@ export class Runtime {
 
   private async work(peer: string, signal: AbortSignal): Promise<void> {
     const envelopes = this.journal.blocked(peer) ? [] : this.journal.pending(peer);
-    console.error(`[probe] work enter peer=${peer.slice(-8)} pending=${envelopes.length}`);
     // "输入中"的生命周期 = 从她开始想到气泡说出口：思考（含主动拍）一
     // 开始就显示——想的时候就是在打字（v3 语义）；气泡到达前清除；多气
     // 泡之间重新显示并按长度停顿。夜里独处的 diary/tidy 不显示。
@@ -239,10 +238,8 @@ export class Runtime {
     }
     if (signal.aborted || this.stopped) return;
     const job = this.journal.jobs().find((job) => job.peer === peer && job.due_at <= Date.now());
-    console.error(`[probe] work job=${job?.kind ?? 'none'}`);
     if (!job) return;
     const turn = this.journal.claim(peer, job.kind);
-    console.error(`[probe] claimed=${turn?.kind ?? 'NONE'}`);
     if (!turn) return;
     const showsTyping = turn.kind !== 'diary' && turn.kind !== 'tidy';
     // true 也必须等待：火后不管的 true 走网络慢了会迟到——false 清完指示

@@ -42,30 +42,27 @@ export class Wakeup {
     if (this.stopped || at >= this.dueAt) return;
     if (this.timer !== undefined) this.time.clear(this.timer);
     this.dueAt = at;
-    const delay = Math.max(0, Math.min(2_147_483_647, at - this.time.now()));
-    console.error(`[probe] arm due=${new Date(at).toISOString()} delay=${delay}ms`);
-    this.timer = this.time.set(() => {
-      console.error('[probe] timer fired');
-      this.timer = undefined;
-      this.dueAt = Infinity;
-      if (this.running) {
-        this.dirty = true;
-        return;
-      }
-      this.running = this.run().finally(() => {
-        console.error('[probe] run settled');
-        this.running = undefined;
-      });
-    }, delay);
+    this.timer = this.time.set(
+      () => {
+        this.timer = undefined;
+        this.dueAt = Infinity;
+        if (this.running) {
+          this.dirty = true;
+          return;
+        }
+        this.running = this.run().finally(() => {
+          this.running = undefined;
+        });
+      },
+      Math.max(0, Math.min(2_147_483_647, at - this.time.now())),
+    );
   }
 
   private async run(): Promise<void> {
     do {
       this.dirty = false;
       try {
-        console.error('[probe] run begin');
         const next = await this.work();
-        console.error('[probe] run next=', next);
         if (next !== undefined) this.arm(Math.max(this.time.now() + 1, next));
       } catch (error) {
         this.onError(error);
