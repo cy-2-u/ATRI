@@ -178,8 +178,7 @@ export function createServer(options: ServerOptions) {
 <link rel="stylesheet" href="/wall.css"></head>
 <body><main id="app"><h1>我们的留言墙</h1><ol id="notes" aria-live="polite"></ol>
 <form id="post"><textarea id="text" maxlength="500" rows="3" placeholder="写点什么贴上墙…" required></textarea>
-<button type="submit">贴上墙</button></form>
-<p class="foot">这面墙是公开的——链接给到谁，谁就能看。</p></main>
+<button type="submit">贴上墙</button></form></main>
 <script src="/wall.js"></script></body></html>`;
   const wallGet = async () => options.wall?.list() ?? [];
   app.get('/wall', async (_request, reply) => {

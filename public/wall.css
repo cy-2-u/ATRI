@@ -132,13 +132,6 @@ button:disabled {
   cursor: wait;
 }
 
-.foot {
-  margin-top: 28px;
-  text-align: center;
-  font-size: 12px;
-  color: var(--text-dim);
-}
-
 .empty {
   text-align: center;
   color: var(--text-dim);
