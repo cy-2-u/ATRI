@@ -34,7 +34,9 @@ body {
 main {
   max-width: 640px;
   margin: 0 auto;
-  padding: 20px 16px calc(96px + env(safe-area-inset-bottom));
+  /* 底部避让要按输入条的真实高度算：textarea(2行)+按钮+内边距 ≈ 135px，
+     96px 时最后一条留言会被毛玻璃条压住（真机实锤）。 */
+  padding: 20px 16px calc(150px + env(safe-area-inset-bottom));
 }
 
 /* ---------- 头部 ---------- */
@@ -128,9 +130,8 @@ h1 {
   right: 0;
   bottom: 0;
   z-index: 10;
-  max-width: 640px;
   margin: 0 auto;
-  padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
+  padding: 10px calc(max(16px, (100% - 608px) / 2)) calc(10px + env(safe-area-inset-bottom));
   display: flex;
   flex-direction: column;
   gap: 8px;
