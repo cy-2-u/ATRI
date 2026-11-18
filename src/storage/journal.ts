@@ -134,6 +134,10 @@ export function createSchema(sql: DatabaseSync): void {
         input INTEGER NOT NULL, output INTEGER NOT NULL, cached INTEGER NOT NULL, at INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS kernel_usage_at ON kernel_usage(at);
+      CREATE TABLE IF NOT EXISTS kernel_wall (
+        id TEXT PRIMARY KEY, author TEXT NOT NULL, text TEXT NOT NULL,
+        image TEXT, created_at INTEGER NOT NULL
+      );
     `);
   // 早期库没有 last_error 列：幂等补齐（CREATE TABLE 对已有库不生效）。
   const outboxCols = sql.prepare('PRAGMA table_info(kernel_outbox)').all() as { name: string }[];
@@ -145,6 +149,11 @@ export function createSchema(sql: DatabaseSync): void {
 export class Journal {
   private readonly sql: DatabaseSync;
   private readonly statements = new Map<string, StatementSync>();
+
+  /** 裸连接（kernel_wall 等独立存储模块共用同一库文件）。 */
+  get db(): DatabaseSync {
+    return this.sql;
+  }
 
   constructor(
     path: string,

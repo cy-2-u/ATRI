@@ -13,6 +13,7 @@ import {
 } from './rhythm.js';
 import type { EmbeddingClient } from './embeddings.js';
 import type { Stickers } from '../stickers.js';
+import type { Wall } from '../wall.js';
 
 /** 生活材料：她每一拍/每一轮真实看到的东西。全部由数据渲染——材料是
  *  "资料"而非指令，说不说、说什么，永远由模型在这些资料上自己决定。 */
@@ -348,6 +349,8 @@ export interface MaterialDeps {
    *  唤醒度数学，标注的是真实发生的时间差，不是配置值的复读）。 */
   sleepStart?(): number;
   sleepEnd?(): number;
+  /** 留言墙（开着才有这项）：他直接写在墙上的话浮进她的材料。 */
+  wall?: Wall;
   now(): number;
 }
 
@@ -756,6 +759,15 @@ export class LifeMaterial {
       // 没送到的气泡带上为什么：她看到事实自己决定重发还是改口——
       // 对着无声的 failed 猜（"是不是太小了"）才有了今天这种死循环。
       ...(this.undelivered(peer).length ? { undelivered: this.undelivered(peer) } : {}),
+      // 他在墙上的近一天留言（她自己发的不再回灌）：墙是他也会主动
+      // 说话的地方，看到了才有回应，闭环才成立。
+      ...(() => {
+        const his = this.deps.wall
+          ?.list()
+          .filter((note) => note.from === 'him' && note.at >= now - 24 * 3_600_000)
+          .map((note) => ({ text: note.text, image: note.image, at: clock(note.at, timeZone) }));
+        return his?.length ? { wallNotes: his } : {};
+      })(),
       waitingDrafts: journal.pending(peer),
     };
     return { material };

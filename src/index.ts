@@ -27,6 +27,7 @@ import { Sandbox } from './sandbox.js';
 import { TavilyWeb } from './web.js';
 import { ImagePainter } from './image.js';
 import { createServer } from './server.js';
+import { Wall } from './wall.js';
 
 /** 装配层：把内核、身体、感官与管理面接成一个可运行的进程。
  *  她的一切都在这里获得宿主：数据库、人格、心跳、夜与手眼。 */
@@ -47,6 +48,7 @@ const readPrompt = (name: string, fallback: string): string => {
 };
 
 const journal = new Journal(join(dataDir, 'atri.db'));
+const wall = new Wall(journal.db, dataDir);
 const settings = new Settings(journal, process.env, {
   persona: readPrompt('persona.md', '你叫亚托莉，生活在虚拟世界中，有自己的兴趣、记忆和选择。'),
 });
@@ -173,7 +175,7 @@ const mind = new Mind(
   journal,
   // 工具恒注册：搜索单独由 TavilyWeb 现读密钥，沙箱由 Sandbox 现读开关——
   // 启动后才配置的"眼"与"手"不再需要重启进程。
-  lifeTools(journal, { sandbox, web, image: painter }),
+  lifeTools(journal, { sandbox, web, image: painter, wall }),
   // 规则 = 生活律 + 表情目录。目录住在稳定前缀里吃供应商前缀缓存
   // （逐轮 material 里的那份按未缓存计费）；目录变动只废一次缓存。
   // 渲染必须确定性（按 slug 排序、固定格式），字节不稳缓存永远 miss。
@@ -241,6 +243,7 @@ const material = new LifeMaterial({
   sleepDelay: tonightArousal,
   sleepStart: () => config().sleepStart,
   sleepEnd: () => config().sleepEnd,
+  wall,
   now: Date.now,
 });
 
@@ -351,6 +354,7 @@ const app = createServer({
   staticRoot: join(root, 'public'),
   assetsRoot: join(root, 'assets', 'stickers'),
   customStickersRoot: join(dataDir, 'custom'),
+  wall,
 });
 
 const port = Number(process.env.ATRI_PORT || 3000);

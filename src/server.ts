@@ -11,6 +11,7 @@ import { Runtime } from './runtime/runtime.js';
 import { WechatBridge } from './wechat/bridge.js';
 import { Stickers } from './stickers.js';
 import { Sandbox } from './sandbox.js';
+import type { Wall } from './wall.js';
 
 export interface ServerOptions {
   password: string;
@@ -39,6 +40,8 @@ export interface ServerOptions {
   assetsRoot: string;
   /** 自定义表情文件的根（dataDir/custom）：管理页预览用。 */
   customStickersRoot: string;
+  /** 留言墙（免登录公开页 /wall）：她 publish、他直接写。 */
+  wall?: Wall;
   secureCookie?: boolean;
 }
 
@@ -159,6 +162,48 @@ export function createServer(options: ServerOptions) {
   });
 
   app.get('/healthz', async () => ({ ok: true }));
+
+  // ---------- 留言墙：免登录公开页（她 publish / 他直接写） ----------
+  const wallRate = new Map<string, { count: number; resetAt: number }>();
+  const wallHtml = `<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>留言墙</title>
+<link rel="stylesheet" href="/wall.css"></head>
+<body><main id="app"><h1>我们的留言墙</h1><ol id="notes" aria-live="polite"></ol>
+<form id="post"><textarea id="text" maxlength="500" rows="3" placeholder="写点什么贴上墙…" required></textarea>
+<button type="submit">贴上墙</button></form>
+<p class="foot">这面墙是公开的——链接给到谁，谁就能看。</p></main>
+<script src="/wall.js"></script></body></html>`;
+  const wallGet = async () => options.wall?.list() ?? [];
+  app.get('/wall', async (_request, reply) => {
+    reply.header('content-type', 'text/html; charset=utf-8');
+    return wallHtml;
+  });
+  app.get('/api/wall', async () => wallGet());
+  app.post('/api/wall', async (request, reply) => {
+    if (!options.wall) return reply.code(404).send({ error: '没有墙' });
+    const now = Date.now();
+    for (const [key, value] of wallRate) if (value.resetAt <= now) wallRate.delete(key);
+    const bucket = wallRate.get(request.ip) ?? { count: 0, resetAt: now + 60_000 };
+    if (bucket.count >= 5) return reply.code(429).send({ error: '留言太快了，歇一会' });
+    bucket.count++;
+    wallRate.set(request.ip, bucket);
+    const body = request.body as { text?: unknown } | undefined;
+    if (typeof body?.text !== 'string' || !body.text.trim())
+      throw new TypeError('留言必须是非空文本');
+    return options.wall.post('him', body.text);
+  });
+  app.get('/api/wall/images/:name', async (request, reply) => {
+    const name = String((request.params as { name: string }).name);
+    const file = options.wall?.imageFile(name);
+    if (!file) return reply.code(404).send({ error: '不存在' });
+    return reply
+      .header('content-type', 'image/png')
+      .header('cache-control', 'public, max-age=86400')
+      .send(readFileSync(file));
+  });
+
   app.post('/api/login', async (request, reply) => {
     const now = Date.now();
     for (const [token, expiry] of sessions) if (expiry <= now) sessions.delete(token);

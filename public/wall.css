@@ -1,0 +1,139 @@
+/* 留言墙 · 与控制台同一套奶油色视觉（浅色主题） */
+
+* {
+  box-sizing: border-box;
+}
+
+:root {
+  color-scheme: light;
+  --bg: #f5f3ef;
+  --surface: #ffffff;
+  --border: #e2dcd2;
+  --text: #2b2823;
+  --text-dim: #6e6960;
+  --accent: #e8703c;
+  --accent-ink: #b04d1b;
+  --her-bubble: #fdeee3;
+  --her-border: #f3dcc9;
+  --mine-bubble: #e9ebef;
+  --mine-border: #d8dce4;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font:
+    15px/1.6 'PingFang SC',
+    'Microsoft YaHei',
+    system-ui,
+    sans-serif;
+}
+
+main {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 24px 16px 48px;
+}
+
+h1 {
+  font-size: 22px;
+  text-align: center;
+  margin: 8px 0 20px;
+  color: var(--accent-ink);
+}
+
+#notes {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+#notes li {
+  max-width: 82%;
+  padding: 10px 14px;
+  border-radius: 14px;
+  border: 1px solid;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+#notes li.her {
+  align-self: flex-start;
+  background: var(--her-bubble);
+  border-color: var(--her-border);
+  border-bottom-left-radius: 4px;
+}
+
+#notes li.him {
+  align-self: flex-end;
+  background: var(--mine-bubble);
+  border-color: var(--mine-border);
+  border-bottom-right-radius: 4px;
+}
+
+#notes img {
+  max-width: 100%;
+  border-radius: 10px;
+  display: block;
+  margin-top: 8px;
+  cursor: zoom-in;
+}
+
+#notes time {
+  display: block;
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 4px;
+}
+
+#post {
+  margin-top: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+#text {
+  width: 100%;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  resize: vertical;
+}
+
+button {
+  align-self: flex-end;
+  padding: 9px 22px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+
+.foot {
+  margin-top: 28px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.empty {
+  text-align: center;
+  color: var(--text-dim);
+  padding: 32px 0;
+}

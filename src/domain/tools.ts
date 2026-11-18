@@ -4,6 +4,7 @@ import type { ToolHandler } from './mind.js';
 import type { Sandbox } from '../sandbox.js';
 import type { WebTools } from '../web.js';
 import type { ImagePainter } from '../image.js';
+import type { Wall } from '../wall.js';
 
 function text(value: unknown, name: string): string {
   if (typeof value !== 'string' || !value.trim()) throw new TypeError(`${name} 必须是非空文本`);
@@ -20,7 +21,7 @@ function ids(value: unknown): string[] {
  *  全部工具注册进同一个 Mind，按 turn.kind 的工具集决定本轮谁可用。 */
 export function lifeTools(
   journal: Journal,
-  deps: { sandbox?: Sandbox; web?: WebTools; image?: ImagePainter },
+  deps: { sandbox?: Sandbox; web?: WebTools; image?: ImagePainter; wall?: Wall },
 ): ToolHandler[] {
   const recollection = new Recollection(journal);
   const tools: ToolHandler[] = [
@@ -521,6 +522,36 @@ export function lifeTools(
       },
     });
   }
+  // 留言墙需要手：贴图是沙箱文件的快照，没有手就没有图。
+  if (deps.wall && deps.sandbox) {
+    const wall = deps.wall;
+    const sandbox = deps.sandbox;
+    tools.push({
+      definition: {
+        name: 'publish',
+        description:
+          '往你们的留言墙上贴一条（免登录网页，他能随时看到）。text 是想说的话（500 字内）；想配图就给 path（沙箱里的 PNG 文件路径，如 pictures/xx.png，会复制快照上墙）。文字与图至少有一样。',
+        parameters: {
+          type: 'object',
+          properties: { text: { type: 'string' }, path: { type: 'string' } },
+          additionalProperties: false,
+        },
+      },
+      async execute(args) {
+        const note = await wall.post(
+          'her',
+          typeof args.text === 'string' ? args.text : '',
+          typeof args.path === 'string' && args.path ? args.path : undefined,
+          sandbox,
+        );
+        return {
+          posted: true,
+          at: note.at,
+          note: '已上墙；他的新留言也会浮进你的资料，看到了就回应他',
+        };
+      },
+    });
+  }
   return tools;
 }
 
@@ -534,6 +565,7 @@ const HAND_AND_EYE = [
   'web_search',
   'open_page',
   'draw_image',
+  'publish',
 ] as const;
 
 export const TOOL_SETS = {
