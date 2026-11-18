@@ -288,7 +288,7 @@ test('材料：beat 白日梦查询用她的心事，diary/tidy 各自成形', a
   });
   try {
     journal.receive('peer', 'one', '在忙什么');
-    journal.begin('peer', 'beat');
+    const realTurn = journal.begin('peer', 'beat');
     journal.saveThought('peer', {
       id: 't1',
       topic: '汇报',
@@ -339,6 +339,29 @@ test('材料：beat 白日梦查询用她的心事，diary/tidy 各自成形', a
     };
     assert.equal(tidy.mode, 'tidy');
     assert.ok(Array.isArray(tidy.pairs));
+
+    // 没送到的气泡带失败原因进材料：她据此自己决定重发还是改口。
+    // 上面 begin 的轮还挂着 running，草一稿把它推进 ready 并入队。
+    journal.draft(realTurn, [{ type: 'image', path: 'pictures/small.png' }]);
+    const envelope = journal.pending('peer')[0]!;
+    journal.startDelivery(envelope.id);
+    journal.delivery(envelope.id, 'failed', 'CDN 上传失败：HTTP 500');
+    const afterFail = (await life.build('peer', beatTurn)).material as {
+      undelivered?: { bubble: string; status: string; reason?: string }[];
+    };
+    assert.deepEqual(afterFail.undelivered, [
+      {
+        bubble: '图片 pictures/small.png',
+        status: '确认失败',
+        reason: 'CDN 上传失败：HTTP 500',
+      },
+    ]);
+    // 送达改判后从材料里消失。
+    journal.delivery(envelope.id, 'sent');
+    const afterSent = (await life.build('peer', beatTurn)).material as {
+      undelivered?: unknown[];
+    };
+    assert.equal(afterSent.undelivered, undefined);
   } finally {
     journal.close();
     rmSync(root, { recursive: true, force: true });

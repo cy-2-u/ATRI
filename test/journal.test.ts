@@ -137,6 +137,43 @@ test('工具经历独立于草稿和取消留存，失败尝试不记成做过',
   }
 });
 
+test('失败原因落 last_error：failed 进材料窗口，sent 清空，unknown 过期后带原因收场', () => {
+  const env = fixture();
+  try {
+    env.journal.receive('peer', '1', 'one');
+    const turn = env.journal.begin('peer', 'chat');
+    env.journal.draft(turn, [{ type: 'image', path: 'pictures/small.png' }]);
+    const envelope = env.journal.pending('peer')[0]!;
+    // 上传阶段确定性失败：原因落库，failed 不封通道，进 unresolved（材料窗口）。
+    assert.equal(env.journal.startDelivery(envelope.id), true);
+    assert.equal(env.journal.delivery(envelope.id, 'failed', 'CDN 上传失败：HTTP 500'), true);
+    assert.equal(env.journal.blocked('peer'), false);
+    const dead = env.journal.unresolved('peer')[0]!;
+    assert.equal(dead.status, 'failed');
+    assert.equal(dead.lastError, 'CDN 上传失败：HTTP 500');
+    // 人工改判送达（误判兜底）：原因清空，不再浮在材料里。
+    assert.equal(env.journal.delivery(envelope.id, 'sent'), true);
+    assert.equal(env.journal.unresolved('peer').length, 0);
+    // unknown 过期自愈：expireUnknown 判死并带上当时的失败原因。
+    env.journal.receive('peer', '2', 'two');
+    const turn2 = env.journal.begin('peer', 'chat');
+    env.journal.draft(turn2, [{ type: 'text', text: 'again' }]);
+    const envelope2 = env.journal.pending('peer')[0]!;
+    assert.equal(env.journal.startDelivery(envelope2.id), true);
+    assert.equal(env.journal.delivery(envelope2.id, 'unknown', '微信接口超时'), true);
+    env.advance(10 * 60_000 + 1_000);
+    assert.equal(env.journal.expireUnknown(10 * 60_000), 1);
+    const healed = env.journal.unresolved('peer')[0]!;
+    assert.equal(healed.status, 'failed');
+    assert.equal(healed.lastError, '微信接口超时');
+    // 一小时窗口外的老死件不再进材料。
+    env.advance(2 * 3_600_000);
+    assert.equal(env.journal.unresolved('peer').length, 0);
+  } finally {
+    env.close();
+  }
+});
+
 test('设置只编码一次，重启后保持对象类型', () => {
   const env = fixture();
   try {

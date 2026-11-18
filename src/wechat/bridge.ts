@@ -301,11 +301,14 @@ export class WechatBridge {
     await this.sharedClient().typing(contact.address, contact.context, active);
   }
 
-  async send(peer: string, part: Bubble): Promise<'sent' | 'unknown' | 'failed'> {
+  async send(
+    peer: string,
+    part: Bubble,
+  ): Promise<'sent' | 'unknown' | 'failed' | ['unknown' | 'failed', string]> {
     const contact = this.contacts().find(
       (item) => this.peer(item.address) === peer && item.approved,
     );
-    if (!this.session || !contact?.context) return 'failed';
+    if (!this.session || !contact?.context) return ['failed', '微信会话未就绪'];
     const client = this.sharedClient();
     try {
       if (part.type === 'text')
@@ -318,7 +321,7 @@ export class WechatBridge {
         );
       else {
         // 她沙箱里的真实文件：确定性失败（没开沙箱/没有这个文件/不是图片）
-        // 重试无意义，判死；只有上传通道自身的错误保持不确定语义。
+        // 重试无意义，判死；只有 sendmessage 一环的错误保持不确定语义。
         if (!this.deps.sandbox?.enabled) throw new WechatError('沙箱未启用，图片发不出去', false);
         const file = await this.deps.sandbox.readFile(part.path ?? '', 5 * 1024 * 1024);
         const mime = sniffMediaMime(file.bytes);
@@ -328,8 +331,12 @@ export class WechatBridge {
       return 'sent';
     } catch (error) {
       this.onError(error);
-      if (error instanceof WechatError) return error.uncertain ? 'unknown' : 'failed';
-      return 'unknown';
+      const message = error instanceof Error ? error.message : String(error);
+      if (error instanceof WechatError)
+        return error.uncertain ? ['unknown', message] : ['failed', message];
+      // 非 WechatError 的都是本地异常（沙箱读取失败等）：无已送达歧义，
+      // 判死而不是挂起——一个 236 字节的死图不该封住整个队列。
+      return ['failed', message];
     }
   }
 

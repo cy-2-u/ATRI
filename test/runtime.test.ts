@@ -265,3 +265,55 @@ test('chat 思考失败重试一次为限：持续故障不变成无限循环', 
     await env.close();
   }
 });
+
+test('图片确定性失败不停发同轮后续气泡，原因落库进待办', async () => {
+  // 一轮产出 [图(路径错，确定性失败), 文字]：图 failed 后文字照发——
+  // 今天深潜版水母的第三条气泡就是被旧语义（failed 也停发）扣住的。
+  const results: Array<'sent' | 'unknown' | 'failed' | ['unknown' | 'failed', string]> = [
+    ['failed', '图片文件不存在：jelly_deep.png'],
+    'sent',
+  ];
+  const sent: string[] = [];
+  const model: Model = {
+    async complete() {
+      return {
+        message: {
+          role: 'assistant',
+          content:
+            '{"action":"speak","parts":[{"type":"image","path":"jelly_deep.png"},{"type":"text","text":"警灯会亮了"}]}',
+        },
+        usage: { input: 1, output: 1, cached: 0 },
+      };
+    },
+  };
+  const journal = new Journal(':memory:');
+  const runtime = new Runtime(journal, new Mind(model, journal), {
+    persona: () => 'p',
+    material: () => ({}),
+    send: (_p, part) => {
+      if (part.type === 'text') sent.push(part.text ?? '');
+      return Promise.resolve(results.shift()!);
+    },
+    nextBeat: () => undefined,
+    onError: () => {},
+    timeoutMs: 1000,
+    debounceMs: 0,
+    concurrency: 1,
+    pacing: false,
+    stickerSlugs: () => new Set(),
+    vision: () => false,
+    readFile: () => Promise.resolve(undefined),
+  });
+  try {
+    runtime.start();
+    runtime.receive('peer', 'one', '发图');
+    await until(() => sent.length === 1);
+    assert.deepEqual(sent, ['警灯会亮了'], '图失败后同轮文字仍应发出');
+    const dead = journal.unresolved('peer')[0]!;
+    assert.equal(dead.status, 'failed');
+    assert.equal(dead.lastError, '图片文件不存在：jelly_deep.png');
+  } finally {
+    await runtime.stop();
+    journal.close();
+  }
+});

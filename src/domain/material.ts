@@ -753,10 +753,32 @@ export class LifeMaterial {
         at: e.created_at,
       })),
       // 表情目录已移入系统提示的稳定前缀（前缀缓存），不再逐轮进材料。
-      uncertain: journal.unresolved(peer),
+      // 没送到的气泡带上为什么：她看到事实自己决定重发还是改口——
+      // 对着无声的 failed 猜（"是不是太小了"）才有了今天这种死循环。
+      ...(this.undelivered(peer).length ? { undelivered: this.undelivered(peer) } : {}),
       waitingDrafts: journal.pending(peer),
     };
     return { material };
+  }
+
+  /** 没送到的气泡（unknown 挂起 + 近一小时 failed 的死件）及其原因：
+   *  这是"发图失败"进入她视野的唯一通道——不写 last_error 她就只能
+   *  猜，猜错就死磕同一张死图。 */
+  private undelivered(peer: string): { bubble: string; status: string; reason?: string }[] {
+    return this.deps.journal.unresolved(peer).map((envelope) => {
+      const part = envelope.part as { type?: string; text?: string; slug?: string; path?: string };
+      const bubble =
+        part.type === 'text'
+          ? `文字「${(part.text ?? '').slice(0, 40)}」`
+          : part.type === 'sticker'
+            ? `表情 ${part.slug ?? ''}`
+            : `图片 ${part.path ?? ''}`;
+      return {
+        bubble,
+        status: envelope.status === 'unknown' ? '结果未知（可能已发出）' : '确认失败',
+        ...(envelope.lastError ? { reason: envelope.lastError } : {}),
+      };
+    });
   }
 
   /** 他的活跃时段（近两周 received 的钟点直方图）：资料不是指令，

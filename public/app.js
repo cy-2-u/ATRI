@@ -997,32 +997,42 @@ function renderIssues(issues) {
         ),
         'entry-body',
       ),
-      el('div', `发送结果未知 · ${timeText(envelope.created_at)}`, 'entry-time'),
+      el(
+        'div',
+        `${envelope.status === 'failed' ? '发送失败' : '发送结果未知'}${
+          envelope.lastError ? ` · ${envelope.lastError}` : ''
+        } · ${timeText(envelope.created_at)}`,
+        'entry-time',
+      ),
     );
-    const actions = el('div', undefined, 'actions');
-    actions.append(
-      Object.assign(el('button', '确认已送达', 'btn ghost small'), {
-        type: 'button',
-        onclick: () =>
-          perform(async () => {
-            await api(`/api/deliveries/${enc(envelope.id)}/resolve`, {
-              method: 'POST',
-              body: { status: 'sent' },
-            });
-            issuesSnapshot = '';
-            await refreshStatus();
-          }),
-      }),
-      confirmButton('确认失败', '确认失败？', async () => {
-        await api(`/api/deliveries/${enc(envelope.id)}/resolve`, {
-          method: 'POST',
-          body: { status: 'failed' },
-        });
-        issuesSnapshot = '';
-        await refreshStatus();
-      }),
-    );
-    row.append(actions);
+    // 已判死的件没有"可能已发出"的歧义，只留一个撤回入口；unknown 才
+    // 需要人工二选一。
+    if (envelope.status !== 'failed') {
+      const actions = el('div', undefined, 'actions');
+      actions.append(
+        Object.assign(el('button', '确认已送达', 'btn ghost small'), {
+          type: 'button',
+          onclick: () =>
+            perform(async () => {
+              await api(`/api/deliveries/${enc(envelope.id)}/resolve`, {
+                method: 'POST',
+                body: { status: 'sent' },
+              });
+              issuesSnapshot = '';
+              await refreshStatus();
+            }),
+        }),
+        confirmButton('确认失败', '确认失败？', async () => {
+          await api(`/api/deliveries/${enc(envelope.id)}/resolve`, {
+            method: 'POST',
+            body: { status: 'failed' },
+          });
+          issuesSnapshot = '';
+          await refreshStatus();
+        }),
+      );
+      row.append(actions);
+    }
     list.append(row);
   }
 }

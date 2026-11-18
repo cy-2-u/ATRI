@@ -7,7 +7,12 @@ import { Wakeup, type TimerClock } from './wakeup.js';
 export interface RuntimeOptions {
   persona(): string;
   material(turn: Turn): Promise<unknown> | unknown;
-  send(peer: string, part: Bubble): Promise<'sent' | 'unknown' | 'failed'>;
+  /** 返回投递结果；failed 时第二个返回值（可选）是失败原因，落
+   *  last_error 供材料还原"为什么没送到"。 */
+  send(
+    peer: string,
+    part: Bubble,
+  ): Promise<'sent' | 'unknown' | 'failed' | ['failed' | 'unknown', string]>;
   nextBeat(peer: string): number | undefined;
   onComposing?(peer: string, active: boolean): Promise<void>;
   onError(error: unknown): void;
@@ -217,13 +222,19 @@ export class Runtime {
       if (!this.journal.startDelivery(envelope.id)) return;
       first = false;
       let status: 'sent' | 'unknown' | 'failed';
+      let reason: string | undefined;
       try {
-        status = await this.options.send(peer, envelope.part);
-      } catch {
+        const result = await this.options.send(peer, envelope.part);
+        if (Array.isArray(result)) [status, reason] = result;
+        else status = result;
+      } catch (error) {
         status = 'unknown';
+        reason = error instanceof Error ? error.message : String(error);
       }
-      this.journal.delivery(envelope.id, status);
-      if (status !== 'sent') return;
+      this.journal.delivery(envelope.id, status, reason);
+      // 只有 unknown（服务器可能已投递）才停发后面的气泡——继续发可能
+      // 造成乱序重复；failed 是确定性死亡，同轮后续气泡照发。
+      if (status === 'unknown') return;
     }
     if (signal.aborted || this.stopped) return;
     const job = this.journal.jobs().find((job) => job.peer === peer && job.due_at <= Date.now());

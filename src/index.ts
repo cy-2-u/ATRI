@@ -362,7 +362,10 @@ function startBackgroundMaintenance(): void {
   // 这里是它们唯一的退场通道）。
   const night = setInterval(() => {
     evolveCloseness(journal, Date.now(), config().timezone);
-    journal.expireUnknown(24 * 3_600_000);
+    // 真歧义（sendmessage 超时/断连）10 分钟判死自愈：封通道等确认的
+    // 语义有时限，管理员不在时她不该对着满队列闭嘴一整天。确定性失败
+    // （上传 5xx/文件不存在）在发送链上已直接 failed，到不了这里。
+    journal.expireUnknown(10 * 60_000);
     journal.pruneThoughts(30 * 86_400_000);
     journal.pruneUsage(90 * 86_400_000);
     ensureRecurringJobs();

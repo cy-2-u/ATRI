@@ -313,7 +313,9 @@ export class WechatClient {
 
   /** 加密并 POST 到微信 CDN；响应头 x-encrypted-param 即下载坐标。
    *  上传 URL 来自服务端响应而非自家配置，走与入站媒体同一主机白名单；
-   *  重定向可能跳到白名单没查过的主机，CDN 上传合法场景不需要重定向。 */
+   *  重定向可能跳到白名单没查过的主机，CDN 上传合法场景不需要重定向。
+   *  上传没完成消息必然没发出去：任何失败（含 5xx/超时/断连）都是
+   *  确定性失败，uncertain 语义只留给 sendmessage 一环。 */
   private async uploadToCdn(params: {
     plaintext: Buffer;
     aesKey: Buffer;
@@ -345,7 +347,9 @@ export class WechatClient {
       });
       if (!res.ok) {
         const msg = res.headers.get('x-error-message') || `HTTP ${res.status}`;
-        throw new WechatError(`CDN 上传失败：${msg}`, res.status >= 500);
+        // 5xx（服务端拒收/内部错误）与超时断连都发生在收货前：消息必然
+        // 未上传成功，重发同一文件才有意义，不是"结果未知"。
+        throw new WechatError(`CDN 上传失败：${msg}`, false);
       }
       const dl = res.headers.get('x-encrypted-param');
       if (!dl) throw new WechatError('CDN 上传响应缺少下载坐标', false);
@@ -353,7 +357,7 @@ export class WechatClient {
     } catch (error) {
       if (error instanceof WechatError) throw error;
       if (params.signal?.aborted) throw params.signal.reason;
-      throw new WechatError(timeout.aborted ? 'CDN 上传超时' : 'CDN 上传连接失败', true);
+      throw new WechatError(timeout.aborted ? 'CDN 上传超时' : 'CDN 上传连接失败', false);
     }
   }
 
@@ -366,22 +370,31 @@ export class WechatClient {
     this.requireSession();
     const aesKey = randomAesKey();
     const filekey = randomFileKey();
-    const upload = await this.request(
-      '/ilink/bot/getuploadurl',
-      {
-        filekey,
-        media_type: mediaType,
-        to_user_id: toUserId,
-        rawsize: plaintext.length,
-        rawfilemd5: md5Hex(plaintext),
-        filesize: aesEcbPaddedSize(plaintext.length),
-        aeskey: aesKey.toString('hex'),
-        no_need_thumb: true,
-        base_info: { channel_version: '1.0.2' },
-      },
-      signal,
-      true,
-    );
+    // 上传阶段（取坐标 + CDN 收货）失败必然是"消息没发出去"——不存在
+    // 已送达歧义，一律确定性失败；只有下面 sendmessage 一环才可能
+    // "服务器可能已投递"，那才是 unknown 的地盘。
+    let upload: Reply;
+    try {
+      upload = await this.request(
+        '/ilink/bot/getuploadurl',
+        {
+          filekey,
+          media_type: mediaType,
+          to_user_id: toUserId,
+          rawsize: plaintext.length,
+          rawfilemd5: md5Hex(plaintext),
+          filesize: aesEcbPaddedSize(plaintext.length),
+          aeskey: aesKey.toString('hex'),
+          no_need_thumb: true,
+          base_info: { channel_version: '1.0.2' },
+        },
+        signal,
+      );
+    } catch (error) {
+      throw error instanceof WechatError
+        ? new WechatError(`取上传坐标失败：${error.message}`, false, error.expired)
+        : error;
+    }
     const downloadParam = await this.uploadToCdn({
       plaintext,
       aesKey,

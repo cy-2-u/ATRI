@@ -50,10 +50,30 @@ export interface Envelope {
   ordinal: number;
   part: Bubble;
   status: string;
+  /** 创建时刻（管理页待办展示用）。 */
+  created_at?: number;
+  /** 最近一次发送失败的原因（sent 后清空）：材料构建的"为什么没送到"。 */
+  lastError?: string;
 }
 
-interface EnvelopeRow extends Omit<Envelope, 'part'> {
+interface EnvelopeRow extends Omit<Envelope, 'part' | 'lastError' | 'created_at'> {
   part: string;
+  created_at?: number;
+  lastError?: string | null;
+}
+
+/** 行 → 气泡：解析 part JSON，把 SQL 的 NULL lastError 归一成 undefined。 */
+function toEnvelope(row: EnvelopeRow): Envelope {
+  return {
+    id: row.id,
+    turn: row.turn,
+    peer: row.peer,
+    ordinal: row.ordinal,
+    part: JSON.parse(row.part) as Bubble,
+    status: row.status,
+    ...(row.created_at !== undefined ? { created_at: row.created_at } : {}),
+    ...(row.lastError ? { lastError: row.lastError } : {}),
+  };
 }
 
 /** 内核库的全部 DDL：Journal 与迁移脚本共用同一份真理。 */
@@ -115,6 +135,10 @@ export function createSchema(sql: DatabaseSync): void {
       );
       CREATE INDEX IF NOT EXISTS kernel_usage_at ON kernel_usage(at);
     `);
+  // 早期库没有 last_error 列：幂等补齐（CREATE TABLE 对已有库不生效）。
+  const outboxCols = sql.prepare('PRAGMA table_info(kernel_outbox)').all() as { name: string }[];
+  if (!outboxCols.some((col) => col.name === 'last_error'))
+    sql.exec('ALTER TABLE kernel_outbox ADD COLUMN last_error TEXT');
 }
 
 // 新内核使用独立表名，旧数据在迁移验收前保持原样。
@@ -294,15 +318,20 @@ export class Journal {
       this.statement(
         "SELECT id,turn_id AS turn,peer,ordinal,part,status FROM kernel_outbox WHERE peer=? AND status='pending' ORDER BY created_at,turn_id,ordinal",
       ).all(peer) as unknown as EnvelopeRow[]
-    ).map((row) => ({ ...row, part: JSON.parse(row.part) as Bubble }));
+    ).map(toEnvelope);
   }
 
-  unresolved(peer: string): Envelope[] {
+  /** 发送失败待确认/未收场的件（unknown 封通道，failed 是刚死还没有
+   *  后续动作的）：带 last_error，材料构建还原失败原因。failed 只取
+   *  近一小时的——老死件早被她的后续轮次覆盖，再浮出来是噪音。 */
+  unresolved(peer: string, failedWindowMs = 3_600_000): Envelope[] {
     return (
       this.statement(
-        "SELECT id,turn_id AS turn,peer,ordinal,part,status FROM kernel_outbox WHERE peer=? AND status IN ('sending','unknown') ORDER BY created_at,ordinal",
-      ).all(peer) as unknown as EnvelopeRow[]
-    ).map((row) => ({ ...row, part: JSON.parse(row.part) as Bubble }));
+        `SELECT id,turn_id AS turn,peer,ordinal,part,status,created_at,last_error AS lastError FROM kernel_outbox
+         WHERE peer=? AND (status IN ('sending','unknown') OR (status='failed' AND created_at > ?))
+         ORDER BY created_at,ordinal`,
+      ).all(peer, this.now() - failedWindowMs) as unknown as EnvelopeRow[]
+    ).map(toEnvelope);
   }
 
   startDelivery(id: string): boolean {
@@ -321,14 +350,29 @@ export class Journal {
     });
   }
 
-  delivery(id: string, status: 'sent' | 'unknown' | 'failed'): boolean {
+  /** 记录一次投递结果。error 是失败时的原始原因（CDN 拒收/文件不存在
+   *  等）：落 last_error 列供材料构建还原"为什么没送到"，她下一轮看到
+   *  事实自己决定重试还是改口，而不是对着无声的 failed 猜。
+   *  改判规则：sending 落任何终态（正常路径）；unknown 可被收场成
+   *  failed（自愈/人工）或救回成 sent；failed 只能被人工救回成 sent
+   *  ——图其实发出去了、消息其实到了，都可能发生。终态（sent/已取消）
+   *  与 pending（未领件）一律拒绝；sent→失败不允许，said 已入账。 */
+  delivery(id: string, status: 'sent' | 'unknown' | 'failed', error?: string): boolean {
     return this.transaction(() => {
       const row = this.statement('SELECT * FROM kernel_outbox WHERE id=?').get(id);
-      if (!row || (row.status !== 'sending' && !(row.status === 'unknown' && status !== 'unknown')))
-        return false;
-      this.statement('UPDATE kernel_outbox SET status=?,delivered_at=? WHERE id=?').run(
+      if (!row) return false;
+      const current = String(row.status);
+      const allowed =
+        current === 'sending' ||
+        (current === 'unknown' && status !== 'unknown') ||
+        (current === 'failed' && status === 'sent');
+      if (!allowed) return false;
+      this.statement(
+        'UPDATE kernel_outbox SET status=?,delivered_at=?,last_error=? WHERE id=?',
+      ).run(
         status,
         status === 'sent' ? this.now() : null,
+        status === 'sent' ? null : (error ?? null),
         id,
       );
       if (status === 'sent') {
