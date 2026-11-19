@@ -18,7 +18,16 @@ function wallFixture() {
     sizeLimitBytes: () => 32 * 1024 * 1024,
   });
   const wall = new Wall(journal.db, dir);
-  return { dir, journal, sandbox, wall, close: () => journal.close() };
+  return {
+    dir,
+    journal,
+    sandbox,
+    wall,
+    close: () => {
+      sandbox.dispose();
+      journal.close();
+    },
+  };
 }
 
 // 最小合法 PNG（1x1）：发布校验认头四字节就够。

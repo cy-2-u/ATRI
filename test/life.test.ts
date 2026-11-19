@@ -16,7 +16,8 @@ import {
   sleepDayKeyOf,
 } from '../src/domain/rhythm.js';
 import { Runtime } from '../src/runtime/runtime.js';
-import { lifeTools } from '../src/domain/tools.js';
+import { lifeTools, TOOL_SETS } from '../src/domain/tools.js';
+import { Wall } from '../src/wall.js';
 import type { Model } from '../src/model/types.js';
 import type { Stickers } from '../src/stickers.js';
 
@@ -365,6 +366,52 @@ test('材料：beat 白日梦查询用她的心事，diary/tidy 各自成形', a
   } finally {
     journal.close();
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('材料：墙提示牌对 chat/beat/reminder 都挂出，翻过即清零', async () => {
+  const journal = new Journal(':memory:');
+  const root = mkdtempSync(join(tmpdir(), 'atri-life-'));
+  const wallDir = mkdtempSync(join(tmpdir(), 'atri-sign-'));
+  const life = new LifeMaterial({
+    journal,
+    stickers: { list: () => [] } as unknown as Stickers,
+    timeZone: () => 'Asia/Shanghai',
+    sandboxEnabled: () => false,
+    webConfigured: () => false,
+    vision: () => false,
+    now: Date.now,
+    wall: new Wall(journal.db, wallDir),
+  });
+  try {
+    journal.receive('peer', 'one', '在吗');
+    await new Wall(journal.db, wallDir).post('him', '墙上有话');
+    const turns = [
+      { id: 'c', peer: 'peer', version: 0, kind: 'chat' as const },
+      { id: 'b', peer: 'peer', version: 0, kind: 'beat' as const },
+      { id: 'r', peer: 'peer', version: 0, kind: 'reminder' as const },
+    ];
+    for (const turn of turns) {
+      const built = (await life.build('peer', turn)).material as {
+        wallSign?: { unseen: number };
+      };
+      assert.equal(built.wallSign?.unseen, 1, `${turn.kind} 拍应看到墙提示牌`);
+    }
+    // reminder 拍没有 read_wall 工具：看得见、下一拍够得着，自洽。
+    assert.ok(
+      !TOOL_SETS.reminder.includes('read_wall' as (typeof TOOL_SETS.reminder)[number]),
+      'reminder 白名单刻意不含 read_wall（粗粝感边界，演算过）',
+    );
+    // 她凑近翻过（任意拍 read_wall 都推进 seen）→ 三拍提示牌一起清零。
+    new Wall(journal.db, wallDir).markSeen();
+    for (const turn of turns) {
+      const built = (await life.build('peer', turn)).material as { wallSign?: unknown };
+      assert.equal(built.wallSign, undefined, `${turn.kind} 拍提示牌应清零`);
+    }
+  } finally {
+    journal.close();
+    rmSync(root, { recursive: true, force: true });
+    rmSync(wallDir, { recursive: true, force: true });
   }
 });
 

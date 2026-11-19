@@ -1,7 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Journal } from '../src/storage/journal.js';
 import { lifeTools, TOOL_SETS } from '../src/domain/tools.js';
+import { Sandbox } from '../src/sandbox.js';
+import { Wall } from '../src/wall.js';
+import type { WebTools } from '../src/web.js';
+import type { ImagePainter } from '../src/image.js';
+import type { Stickers } from '../src/stickers.js';
 
 const options = () => ({ deadlineAt: Date.now() + 1000 });
 
@@ -149,7 +157,41 @@ test('日记召回：词面命中、情绪随行、detail 分级渲染', async (
   }
 });
 
-test('read_wall 必须在各拍工具白名单里：漏配等于死工具（CI 实锤过）', () => {
+test('TOOL_SETS 全集不变量：每个注册工具必须至少进一个白名单', () => {
+  // 漏配 = 模型永远看不见该工具 = 静默死工具（read_wall 事故，CI 实锤过）。
+  // 这个不变量锁住整个族：今后新增工具忘配白名单，测试直接红。
+  // deps 必须满配——手眼墙画笔都是条件注册的，空 deps 枚举不全。
+  const journal = new Journal(':memory:');
+  const root = mkdtempSync(join(tmpdir(), 'atri-tools-'));
+  const sandbox = new Sandbox(join(root, 'sandbox'), {
+    enabled: () => true,
+    network: () => false,
+    sizeLimitBytes: () => 32 * 1024 * 1024,
+  });
+  try {
+    const registered = new Set(
+      lifeTools(journal, {
+        sandbox,
+        web: {} as unknown as WebTools,
+        image: {} as unknown as ImagePainter,
+        wall: new Wall(journal.db, root),
+        stickers: { list: () => [] } as unknown as Stickers,
+      }).map((t) => t.definition.name),
+    );
+    const whitelisted = new Set<string>(Object.values(TOOL_SETS).flat());
+    const missing = [...registered].filter((name) => !whitelisted.has(name));
+    assert.deepEqual(missing, [], `死工具（注册了但没进任何拍的白名单）：${missing.join('、')}`);
+    // 反向也有价值：白名单里的名字必须是真工具，拼错等于凭空引用。
+    const unknown = [...whitelisted].filter((name) => !registered.has(name));
+    assert.deepEqual(unknown, [], `白名单引用了不存在的工具：${unknown.join('、')}`);
+  } finally {
+    sandbox.dispose();
+    journal.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('read_wall 必须在 chat/beat 白名单里：提示牌的引导才不落空', () => {
   for (const kind of ['chat', 'beat'] as const) {
     assert.ok(
       TOOL_SETS[kind].includes('read_wall'),

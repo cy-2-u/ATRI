@@ -386,8 +386,7 @@ ${
     return { ok: true };
   });
 
-  // 她的生活（单联系人主用第一个 peer；列表供 UI 兜底）
-  app.get('/api/peers', async () => options.journal.peers());
+  // 她的生活（单联系人主用第一个 peer）
   const firstPeer = () => options.journal.peers()[0] ?? '';
   app.get('/api/events', async (request) => {
     const peer = (request.query as { peer?: string } | undefined)?.peer || firstPeer();
