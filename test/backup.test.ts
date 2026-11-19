@@ -58,20 +58,31 @@ function backupFixture() {
   mkdirSync(join(dir, 'custom'), { recursive: true });
   writeFileSync(join(dir, 'atri.db'), Buffer.from('db-bytes'));
   writeFileSync(join(dir, 'custom', 'meme.png'), Buffer.from('png-bytes'));
+  // 她的作品：墙图（平铺）+ 沙箱（pictures/、diary/ 两层嵌套）。
+  mkdirSync(join(dir, 'wall'), { recursive: true });
+  writeFileSync(join(dir, 'wall', 'note-1.png'), Buffer.from('wall-bytes'));
+  const sandbox = mkdtempSync(join(tmpdir(), 'atri-backup-sandbox-'));
+  mkdirSync(join(sandbox, 'pictures'), { recursive: true });
+  mkdirSync(join(sandbox, 'diary'), { recursive: true });
+  writeFileSync(join(sandbox, 'pictures', 'jelly.png'), Buffer.from('jelly-bytes'));
+  writeFileSync(join(sandbox, 'diary', '2026-11-19.md'), Buffer.from('diary-bytes'));
   const dav = fakeDav();
   stubFetch(dav);
   return {
     dav,
     dir,
+    sandbox,
     backup: new WebDavBackup(
       dir,
       () => ({ url: 'https://dav.test/dav', user: 'u', password: 'p' }),
       () => 'Asia/Shanghai',
       () => {},
+      sandbox,
     ),
     close() {
       globalThis.fetch = originalFetch;
       rmSync(dir, { recursive: true, force: true });
+      rmSync(sandbox, { recursive: true, force: true });
     },
   };
 }
@@ -90,6 +101,19 @@ test('WebDAV 备份：目录创建、数据库 gzip 上传、表情逐文件、�
     assert.equal(
       env.dav.objects.get('dav/atri-backup/2023-11-15/custom/meme.png')!.toString(),
       'png-bytes',
+    );
+    // 作品目录也进了备份：墙图平铺、沙箱两层嵌套原样镜像。
+    assert.equal(
+      env.dav.objects.get('dav/atri-backup/2023-11-15/wall/note-1.png')!.toString(),
+      'wall-bytes',
+    );
+    assert.equal(
+      env.dav.objects.get('dav/atri-backup/2023-11-15/sandbox/pictures/jelly.png')!.toString(),
+      'jelly-bytes',
+    );
+    assert.equal(
+      env.dav.objects.get('dav/atri-backup/2023-11-15/sandbox/diary/2026-11-19.md')!.toString(),
+      'diary-bytes',
     );
     // 同一日期再跑一次：目录已存在（405 幂等），备份照常成功。
     await env.backup.run(1_700_000_000_000 + 60_000);

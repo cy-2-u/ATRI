@@ -55,6 +55,8 @@ export class WebDavBackup {
     private readonly config: () => WebDavConfig | undefined,
     private readonly timeZone: () => string,
     private readonly log: (line: string) => void = console.log,
+    /** 沙箱根（Docker 里是独立卷 /sandbox，不在 dataDir 下）：作品目录。 */
+    private readonly sandboxDir?: string,
   ) {}
 
   get state(): BackupState {
@@ -138,6 +140,17 @@ export class WebDavBackup {
           await this.request('PUT', `${base}custom/${name}`, auth, readFileSync(file));
       }
 
+    // 她的作品：墙图（仅图文件）与沙箱目录整棵逐文件上传。数据库之外
+    // 唯一不可再生的东西——日记和画挂在卷上，卷挂了就永远没了。递归
+    // 上限两层，media/（微信缓存）不算作品不进来。
+    for (const [name, root, depth] of [
+      ['wall', join(this.dataDir, 'wall'), 1],
+      ['sandbox', this.sandboxDir ?? join(this.dataDir, 'sandbox'), 2],
+    ] as const) {
+      if (!statSync(root, { throwIfNoEntry: false })?.isDirectory()) continue;
+      await this.putTree(`${base}${name}/`, root, auth, depth);
+    }
+
     // 清理失败不影响备份成败：坚果云这类网盘不支持删非空目录，内容
     // 已经安全上传，轮转留到下一天再说。
     try {
@@ -149,6 +162,19 @@ export class WebDavBackup {
     this.#lastDay = day;
     this.#state = { at: day };
     this.log(`[atri] backup ok: ${day}`);
+  }
+
+  /** 递归上传一棵目录树：relative 路径即远端路径，目录原样镜像。
+   *  depth 限制递归层数（1 = 只收平铺文件），防止异常嵌套拖爆请求。 */
+  private async putTree(remote: string, root: string, auth: string, depth: number): Promise<void> {
+    for (const entry of readdirSync(root, { withFileTypes: true })) {
+      const full = join(root, entry.name);
+      if (entry.isDirectory()) {
+        if (depth > 1) await this.putTree(`${remote}${entry.name}/`, full, auth, depth - 1);
+        continue;
+      }
+      await this.request('PUT', `${remote}${entry.name}`, auth, readFileSync(full));
+    }
   }
 
   /** WebDAV 只认 2xx：3xx 不能当成功——fetch 对 PUT 的 301/302 会转成

@@ -83,10 +83,13 @@ const embeddings = new EmbeddingClient(() => ({
   model: config().embedding?.model ?? '',
 }));
 // WebDAV 备份：配置现读（管理页填好即生效，不用重启），失败落状态。
+// 沙箱根单独传：她的画与日记和数据库一样不可再生。
 const backup = new WebDavBackup(
   dataDir,
   () => config().webdav,
   () => config().timezone,
+  undefined,
+  sandboxDir,
 );
 
 const onError = (error: unknown): void => {
