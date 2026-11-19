@@ -113,7 +113,8 @@ export class Wall {
     const latest = this.latestHim.get() as { at: number; text: string } | undefined;
     return {
       count: n,
-      latest: latest && latest.at > this.seenAt() ? { text: latest.text, at: latest.at } : undefined,
+      latest:
+        latest && latest.at > this.seenAt() ? { text: latest.text, at: latest.at } : undefined,
     };
   }
 
