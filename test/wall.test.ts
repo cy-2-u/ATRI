@@ -110,7 +110,7 @@ test('墙是场所不是信道：SQL 下推翻阅 + unseen 提示牌 + read_wall
   const env = wallFixture();
   try {
     await env.sandbox.writeBytes('pictures/p.png', PNG);
-    // 三张便签：两他一她，间隔 1ms 保证时序确定。
+    // 三张便签：两他一她。不 sleep——同毫秒由 rowid DESC 破平，插入序即时序。
     const his1 = await env.wall.post('him', '第一张便签');
     const hers = await env.wall.post('her', '我自己的便签', 'pictures/p.png', env.sandbox);
     const his2 = await env.wall.post('him', '第二张便签');

@@ -52,7 +52,8 @@ export class Wall {
       "SELECT COUNT(*) AS n FROM kernel_wall WHERE author = 'him' AND created_at > ?",
     );
     this.latestHim = sql.prepare(
-      "SELECT created_at AS at, text FROM kernel_wall WHERE author = 'him' ORDER BY created_at DESC LIMIT 1",
+      // rowid DESC 破同毫秒平局：CI 机器快，两张 his 落同一 ms 时无此则 latest 摇摆
+      "SELECT created_at AS at, text FROM kernel_wall WHERE author = 'him' ORDER BY created_at DESC, rowid DESC LIMIT 1",
     );
     this.byId = sql.prepare(
       'SELECT id,author AS "from",text,image AS image,created_at AS at FROM kernel_wall WHERE id = ?',
