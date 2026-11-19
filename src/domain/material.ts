@@ -759,14 +759,20 @@ export class LifeMaterial {
       // 没送到的气泡带上为什么：她看到事实自己决定重发还是改口——
       // 对着无声的 failed 猜（"是不是太小了"）才有了今天这种死循环。
       ...(this.undelivered(peer).length ? { undelivered: this.undelivered(peer) } : {}),
-      // 他在墙上的近一天留言（她自己发的不再回灌）：墙是他也会主动
-      // 说话的地方，看到了才有回应，闭环才成立。
+      // 墙是场所不是信道：他的新便签不推全文，只挂一行提示牌——看不看
+      // 是她凑近的事（read_wall），不看不欠。上次凑近的时刻墙自己记着。
       ...(() => {
-        const his = this.deps.wall
-          ?.list()
-          .filter((note) => note.from === 'him' && note.at >= now - 24 * 3_600_000)
-          .map((note) => ({ text: note.text, image: note.image, at: clock(note.at, timeZone) }));
-        return his?.length ? { wallNotes: his } : {};
+        if (!this.deps.wall) return {};
+        const { count, latest } = this.deps.wall.unseenByHim();
+        if (!count) return {};
+        return {
+          wallSign: {
+            unseen: count,
+            latest: latest
+              ? { text: latest.text.slice(0, 40), at: clock(latest.at, timeZone) }
+              : undefined,
+          },
+        };
       })(),
       waitingDrafts: journal.pending(peer),
     };

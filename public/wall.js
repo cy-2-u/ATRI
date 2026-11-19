@@ -38,6 +38,11 @@ function render(notes) {
   for (const note of [...notes].reverse()) {
     const item = document.createElement('li');
     item.className = note.from;
+    // 便签的性格来自 id：底色三选一、歪斜 ±1.5°——确定性派生，刷新不变。
+    let hash = 0;
+    for (const ch of note.id) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
+    item.dataset.tone = ['a', 'b', 'c'][hash % 3];
+    item.style.setProperty('--tilt', `${((hash >> 4) % 31) / 10 - 1.5}deg`);
     if (note.text) item.append(note.text);
     if (note.image) {
       const img = document.createElement('img');

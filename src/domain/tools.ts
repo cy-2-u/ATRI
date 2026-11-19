@@ -530,7 +530,7 @@ export function lifeTools(
       definition: {
         name: 'publish',
         description:
-          '往你们的留言墙上贴一条（免登录网页，他能随时看到）。text 是想说的话（500 字内）；想配图就给 path（沙箱里的 PNG 文件路径，如 pictures/xx.png，会复制快照上墙）。文字与图至少有一样。',
+          '往你们的留言墙上贴一张便签（免登录网页，他路过时会看见）。text 是便签上的话（500 字内）；想配图就给 path（沙箱里的 PNG 文件路径，如 pictures/xx.png，会复制快照上墙）。文字与图至少有一样。便签贴上去就独立存在，不指向任何一段对话，也不需要谁回应。',
         parameters: {
           type: 'object',
           properties: { text: { type: 'string' }, path: { type: 'string' } },
@@ -544,11 +544,56 @@ export function lifeTools(
           typeof args.path === 'string' && args.path ? args.path : undefined,
           sandbox,
         );
-        return {
-          posted: true,
-          at: note.at,
-          note: '已上墙；他的新留言也会浮进你的资料，看到了就回应他',
-        };
+        return { posted: true, at: note.at, note: '已贴上墙。想看墙上还有什么，用 read_wall。' };
+      },
+    });
+    tools.push({
+      definition: {
+        name: 'read_wall',
+        description:
+          '凑近看墙：墙上贴着你们俩的便签（他的和你自己的都在）。不带参数返回最近的便签目录（谁贴的、说了什么、有没有图）；给 id 看单张全文，图会复制进沙箱（用 read_file 或视觉看它）；给 from 和 limit 翻指定的人贴的更多便签。翻过之后墙上的新东西就都算你见过了。',
+        parameters: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            from: { type: 'string', enum: ['him', 'her'] },
+            limit: { type: 'integer', minimum: 1, maximum: 20 },
+          },
+          additionalProperties: false,
+        },
+      },
+      async execute(args) {
+        if (typeof args.id === 'string' && args.id) {
+          const note = wall.note(args.id);
+          if (!note) throw new TypeError('墙上没有这张便签');
+          let sandboxPath: string | undefined;
+          if (note.image) {
+            const bytes = wall.imageBytes(note.image);
+            if (bytes) {
+              const written = await sandbox.writeBytes(`wall-${note.image}`, Buffer.from(bytes));
+              sandboxPath = written.path;
+            }
+          }
+          return {
+            from: note.from,
+            text: note.text,
+            at: note.at,
+            ...(sandboxPath ? { image: sandboxPath } : {}),
+          };
+        }
+        const notes = wall.notes({
+          from: args.from === 'her' || args.from === 'him' ? args.from : undefined,
+          limit: typeof args.limit === 'number' ? args.limit : undefined,
+        });
+        // 翻过就算看过：seen 指针推进，材料里的提示牌随之清零。
+        wall.markSeen();
+        return notes.map((n) => ({
+          id: n.id,
+          from: n.from,
+          text: n.text.slice(0, 80),
+          hasImage: Boolean(n.image),
+          at: n.at,
+        }));
       },
     });
   }

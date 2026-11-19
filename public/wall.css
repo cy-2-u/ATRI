@@ -1,5 +1,5 @@
-/* 留言墙 · 与控制台同一套奶油色视觉（浅色主题）。
- * 形态是聊天：留言流在上，输入条固定底部（毛玻璃）；点图页内灯箱。 */
+/* 留言墙 · 便利贴形态：便签卡错落贴在奶油色墙上，图片是拍立得。
+ * 墙是场所不是信道——便签彼此独立，没有左右、没有时序列。 */
 
 * {
   box-sizing: border-box;
@@ -8,21 +8,25 @@
 :root {
   color-scheme: light;
   --bg: #f5f3ef;
-  --surface: #ffffff;
   --border: #e2dcd2;
   --text: #2b2823;
   --text-dim: #6e6960;
   --accent: #e8703c;
   --accent-ink: #b04d1b;
-  --her-bubble: #fdeee3;
-  --her-border: #f3dcc9;
-  --mine-bubble: #e9ebef;
-  --mine-border: #d8dce4;
+  /* 便签三色：按 id 哈希轮换（wall.js 里算好写入 data-tone） */
+  --tone-a: #fdf6d8;
+  --tone-b: #e3f2e7;
+  --tone-c: #fdeae0;
 }
 
 body {
   margin: 0;
-  background: var(--bg);
+  background:
+    radial-gradient(circle at 8% 12%, rgb(232 112 60 / 0.04) 0 2px, transparent 3px),
+    radial-gradient(circle at 92% 30%, rgb(43 40 35 / 0.05) 0 2px, transparent 3px),
+    radial-gradient(circle at 30% 70%, rgb(232 112 60 / 0.05) 0 2px, transparent 3px),
+    radial-gradient(circle at 75% 85%, rgb(43 40 35 / 0.04) 0 2px, transparent 3px),
+    var(--bg);
   color: var(--text);
   font:
     15px/1.6 'PingFang SC',
@@ -32,10 +36,9 @@ body {
 }
 
 main {
-  max-width: 640px;
+  max-width: 960px;
   margin: 0 auto;
-  /* 底部避让要按输入条的真实高度算：textarea(2行)+按钮+内边距 ≈ 135px，
-     96px 时最后一条留言会被毛玻璃条压住（真机实锤）。 */
+  /* 底部避让按输入条真实高度算（真机实锤：135px 遮末张）。 */
   padding: 20px 16px calc(150px + env(safe-area-inset-bottom));
 }
 
@@ -43,7 +46,7 @@ main {
 
 .head {
   text-align: center;
-  margin-bottom: 18px;
+  margin-bottom: 20px;
 }
 
 h1 {
@@ -59,61 +62,82 @@ h1 {
   color: var(--text-dim);
 }
 
-/* ---------- 留言流 ---------- */
+/* ---------- 便签墙：多列瀑布流，新帖先进第一列 ---------- */
 
 #notes {
   list-style: none;
   margin: 0;
   padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
+  columns: 3 200px;
+  column-gap: 14px;
 }
 
 #notes li {
-  max-width: 82%;
-  padding: 10px 14px;
-  border-radius: 14px;
-  border: 1px solid;
+  /* 便签卡：按 data-tone 取底色，按 data-tilt 轻微歪斜（确定性，刷新不变）。 */
+  break-inside: avoid;
+  display: inline-block;
+  width: 100%;
+  margin: 0 0 14px;
+  padding: 18px 14px 10px;
+  border-radius: 2px;
+  background: var(--tone-a);
+  box-shadow:
+    0 1px 2px rgb(43 40 35 / 0.12),
+    0 4px 10px rgb(43 40 35 / 0.08);
   word-break: break-word;
   white-space: pre-wrap;
-  box-shadow: 0 1px 3px rgb(43 40 35 / 0.04);
+  position: relative;
+  transform: rotate(var(--tilt, 0deg));
 }
 
-#notes li.her {
-  align-self: flex-start;
-  background: var(--her-bubble);
-  border-color: var(--her-border);
-  border-bottom-left-radius: 4px;
+#notes li[data-tone='b'] {
+  background: var(--tone-b);
 }
 
-#notes li.him {
-  align-self: flex-end;
-  background: var(--mine-bubble);
-  border-color: var(--mine-border);
-  border-bottom-right-radius: 4px;
+#notes li[data-tone='c'] {
+  background: var(--tone-c);
 }
 
+/* 顶部胶带：半透明窄条压在卡上沿。 */
+#notes li::before {
+  content: '';
+  position: absolute;
+  top: -8px;
+  left: 50%;
+  width: 72px;
+  height: 18px;
+  transform: translateX(-50%) rotate(var(--tilt, 0deg));
+  background: rgb(232 112 60 / 0.18);
+  border-left: 1px dashed rgb(232 112 60 / 0.25);
+  border-right: 1px dashed rgb(232 112 60 / 0.25);
+}
+
+/* 图片 = 拍立得：白框 + 相纸底边，稍比便签歪一点。 */
 #notes img {
-  max-width: 100%;
-  border-radius: 10px;
   display: block;
-  margin-top: 8px;
+  width: 100%;
+  margin: 8px auto 4px;
+  padding: 6px 6px 20px;
+  background: #fff;
+  box-shadow: 0 2px 6px rgb(43 40 35 / 0.15);
+  transform: rotate(calc(var(--tilt, 0deg) * -1.6));
   cursor: zoom-in;
-}
-
-#notes time {
-  display: block;
-  font-size: 11px;
-  color: var(--text-dim);
-  margin-top: 4px;
 }
 
 #notes .save-hint {
   display: block;
   font-size: 11px;
   color: var(--text-dim);
+  text-align: center;
   margin-top: 2px;
+}
+
+#notes time {
+  display: block;
+  font-size: 11px;
+  color: var(--text-dim);
+  text-align: right;
+  margin-top: 6px;
 }
 
 .empty {
@@ -122,7 +146,7 @@ h1 {
   padding: 48px 0;
 }
 
-/* ---------- 底部输入条：毛玻璃固定，留言流不被顶走 ---------- */
+/* ---------- 底部输入条：一张待写的新便签 ---------- */
 
 #post {
   position: fixed;
@@ -131,22 +155,23 @@ h1 {
   bottom: 0;
   z-index: 10;
   margin: 0 auto;
-  padding: 10px calc(max(16px, (100% - 608px) / 2)) calc(10px + env(safe-area-inset-bottom));
+  padding: 12px calc(max(16px, (100% - 928px) / 2)) calc(12px + env(safe-area-inset-bottom));
   display: flex;
   flex-direction: column;
   gap: 8px;
   background: color-mix(in srgb, var(--bg) 82%, transparent);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
-  border-top: 1px solid var(--border);
+  border-top: 1px dashed var(--border);
 }
 
 #text {
   width: 100%;
   padding: 10px 12px;
   border: 1px solid var(--border);
-  border-radius: 12px;
-  background: var(--surface);
+  border-radius: 2px;
+  background: var(--tone-a);
+  box-shadow: 0 1px 3px rgb(43 40 35 / 0.08);
   color: var(--text);
   font: inherit;
   resize: none;
@@ -169,7 +194,7 @@ button:disabled {
   cursor: wait;
 }
 
-/* ---------- 灯箱：点图页内放大，长按即存 ---------- */
+/* ---------- 灯箱：点便签上的照片页内放大，长按即存 ---------- */
 
 #lightbox {
   position: fixed;

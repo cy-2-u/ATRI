@@ -105,3 +105,67 @@ test('publish 工具：她贴图上墙，非 PNG 拒', async () => {
     rmSync(env.dir, { recursive: true, force: true });
   }
 });
+
+test('墙是场所不是信道：SQL 下推翻阅 + unseen 提示牌 + read_wall 推进 seen', async () => {
+  const env = wallFixture();
+  try {
+    await env.sandbox.writeBytes('pictures/p.png', PNG);
+    // 三张便签：两他一她，间隔 1ms 保证时序确定。
+    const his1 = await env.wall.post('him', '第一张便签');
+    const hers = await env.wall.post('her', '我自己的便签', 'pictures/p.png', env.sandbox);
+    const his2 = await env.wall.post('him', '第二张便签');
+    assert.ok(his1.at <= hers.at && hers.at <= his2.at);
+
+    // notes()：作者过滤 + limit 下推，文本截断是工具层的事这里给全量。
+    assert.deepEqual(
+      env.wall.notes({ from: 'him', limit: 10 }).map((n) => n.text),
+      ['第二张便签', '第一张便签'],
+    );
+    assert.equal(env.wall.notes({ from: 'her' }).length, 1);
+    assert.equal(env.wall.notes({ limit: 1 }).length, 1);
+    assert.equal(env.wall.notes({ limit: 99 }).length, 3, 'limit 硬顶 20，99 收敛（全墙 3 张）');
+    assert.equal(env.wall.notes({ from: 'him', limit: 99 }).length, 2, 'from 过滤仍生效');
+    // note(id) 单张全量；图名有效、坏名 undefined。
+    const single = env.wall.note(hers.id);
+    assert.equal(single?.text, '我自己的便签');
+    assert.equal(env.wall.note('nope'), undefined);
+    assert.ok(env.wall.imageBytes(hers.image!), '图字节可读');
+    assert.equal(env.wall.imageBytes('../journal.db'), undefined);
+
+    // unseen：她没看过 → 两张他的都在牌上；read_wall（列表 or 单张）推进 seen → 清零。
+    assert.equal(env.wall.unseenByHim().count, 2);
+    assert.equal(env.wall.unseenByHim().latest?.text, '第二张便签');
+    const tools = lifeTools(env.journal, { sandbox: env.sandbox, wall: env.wall });
+    const readWall = tools.find((tool) => tool.definition.name === 'read_wall');
+    assert.ok(readWall, 'read_wall 工具必须注册');
+    const catalog = (await readWall.execute({}, CALL, {
+      id: 't',
+      peer: 'p',
+      version: 0,
+      kind: 'beat',
+    })) as Array<{ id: string; hasImage: boolean }>;
+    assert.equal(catalog.length, 3, '目录含双方便签');
+    assert.equal(catalog.filter((n) => n.hasImage).length, 1);
+    assert.equal(env.wall.unseenByHim().count, 0, '翻过即看过');
+
+    // 单张全量 + 图复制进沙箱：她凑近看那张带图的。
+    await env.sandbox.writeBytes('pictures/p.png', PNG); // 上面 post 时快照已拷走，沙箱原件可再写
+    const viewed = (await readWall.execute({ id: hers.id }, CALL, {
+      id: 't',
+      peer: 'p',
+      version: 0,
+      kind: 'beat',
+    })) as { from: string; text: string; image?: string };
+    assert.equal(viewed.from, 'her');
+    assert.equal(viewed.text, '我自己的便签');
+    assert.ok(viewed.image?.startsWith('wall-'), '墙图应复制进沙箱供她看');
+    assert.ok(env.sandbox.readFile(viewed.image!, 1024 * 1024), '复制出的文件真实可读');
+    // 不存在的 id 报错给她。
+    await assert.rejects(() =>
+      readWall.execute({ id: 'nope' }, CALL, { id: 't', peer: 'p', version: 0, kind: 'beat' }),
+    );
+  } finally {
+    env.close();
+    rmSync(env.dir, { recursive: true, force: true });
+  }
+});
