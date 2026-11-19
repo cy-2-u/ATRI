@@ -41,7 +41,10 @@ function render(notes) {
     if (note.text) item.append(note.text);
     if (note.image) {
       const img = document.createElement('img');
-      img.src = `/api/wall/images/${encodeURIComponent(note.image)}`;
+      // 小时级缓存戳：URL 稳定（轮询不重下），但服务器端原位换图后最多一小时
+      // 必换新 URL——绕开一切陈旧缓存层，包括 no-cache 管不住的极端环境。
+      const hour = Math.floor(Date.now() / 3_600_000);
+      img.src = `/api/wall/images/${encodeURIComponent(note.image)}?v=${hour}`;
       img.alt = '墙上的图片';
       // 不用 loading="lazy"：懒加载帧在滚动进入视口时才开始解码，动画图
       // 会出现"先冻结后补播"的观感，且与灯箱预加载逻辑互相打架。
