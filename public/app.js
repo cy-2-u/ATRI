@@ -14,6 +14,7 @@ let authenticated = false,
   sandboxSnapshot = '',
   usageSnapshot = '',
   issuesSnapshot = '',
+  sandboxFilesOpen = false,
   pollTimer = 0;
 
 function el(tag, text, className) {
@@ -476,13 +477,16 @@ async function refreshJournal() {
       return [...idle, ...flashes].sort((a, b) => b.at - a.at);
     }
     const commitments = await api('/api/commitments');
-    return commitments.map((c) => ({
-      id: c.id,
-      at: c.createdAt,
-      title: `${c.kind === 'reminder' ? '约定' : c.kind === 'promise' ? '她答应的事' : '挂念'}${c.state !== 'open' ? '（已了结）' : ''}`,
-      body: c.content + (c.dueAt ? ` · ${timeText(c.dueAt)}${c.askedAt ? ' · 问过一次' : ''}` : ''),
-      badge: c.state === 'open' && c.dueAt && c.dueAt <= Date.now() ? '已到时间' : '',
-    }));
+    return commitments
+      .map((c) => ({
+        id: c.id,
+        at: c.createdAt,
+        title: `${c.kind === 'reminder' ? '约定' : c.kind === 'promise' ? '她答应的事' : '挂念'}${c.state !== 'open' ? '（已了结）' : ''}`,
+        body:
+          c.content + (c.dueAt ? ` · ${timeText(c.dueAt)}${c.askedAt ? ' · 问过一次' : ''}` : ''),
+        badge: c.state === 'open' && c.dueAt && c.dueAt <= Date.now() ? '已到时间' : '',
+      }))
+      .sort((a, b) => b.at - a.at);
   };
   const items = await load();
   const sig2 = journalSub + ':' + JSON.stringify(items.map((i) => [i.id, i.body]));
@@ -975,15 +979,28 @@ async function refreshSystem() {
       const list = $('sandbox-files');
       list.replaceChildren();
       if (files?.entries?.length) {
-        list.append(el('p', '工作目录', 'side-title'));
-        for (const file of files.entries.slice(0, 20))
-          list.append(
-            el(
-              'div',
-              `${file.kind === 'dir' ? '📁' : '📄'} ${file.name}${file.size ? `（${file.size} B）` : ''}`,
-              'row',
-            ),
-          );
+        // 工作目录默认折叠：她的房间在侧栏只是一行标题，点开才铺文件。
+        const title = el('p', `工作目录（${files.entries.length} 项）`, 'side-title file-toggle');
+        const render = () => {
+          for (const row of [...list.querySelectorAll('.row')]) row.remove();
+          if (!sandboxFilesOpen) return;
+          for (const file of files.entries.slice(0, 20))
+            list.append(
+              el(
+                'div',
+                `${file.kind === 'dir' ? '📁' : '📄'} ${file.name}${file.size ? `（${file.size} B）` : ''}`,
+                'row',
+              ),
+            );
+        };
+        title.textContent = `工作目录（${files.entries.length} 项）${sandboxFilesOpen ? ' ▾' : ' ▸'}`;
+        title.onclick = () => {
+          sandboxFilesOpen = !sandboxFilesOpen;
+          title.textContent = `工作目录（${files.entries.length} 项）${sandboxFilesOpen ? ' ▾' : ' ▸'}`;
+          render();
+        };
+        list.append(title);
+        render();
       }
     }
   }
