@@ -16,15 +16,28 @@ import { Runtime } from '../src/runtime/runtime.js';
 /** 极简 WebDAV 假服务器：记录每个请求（方法/路径/正文），内存对象存储。 */
 function fakeDav() {
   const objects = new Map<string, Buffer>();
+  const madeDirs = new Set<string>();
+  const isMadeDir = (path: string) => madeDirs.has(path.slice(0, -1)) || madeDirs.has(path);
   const calls: { method: string; url: string }[] = [];
   const handler = (method: string, url: string, body?: Buffer) => {
     calls.push({ method, url });
     const path = url.replace(/^https?:\/\/dav\.test\//, '');
+    // 仿真网盘：PUT 的目标目录（去掉文件名后的父路径）未建立时回 409——
+    // w.webav.us.ci 实测行为，钉死"子目录必须先 MKCOL"。
+    const parent = path.replace(/[^/]+$/, '');
+    if (method === 'PUT' && parent && !objects.has(`${parent}.keep`)) {
+      const known = [...objects.keys()].some((k) => k.startsWith(parent));
+      if (!known && parent !== 'dav/atri-backup/' && !isMadeDir(parent)) return { status: 409 };
+    }
     if (method === 'PUT') {
       objects.set(path, body ?? Buffer.alloc(0));
       return { status: 201 };
     }
-    if (method === 'MKCOL') return { status: objects.has(path) ? 405 : 201 };
+    if (method === 'MKCOL') {
+      madeDirs.add(path);
+      objects.set(`${path}.keep`, Buffer.alloc(0));
+      return { status: objects.has(path) ? 405 : 201 };
+    }
     if (method === 'PROPFIND') {
       const xml = [...objects.keys()].map((p) => `<D:href>/dav/${p}</D:href>`).join('');
       return { status: 207, text: xml };

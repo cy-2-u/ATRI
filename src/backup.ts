@@ -132,13 +132,18 @@ export class WebDavBackup {
     }
 
     // 自定义表情：逐文件上传（Node 无内置 zip，不为此引依赖）。
+    // 子目录先 MKCOL（405=已存在，幂等）：网盘对未建目录的 PUT 回 409。
     const custom = join(this.dataDir, 'custom');
-    if (statSync(custom, { throwIfNoEntry: false })?.isDirectory())
+    if (statSync(custom, { throwIfNoEntry: false })?.isDirectory()) {
+      await this.request('MKCOL', `${base}custom/`, auth).catch((error) => {
+        if (!String(error.message).includes('HTTP 405')) throw error;
+      });
       for (const name of readdirSync(custom)) {
         const file = join(custom, name);
         if (statSync(file).isFile())
           await this.request('PUT', `${base}custom/${name}`, auth, readFileSync(file));
       }
+    }
 
     // 她的作品：墙图（仅图文件）与沙箱目录整棵逐文件上传。数据库之外
     // 唯一不可再生的东西——日记和画挂在卷上，卷挂了就永远没了。递归
@@ -165,8 +170,14 @@ export class WebDavBackup {
   }
 
   /** 递归上传一棵目录树：relative 路径即远端路径，目录原样镜像。
-   *  depth 限制递归层数（1 = 只收平铺文件），防止异常嵌套拖爆请求。 */
+   *  depth 限制递归层数（1 = 只收平铺文件），防止异常嵌套拖爆请求。
+   *  每个子目录先 MKCOL：多数网盘对"父目录存在但子目录未建"的 PUT
+   *  回 409（实测 w.webav.us.ci），不建目录直接 PUT 就是死路。405 =
+   *  目录已存在，幂等不算失败——所以"每天重复建"零成本。 */
   private async putTree(remote: string, root: string, auth: string, depth: number): Promise<void> {
+    await this.request('MKCOL', remote, auth).catch((error) => {
+      if (!String(error.message).includes('HTTP 405')) throw error;
+    });
     for (const entry of readdirSync(root, { withFileTypes: true })) {
       const full = join(root, entry.name);
       if (entry.isDirectory()) {
