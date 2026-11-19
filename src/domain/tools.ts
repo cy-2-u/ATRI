@@ -5,6 +5,7 @@ import type { Sandbox } from '../sandbox.js';
 import type { WebTools } from '../web.js';
 import type { ImagePainter } from '../image.js';
 import type { Wall } from '../wall.js';
+import type { Stickers } from '../stickers.js';
 
 function text(value: unknown, name: string): string {
   if (typeof value !== 'string' || !value.trim()) throw new TypeError(`${name} 必须是非空文本`);
@@ -21,7 +22,13 @@ function ids(value: unknown): string[] {
  *  全部工具注册进同一个 Mind，按 turn.kind 的工具集决定本轮谁可用。 */
 export function lifeTools(
   journal: Journal,
-  deps: { sandbox?: Sandbox; web?: WebTools; image?: ImagePainter; wall?: Wall },
+  deps: {
+    sandbox?: Sandbox;
+    web?: WebTools;
+    image?: ImagePainter;
+    wall?: Wall;
+    stickers?: Stickers;
+  },
 ): ToolHandler[] {
   const recollection = new Recollection(journal);
   const tools: ToolHandler[] = [
@@ -526,23 +533,36 @@ export function lifeTools(
   if (deps.wall && deps.sandbox) {
     const wall = deps.wall;
     const sandbox = deps.sandbox;
+    const stickers = deps.stickers;
     tools.push({
       definition: {
         name: 'publish',
         description:
-          '往你们的留言墙上贴一张便签（免登录网页，他路过时会看见）。text 是便签上的话（500 字内）；想配图就给 path（沙箱里的 PNG 文件路径，如 pictures/xx.png，会复制快照上墙）。文字与图至少有一样。便签贴上去就独立存在，不指向任何一段对话，也不需要谁回应。',
+          '往你们的留言墙上贴一张便签（免登录网页，他路过时会看见）。text 是便签上的话（500 字内）；想配图有三个来路：sticker 给目录里的表情包 slug（回他的话用表情包最顺手，动图也行）、path 给沙箱里的图片文件路径（如 pictures/xx.png，自己画的画走这里）、两者都不给就是纯文字便签。文字与图至少有一样。便签贴上去就独立存在，不指向任何一段对话，也不需要谁回应。',
         parameters: {
           type: 'object',
-          properties: { text: { type: 'string' }, path: { type: 'string' } },
+          properties: {
+            text: { type: 'string' },
+            path: { type: 'string' },
+            sticker: { type: 'string' },
+          },
           additionalProperties: false,
         },
       },
       async execute(args) {
+        const stickerSlug =
+          stickers && typeof args.sticker === 'string' && args.sticker
+            ? stickers.resolve(args.sticker)
+            : undefined;
+        if (typeof args.sticker === 'string' && args.sticker && !stickerSlug)
+          throw new TypeError('目录里没有这个表情，用 catalogPrompt 里的 slug 原样照抄');
+        const bytes = stickerSlug ? stickers!.bytes(stickerSlug) : undefined;
         const note = await wall.post(
           'her',
           typeof args.text === 'string' ? args.text : '',
-          typeof args.path === 'string' && args.path ? args.path : undefined,
+          typeof args.path === 'string' && args.path && !bytes ? args.path : undefined,
           sandbox,
+          bytes,
         );
         return { posted: true, at: note.at, note: '已贴上墙。想看墙上还有什么，用 read_wall。' };
       },

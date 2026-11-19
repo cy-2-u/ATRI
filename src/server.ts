@@ -242,8 +242,15 @@ ${
     const etag = `"${createHash('sha1').update(bytes).digest('base64')}"`;
     if (request.headers['if-none-match'] === etag)
       return reply.code(304).header('etag', etag).header('cache-control', 'no-cache').send();
+    // 扩展名决定 content-type：表情包 jpg/gif/webp 上墙后浏览器要按真类型渲染。
+    const types: Record<string, string> = {
+      png: 'image/png',
+      jpg: 'image/jpeg',
+      gif: 'image/gif',
+      webp: 'image/webp',
+    };
     return reply
-      .header('content-type', 'image/png')
+      .header('content-type', types[file.split('.').pop() ?? ''] ?? 'image/png')
       .header('etag', etag)
       .header('cache-control', 'no-cache')
       .send(bytes);

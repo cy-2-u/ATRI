@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Journal } from '../src/storage/journal.js';
 import { Wall } from '../src/wall.js';
 import { Sandbox } from '../src/sandbox.js';
+import { Stickers } from '../src/stickers.js';
 import { lifeTools } from '../src/domain/tools.js';
 
 function wallFixture() {
@@ -72,7 +73,7 @@ test('留言墙：双方可发、图片快照独立于沙箱、限容、路径�
   }
 });
 
-test('publish 工具：她贴图上墙，非 PNG 拒', async () => {
+test('publish 工具：她贴图上墙，坏图拒；sticker 表情包直接上墙', async () => {
   const env = wallFixture();
   try {
     await env.sandbox.writeBytes('pictures/ok.png', PNG);
@@ -91,9 +92,67 @@ test('publish 工具：她贴图上墙，非 PNG 拒', async () => {
     assert.equal(notes.length, 1);
     assert.equal(notes[0]!.from, 'her');
     assert.equal(notes[0]!.text, '第一幅作品');
-    // 非 PNG 拒，工具把错误如实报回给她。
+    // 坏图拒，工具把错误如实报回给她。
     await assert.rejects(() =>
       publish!.execute({ text: 'x', path: 'pictures/bad.txt' }, CALL, {
+        id: 't',
+        peer: 'p',
+        version: 0,
+        kind: 'beat',
+      }),
+    );
+  } finally {
+    env.close();
+    rmSync(env.dir, { recursive: true, force: true });
+  }
+});
+
+test('表情包上墙：sticker slug 快照成墙图，jpg 也认，坏 slug 报错', async () => {
+  const env = wallFixture();
+  try {
+    // 假表情目录：一个 jpg 表情（魔数 FF D8 FF），落盘走 custom/。
+    // Stickers.list() 合并内置目录——fixture 里给个空 catalog 躲开真素材。
+    const JPEG = Buffer.from('ffd8ffe000104a46494600010100000100010000ffdb004300ffd9', 'hex');
+    const slug = 'jelly-wave';
+    mkdirSync(join(env.dir, 'assets', 'stickers'), { recursive: true });
+    writeFileSync(join(env.dir, 'assets', 'stickers', 'catalog.json'), '[]');
+    const customDir = join(env.dir, 'custom');
+    mkdirSync(customDir, { recursive: true });
+    writeFileSync(join(customDir, 's.jpg'), JPEG);
+    env.journal.setSetting('stickers:custom', [
+      { slug, description: '挥手的小水母', tags: ['挥手'], file: 'custom/s.jpg' },
+    ]);
+    const stickers = new Stickers(env.dir, env.dir, env.journal);
+    const tools = lifeTools(env.journal, {
+      sandbox: env.sandbox,
+      wall: env.wall,
+      stickers,
+    });
+    const publish = tools.find((tool) => tool.definition.name === 'publish')!;
+    // 纯表情包便签（无 text 无 path）：贴上墙且图是 jpg。
+    const result = (await publish.execute({ sticker: slug }, CALL, {
+      id: 't',
+      peer: 'p',
+      version: 0,
+      kind: 'beat',
+    })) as { posted: boolean };
+    assert.equal(result.posted, true);
+    const note = env.wall.list()[0]!;
+    assert.ok(note.image?.endsWith('.jpg'), '表情包按嗅探落成 jpg');
+    assert.equal(
+      Buffer.from(env.wall.imageBytes(note.image!)!).subarray(0, 3).toString('hex'),
+      'ffd8ff',
+    );
+    // 文字 + 表情包一起贴；目录里没有的 slug 报错。
+    await publish.execute({ text: '接住！', sticker: slug }, CALL, {
+      id: 't',
+      peer: 'p',
+      version: 0,
+      kind: 'beat',
+    });
+    assert.equal(env.wall.list()[0]!.text, '接住！');
+    await assert.rejects(() =>
+      publish.execute({ sticker: 'no-such' }, CALL, {
         id: 't',
         peer: 'p',
         version: 0,
