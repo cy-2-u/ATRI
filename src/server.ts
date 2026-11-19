@@ -222,10 +222,17 @@ export function createServer(options: ServerOptions) {
     const name = String((request.params as { name: string }).name);
     const file = options.wall?.imageFile(name);
     if (!file) return reply.code(404).send({ error: '不存在' });
+    // no-cache + ETag：图可被原位替换（修复重传），长 max-age 会让浏览器
+    // 拿着旧字节演 24 小时（真机实锤：换图后用户端仍冻结）。ETag 命中即 304。
+    const bytes = readFileSync(file);
+    const etag = `"${createHash('sha1').update(bytes).digest('base64')}"`;
+    if (request.headers['if-none-match'] === etag)
+      return reply.code(304).header('etag', etag).header('cache-control', 'no-cache').send();
     return reply
       .header('content-type', 'image/png')
-      .header('cache-control', 'public, max-age=86400')
-      .send(readFileSync(file));
+      .header('etag', etag)
+      .header('cache-control', 'no-cache')
+      .send(bytes);
   });
 
   app.post('/api/login', async (request, reply) => {

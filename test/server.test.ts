@@ -7,7 +7,7 @@ import { Mind } from '../src/domain/mind.js';
 import { Runtime } from '../src/runtime/runtime.js';
 import { createServer } from '../src/server.js';
 import { Wall } from '../src/wall.js';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -61,10 +61,13 @@ async function fixture() {
     payload: { password: 'test-password-123' },
   });
   const cookie = String(login.headers['set-cookie']).split(';')[0]!;
+  const wall = new Wall(journal.db, wallDir);
   return {
     app,
     cookie,
     journal,
+    wallDir,
+    wall,
     async close() {
       await app.close();
       await runtime.stop();
@@ -139,6 +142,36 @@ test('留言墙免登录：页面/列表/发布公开可达，管理 API 仍需�
     // 图片名不存在的 404。
     assert.equal((await env.app.inject('/api/wall/images/nope.png')).statusCode, 404);
     assert.equal((await env.app.inject('/api/wall/images/..%2Fsecret')).statusCode, 404);
+    // 图片走 no-cache + ETag：原位替换后浏览器立即见新字节（长 max-age 曾让
+    // 换图后用户端冻结 24h——真机实锤）。命中 ETag 返回 304 空 body。
+    // 直接往 wall 目录放一个合法 PNG 魔数的占位文件 + 走 wall.post 造带图留言
+    //（post 只校验魔数，图片路由只查文件存在，无需沙箱）。
+    const png = Buffer.from(
+      '89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000a49444154789c6300010000050001',
+      'hex',
+    );
+    writeFileSync(join(env.wallDir, 'fake.png'), png);
+    await env.wall.post('him', '带图留言', 'fake.png', {
+      readFile: () => Promise.resolve({ bytes: png }),
+    } as never);
+    const listWithImage = await env.app.inject('/api/wall');
+    const imageUrl = listWithImage
+      .json()
+      .map((n: { image?: string }) => n.image)
+      .find(Boolean);
+    assert.ok(imageUrl, '留言应带图');
+    const first = await env.app.inject(`/api/wall/images/${imageUrl}`);
+    assert.equal(first.statusCode, 200);
+    assert.equal(first.headers['cache-control'], 'no-cache');
+    const etag = first.headers.etag;
+    assert.ok(etag, '应下发 ETag');
+    const revalidated = await env.app.inject({
+      method: 'GET',
+      url: `/api/wall/images/${imageUrl}`,
+      headers: { 'if-none-match': etag },
+    });
+    assert.equal(revalidated.statusCode, 304);
+    assert.equal(revalidated.body.length, 0);
     // 超长文本（>500 字）在服务端也被拒，不只靠前端 maxlength——
     // 趁限速额度没打满先测（它同样计权）。
     assert.equal(

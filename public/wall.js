@@ -43,7 +43,8 @@ function render(notes) {
       const img = document.createElement('img');
       img.src = `/api/wall/images/${encodeURIComponent(note.image)}`;
       img.alt = '墙上的图片';
-      img.loading = 'lazy';
+      // 不用 loading="lazy"：懒加载帧在滚动进入视口时才开始解码，动画图
+      // 会出现"先冻结后补播"的观感，且与灯箱预加载逻辑互相打架。
       img.onclick = () => {
         lightImg.src = img.src;
         lightbox.hidden = false;
