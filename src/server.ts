@@ -68,6 +68,18 @@ export function createServer(options: ServerOptions) {
   const sessions = new Map<string, number>();
   const attempts = new Map<string, { count: number; resetAt: number }>();
   const passwordHash = digest(options.password);
+  // cookie 里带的是会话令牌本身，不是"是否登录"布尔：过期/未知令牌在
+  // sessions 里查不到，两种门禁（API 401、页面渲染表单）共用这一个事实。
+  const sessionToken = (request: { headers: { cookie?: string } }) =>
+    (request.headers.cookie ?? '')
+      .split(';')
+      .map((part) => part.trim())
+      .find((part) => part.startsWith('atri_session='))
+      ?.slice('atri_session='.length);
+  const loggedIn = (request: { headers: { cookie?: string } }) => {
+    const token = sessionToken(request);
+    return token !== undefined && (sessions.get(token) ?? 0) > Date.now();
+  };
 
   app.addHook('onRequest', async (request, reply) => {
     // API 不缓存（响应随状态实时变）；静态页走 no-cache——浏览器可存副本
@@ -99,18 +111,13 @@ export function createServer(options: ServerOptions) {
     if (
       request.url === '/healthz' ||
       request.url === '/api/login' ||
-      // 墙的放行必须精确到路径边界：startsWith 会把 /api/wall-admin 这类
-      // 未来同名前缀端点一并裸奔出去。
-      /^\/api\/wall(\/|$)/.test(request.url) ||
+      // 墙公开的只有看：列表与图片。写（POST /api/wall）要登录——from 写死
+      // 'him'，裸奔等于任何游客都能冒充他发便签、触发她的提示牌。
+      (/^\/api\/wall(\/|$)/.test(request.url) && request.method === 'GET') ||
       !request.url.startsWith('/api/')
     )
       return;
-    const cookies = (request.headers.cookie ?? '').split(';').map((part) => part.trim());
-    const token = cookies
-      .find((part) => part.startsWith('atri_session='))
-      ?.slice('atri_session='.length);
-    if (!token || (sessions.get(token) ?? 0) <= Date.now())
-      return reply.code(401).send({ error: '请先登录' });
+    if (!loggedIn(request)) return reply.code(401).send({ error: '请先登录' });
   });
 
   app.setErrorHandler((error, _request, reply) => {
@@ -169,9 +176,9 @@ export function createServer(options: ServerOptions) {
 
   app.get('/healthz', async () => ({ ok: true }));
 
-  // ---------- 留言墙：免登录公开页（她 publish / 他直接写） ----------
+  // ---------- 留言墙：看对所有人开放，写只属于登录的他 ----------
   const wallRate = new Map<string, { count: number; resetAt: number }>();
-  const wallHtml = `<!doctype html>
+  const wallHtml = (signedIn: boolean) => `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>留言墙</title>
@@ -179,14 +186,18 @@ export function createServer(options: ServerOptions) {
 <body><main id="app">
 <header class="head"><h1>我们的留言墙</h1><p class="sub">随手留一句话，有画就挂出来。</p></header>
 <ol id="notes" aria-live="polite"></ol>
-<form id="post"><textarea id="text" maxlength="500" rows="2" placeholder="写点什么贴上墙…" required></textarea>
-<button type="submit">贴上墙</button></form></main>
+${
+  signedIn
+    ? `<form id="post"><textarea id="text" maxlength="500" rows="2" placeholder="写点什么贴上墙…" required></textarea>
+<button type="submit">贴上墙</button></form>`
+    : '<p class="guest-hint">想留一句话？登录之后才能贴。</p>'
+}</main>
 <div id="lightbox" hidden><img alt="墙上的图片" src=""><span class="tip">长按图片可保存 · 点任意处关闭</span></div>
 <script src="/wall.js"></script></body></html>`;
   const wallGet = async () => options.wall?.list() ?? [];
-  app.get('/wall', async (_request, reply) => {
+  app.get('/wall', async (request, reply) => {
     reply.header('content-type', 'text/html; charset=utf-8');
-    return wallHtml;
+    return wallHtml(loggedIn(request));
   });
   const wallLimit = (
     request: { ip: string },
@@ -211,6 +222,9 @@ export function createServer(options: ServerOptions) {
   });
   app.post('/api/wall', async (request, reply) => {
     if (!options.wall) return reply.code(404).send({ error: '没有墙' });
+    // 登录门禁在 onRequest hook（放行只给 GET）；这里再挡一次不是冗余：
+    // from 写死 'him'，这行的存在本身声明"能走到这的都是他"。
+    if (!loggedIn(request)) return reply.code(401).send({ error: '登录后才能贴便签' });
     if (wallLimit(request, reply) !== undefined) return;
     const body = request.body as { text?: unknown } | undefined;
     if (typeof body?.text !== 'string' || !body.text.trim())
@@ -263,11 +277,7 @@ export function createServer(options: ServerOptions) {
     return { ok: true };
   });
   app.post('/api/logout', async (request, reply) => {
-    const token = (request.headers.cookie ?? '')
-      .split(';')
-      .map((part) => part.trim())
-      .find((part) => part.startsWith('atri_session='))
-      ?.slice(13);
+    const token = sessionToken(request);
     if (token) sessions.delete(token);
     reply.header('set-cookie', 'atri_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0');
     return { ok: true };

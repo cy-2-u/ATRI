@@ -2,9 +2,9 @@
  * 图片点击走页内灯箱（不跳新标签），灯箱里长按即可保存。 */
 
 const list = document.getElementById('notes');
-const form = document.getElementById('post');
-const box = document.getElementById('text');
-const button = form.querySelector('button');
+const form = document.getElementById('post'); // 游客页没有表单：只能看，不能贴
+const box = form?.querySelector('#text');
+const button = form?.querySelector('button');
 const lightbox = document.getElementById('lightbox');
 const lightImg = lightbox.querySelector('img');
 
@@ -78,28 +78,30 @@ async function refresh() {
   }
 }
 
-form.addEventListener('submit', async (event) => {
-  event.preventDefault();
-  const text = box.value.trim();
-  if (!text) return;
-  button.disabled = true;
-  try {
-    const res = await fetch('/api/wall', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ text }),
-    });
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({}));
-      alert(body.error ?? '没贴上去，稍后再试');
-      return;
+if (form) {
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const text = box.value.trim();
+    if (!text) return;
+    button.disabled = true;
+    try {
+      const res = await fetch('/api/wall', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ text }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        alert(body.error ?? '没贴上去，稍后再试');
+        return;
+      }
+      box.value = '';
+      await refresh();
+    } finally {
+      button.disabled = false;
     }
-    box.value = '';
-    await refresh();
-  } finally {
-    button.disabled = false;
-  }
-});
+  });
+}
 
 refresh();
 setInterval(refresh, 4000);

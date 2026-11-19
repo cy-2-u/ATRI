@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Journal } from '../src/storage/journal.js';
-import { lifeTools } from '../src/domain/tools.js';
+import { lifeTools, TOOL_SETS } from '../src/domain/tools.js';
 
 const options = () => ({ deadlineAt: Date.now() + 1000 });
 
@@ -146,5 +146,14 @@ test('日记召回：词面命中、情绪随行、detail 分级渲染', async (
     assert.equal(none.length, 0);
   } finally {
     journal.close();
+  }
+});
+
+test('read_wall 必须在各拍工具白名单里：漏配等于死工具（CI 实锤过）', () => {
+  for (const kind of ['chat', 'beat'] as const) {
+    assert.ok(
+      TOOL_SETS[kind].includes('read_wall'),
+      `${kind} 拍看不到 read_wall，提示牌的引导就落空`,
+    );
   }
 });

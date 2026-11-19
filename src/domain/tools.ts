@@ -621,6 +621,7 @@ export const TOOL_SETS = {
     'keep_commitment',
     'resolve_commitment',
     'consider',
+    'read_wall',
     ...HAND_AND_EYE,
   ],
   beat: [
@@ -630,6 +631,7 @@ export const TOOL_SETS = {
     'keep_commitment',
     'resolve_commitment',
     'consider',
+    'read_wall',
     ...HAND_AND_EYE,
   ],
   reminder: [

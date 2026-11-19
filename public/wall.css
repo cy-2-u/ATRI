@@ -145,6 +145,15 @@ h1 {
   padding: 48px 0;
 }
 
+/* 游客看到的一行提示：墙随便看，贴要登录。 */
+.guest-hint {
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-dim);
+  padding: 28px 0 8px;
+  border-top: 1px dashed var(--border);
+}
+
 /* ---------- 底部输入条：一张待写的新便签 ---------- */
 
 #post {

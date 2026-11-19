@@ -110,28 +110,50 @@ test('管理 API 鉴权、同源保护和主备密钥脱敏', async () => {
   }
 });
 
-test('留言墙免登录：页面/列表/发布公开可达，管理 API 仍需登录', async () => {
+test('留言墙：看对游客开放，写只认登录 cookie，管理 API 仍需登录', async () => {
   const env = await fixture();
   try {
+    // 游客：页面可看（无表单、有提示），列表可读，写被拒。
     const page = await env.app.inject('/wall');
     assert.equal(page.statusCode, 200);
     assert.ok(page.body.includes('wall.css'));
-    // 未登录直接发布与读取。
+    assert.ok(!page.body.includes('id="post"'), '游客页不渲染发布表单');
+    assert.ok(page.body.includes('guest-hint'), '游客页有登录提示');
+    assert.equal(
+      (
+        await env.app.inject({
+          method: 'POST',
+          url: '/api/wall',
+          payload: { text: '冒充他的留言' },
+        })
+      ).statusCode,
+      401,
+      '游客 POST 被拒——from 写死 him，裸奔等于身份伪造',
+    );
+    const list = await env.app.inject('/api/wall');
+    assert.equal(list.statusCode, 200);
+    assert.equal(list.json().length, 0);
+    // 登录后：页面有表单，发布走 him。
+    const signedPage = await env.app.inject({ url: '/wall', headers: { cookie: env.cookie } });
+    assert.ok(signedPage.body.includes('id="post"'), '登录页渲染发布表单');
     const posted = await env.app.inject({
       method: 'POST',
       url: '/api/wall',
+      headers: { cookie: env.cookie },
       payload: { text: '验收官第一条留言' },
     });
     assert.equal(posted.statusCode, 200);
     assert.equal(posted.json().from, 'him');
-    const list = await env.app.inject('/api/wall');
-    assert.equal(list.statusCode, 200);
-    assert.equal(list.json().length, 1);
-    assert.equal(list.json()[0]!.text, '验收官第一条留言');
-    // 空文本与超长拒。
+    // 空文本与超长拒（已登录）。
     assert.equal(
-      (await env.app.inject({ method: 'POST', url: '/api/wall', payload: { text: '  ' } }))
-        .statusCode,
+      (
+        await env.app.inject({
+          method: 'POST',
+          url: '/api/wall',
+          headers: { cookie: env.cookie },
+          payload: { text: '  ' },
+        })
+      ).statusCode,
       400,
     );
     // 管理 API 依然要登录（wall 放行不能漏成全局放行）。
@@ -179,6 +201,7 @@ test('留言墙免登录：页面/列表/发布公开可达，管理 API 仍需�
         await env.app.inject({
           method: 'POST',
           url: '/api/wall',
+          headers: { cookie: env.cookie },
           payload: { text: 'a'.repeat(600) },
         })
       ).statusCode,
@@ -189,13 +212,20 @@ test('留言墙免登录：页面/列表/发布公开可达，管理 API 仍需�
       const more = await env.app.inject({
         method: 'POST',
         url: '/api/wall',
+        headers: { cookie: env.cookie },
         payload: { text: `灌水 ${i}` },
       });
       assert.equal(more.statusCode, 200);
     }
     assert.equal(
-      (await env.app.inject({ method: 'POST', url: '/api/wall', payload: { text: '第 6 条' } }))
-        .statusCode,
+      (
+        await env.app.inject({
+          method: 'POST',
+          url: '/api/wall',
+          headers: { cookie: env.cookie },
+          payload: { text: '第 6 条' },
+        })
+      ).statusCode,
       429,
     );
   } finally {
