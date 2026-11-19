@@ -16,6 +16,8 @@ let authenticated = false,
   issuesSnapshot = '',
   sandboxFilesOpen = false,
   pollTimer = 0;
+/** 最近一次 /api/deliveries 结果：打开抽屉时据此写已读指纹。 */
+let lastIssues = [];
 
 function el(tag, text, className) {
   const node = document.createElement(tag);
@@ -224,7 +226,12 @@ for (const opener of document.querySelectorAll('[data-drawer]')) {
     event.stopPropagation();
     const drawer = $(opener.dataset.drawer);
     drawer.hidden = !drawer.hidden;
-    if (!drawer.hidden) refreshDrawers();
+    if (!drawer.hidden) {
+      // 打开待办抽屉即视为"看过"：refreshDrawers 拉到最新件后把整批
+      // 记进已读指纹，红点立刻消失，列表与裁决按钮保留。
+      if (opener.dataset.drawer === 'drawer-issues') markIssuesSeen();
+      refreshDrawers();
+    }
   };
 }
 document.addEventListener('click', (event) => {
@@ -292,18 +299,36 @@ async function refreshStatus() {
   const dot = pill.querySelector('.pill-dot');
   pill.classList.toggle('online', connected);
   dot?.classList.toggle('warn', !connected);
-  // 待办
+  // 待办：红点只对"没见过的新告警"亮。打开过抽屉的件记进已读指纹
+  // （id+status，失败原因变了算新告警重新亮）；关标签后指纹清零，
+  // 回来重亮一次——回来扫一眼是合理频率。裁决按钮仍在抽屉里。
   const issues = await api('/api/deliveries').catch(() => []);
+  lastIssues = issues;
+  if (drawerIssuesOpen()) markIssuesSeen();
   const issuesSig = JSON.stringify(issues);
   if (issuesSig !== issuesSnapshot) {
     issuesSnapshot = issuesSig;
-    const count = $('issues-count');
-    count.hidden = !issues.length;
-    count.textContent = String(issues.length);
     renderIssues(issues);
   }
+  const seen = new Set(JSON.parse(sessionStorage.getItem('issuesSeen') ?? '[]'));
+  const unseen = issues.filter((env) => !seen.has(`${env.id}:${env.status}`));
+  const count = $('issues-count');
+  count.hidden = !unseen.length;
+  count.textContent = String(unseen.length);
   // 她此刻（对话页侧栏）
   if (currentTab === 'chat') renderSelfChips(status, config);
+}
+
+/** 待办抽屉开着 = 用户正在看：把当前整批件记进已读指纹。 */
+function drawerIssuesOpen() {
+  return !$('drawer-issues').hidden;
+}
+function markIssuesSeen() {
+  if (!lastIssues.length) return;
+  sessionStorage.setItem(
+    'issuesSeen',
+    JSON.stringify(lastIssues.map((env) => `${env.id}:${env.status}`)),
+  );
 }
 
 function renderSelfChips(status, config) {
