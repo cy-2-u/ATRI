@@ -38,6 +38,17 @@ function fakeDav() {
       objects.set(`${path}.keep`, Buffer.alloc(0));
       return { status: objects.has(path) ? 405 : 201 };
     }
+    // 自家网盘的 JSON 列表端点：从对象键里抽出日期目录。
+    if (method === 'GET' && path === 'dav/atri-backup/') {
+      const days = [
+        ...new Set(
+          [...objects.keys()]
+            .map((k) => k.match(/atri-backup\/(\d{4}-\d{2}-\d{2})\//)?.[1])
+            .filter((d): d is string => Boolean(d)),
+        ),
+      ];
+      return { status: 200, text: JSON.stringify({ days }) };
+    }
     if (method === 'PROPFIND') {
       const xml = [...objects.keys()].map((p) => `<D:href>/dav/${p}</D:href>`).join('');
       return { status: 207, text: xml };
@@ -272,6 +283,47 @@ test('WebDAV 备份：清理失败不炸主流程（坚果云不删非空目录�
     await env.backup.run(1_700_000_000_000);
     assert.ok(env.dav.objects.has('dav/atri-backup/2023-11-15/atri.db.gz'));
     assert.equal(env.backup.state.at, '2023-11-15');
+  } finally {
+    env.close();
+  }
+});
+
+test('WebDAV 轮转：JSON 列表为主路径，31 天历史经 GET 列出并轮转', async () => {
+  const env = backupFixture();
+  try {
+    for (let d = 1; d <= 31; d++) {
+      const day = `2023-10-${String(d).padStart(2, '0')}`;
+      env.dav.objects.set(`dav/atri-backup/${day}/atri.db.gz`, Buffer.alloc(0));
+    }
+    await env.backup.run(1_700_000_000_000);
+    // 31 天历史 + 今天 = 32 份 → 超出 KEEP 的最老两天被 DELETE。
+    const deleted = env.dav.calls
+      .filter((c) => c.method === 'DELETE')
+      .map((c) => c.url.match(/\d{4}-\d{2}-\d{2}/)?.[0]);
+    assert.deepEqual(deleted, ['2023-10-01', '2023-10-02']);
+    assert.ok(env.dav.objects.has('dav/atri-backup/2023-11-15/atri.db.gz'));
+  } finally {
+    env.close();
+  }
+});
+
+test('WebDAV 轮转：JSON 列表不可用降级 PROPFIND（标准网盘兜底）', async () => {
+  const env = backupFixture();
+  try {
+    for (let d = 1; d <= 31; d++) {
+      const day = `2023-10-${String(d).padStart(2, '0')}`;
+      env.dav.objects.set(`dav/atri-backup/${day}/atri.db.gz`, Buffer.alloc(0));
+    }
+    const originalHandler = env.dav.handler;
+    env.dav.handler = (method, url, body) => {
+      if (method === 'GET') return { status: 500 };
+      return originalHandler(method, url, body);
+    };
+    await env.backup.run(1_700_000_000_000);
+    const deleted = env.dav.calls
+      .filter((c) => c.method === 'DELETE')
+      .map((c) => c.url.match(/\d{4}-\d{2}-\d{2}/)?.[0]);
+    assert.deepEqual(deleted, ['2023-10-01', '2023-10-02']);
   } finally {
     env.close();
   }

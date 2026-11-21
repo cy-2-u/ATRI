@@ -78,6 +78,9 @@ export class WebDavBackup {
    *  当天缺的备份；失败进入冷却（一小时后下一个 tick 再试）。 */
   async tick(now: number): Promise<BackupState> {
     if (!this.configured) return this.#state;
+    // 撞上手动备份正在跑：让它完成，不算失败——"上次失败：备份正在
+    // 进行中"是误导，成功方会自己更新状态。
+    if (this.#running) return this.#state;
     const day = dayKeyOf(now, this.timeZone());
     if (day === this.#lastDay) return this.#state;
     if (hourOf(now, this.timeZone()) < 4) return this.#state;
@@ -271,26 +274,50 @@ export class WebDavBackup {
     throw lastError;
   }
 
-  /** 标准网盘的轮转：PROPFIND 列日期目录，超出 KEEP 的逐个 DELETE。
-   *  自家网盘（w.webav）PROPFIND 不可用，轮转由它的服务端在写入后做
-   *  （保留最近 KEEP 份，语义与此处一致）——这里列不出来就静默跳过，
-   *  备份比清理金贵。服务端轮转覆盖后此方法可整体退役。 */
+  /** 轮转：列日期目录，超出 KEEP 的逐个 DELETE（404 = 本就不存在，无害）。
+   *  列表走自家网盘的 GET JSON 端点（{"days":[...]}），标准 WebDAV 网盘
+   *  降级 PROPFIND；两家都列不出来就静默跳过——备份比清理金贵。 */
   private async prune(auth: string): Promise<void> {
     const url = this.config()!.url.replace(/\/+$/, '');
+    const days = await this.listBackupDays(url, auth);
+    for (const old of days.slice(0, Math.max(0, days.length - KEEP)))
+      // 单目录删除失败不中断轮转：有些网盘不删非空目录，逐个尽力而为。
+      await this.request('DELETE', `${url}/atri-backup/${old}/`, auth).catch(() => undefined);
+  }
+
+  /** 远端现存的备份日期，排序去重。 */
+  private async listBackupDays(url: string, auth: string): Promise<string[]> {
+    // 自家网盘：GET 直接给 JSON 日期数组。
+    try {
+      const res = await fetch(`${url}/atri-backup/`, {
+        headers: { authorization: auth },
+        signal: AbortSignal.timeout(TIMEOUT_MS),
+      });
+      if (res.ok) {
+        const parsed = (await res.json().catch(() => null)) as { days?: unknown } | null;
+        if (Array.isArray(parsed?.days))
+          return [
+            ...new Set(
+              parsed.days.filter(
+                (d): d is string => typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d),
+              ),
+            ),
+          ].sort();
+      }
+    } catch {
+      /* 降级 PROPFIND */
+    }
+    // 标准 WebDAV：PROPFIND 多状态，正则钉死 YYYY-MM-DD 目录。
     const res = await fetch(`${url}/atri-backup/`, {
       method: 'PROPFIND',
       headers: { authorization: auth, depth: '1' },
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
-    if (!res.ok) return;
+    if (!res.ok) return [];
     const xml = await res.text();
-    // 只认响应里的日期戳目录：正则钉死 YYYY-MM-DD，误删面为零。
-    const days = [...xml.matchAll(/atri-backup\/(\d{4}-\d{2}-\d{2})/g)]
+    return [...xml.matchAll(/atri-backup\/(\d{4}-\d{2}-\d{2})/g)]
       .map((m) => m[1]!)
       .filter((day, i, all) => all.indexOf(day) === i)
       .sort();
-    for (const old of days.slice(0, Math.max(0, days.length - KEEP)))
-      // 单目录删除失败不中断轮转：有些网盘不删非空目录，逐个尽力而为。
-      await this.request('DELETE', `${url}/atri-backup/${old}/`, auth).catch(() => undefined);
   }
 }
