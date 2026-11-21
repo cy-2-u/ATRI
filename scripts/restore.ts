@@ -43,7 +43,9 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
     process.env.ATRI_DATA_DIR ||
       join(resolve(dirname(fileURLToPath(import.meta.url))), '..', 'data'),
   );
-  const sandboxDir = process.env.ATRI_SANDBOX_DIR;
+  const sandboxDir = process.env.ATRI_SANDBOX_DIR
+    ? resolve(process.env.ATRI_SANDBOX_DIR)
+    : undefined;
   const fromDir = resolve(process.argv[2] || '');
   if (!fromDir || statSync(fromDir, { throwIfNoEntry: false })?.isDirectory() !== true) {
     console.error('用法：node restore.mjs <备份目录>');

@@ -41,7 +41,8 @@ node dist/migrate.js <旧 atri.db> <新内核.db>
 消息、记忆（六变量投影）、约定、念头、心情、日记、微信会话凭据、旧向量全部原样迁移；
 老库文件不动，验收后再切换。备份与恢复：`npm run backup` / `npm run restore`。
 每日备份在管理页系统设置里配 WebDAV（坚果云/Alist/群晖均可）：凌晨 4 点自动备份
-数据库与自定义表情到 `atri-backup/<日期>/`，保留最近 30 份；`restore` 直接认 `.gz`。
+数据库、自定义表情与她的作品（墙图、沙箱整棵）到 `atri-backup/<日期>/`，保留最近 30 份；
+`restore` 直接认 `.gz`，沙箱根跟着 `ATRI_SANDBOX_DIR` 走。
 
 ## 模拟与验证
 

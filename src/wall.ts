@@ -63,7 +63,7 @@ export class Wall {
     );
     this.latestMineStmt = sql.prepare(
       // rowid DESC 破同毫秒平局：与 latestHim 同一竞速教训。
-      "SELECT created_at AS at, text FROM kernel_wall WHERE author = 'her' ORDER BY created_at DESC, rowid DESC LIMIT 1",
+      "SELECT created_at AS at FROM kernel_wall WHERE author = 'her' ORDER BY created_at DESC, rowid DESC LIMIT 1",
     );
     // 她上次"凑近看墙"的时刻（kernel_settings）：提示牌与 read_wall 共用。
     this.getSeen = sql.prepare('SELECT value FROM kernel_settings WHERE key = ?');
@@ -128,9 +128,9 @@ export class Wall {
     };
   }
 
-  /** 她最近一张便签：与他的看墙时刻对表，材料里给"被看过"的回执。 */
-  latestMine(): { at: number; text: string } | undefined {
-    return (this.latestMineStmt.get() as { at: number; text: string } | undefined) ?? undefined;
+  /** 她最近一张便签的贴出时刻：与他的看墙时刻对表，材料里给"被看过"的回执。 */
+  latestMine(): { at: number } | undefined {
+    return this.latestMineStmt.get() as { at: number } | undefined;
   }
 
   /** 他上次看墙（公开页任意一次浏览即算）的时刻：作品的"被看过"回执。 */
@@ -214,9 +214,5 @@ export class Wall {
     } catch {
       return undefined;
     }
-  }
-
-  totalImages(): number {
-    return readdirSync(this.imageDir).length;
   }
 }
