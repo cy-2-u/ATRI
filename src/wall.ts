@@ -23,10 +23,12 @@ export class Wall {
   private readonly unseen: StatementSync;
   private readonly latestHim: StatementSync;
   private readonly byId: StatementSync;
+  private readonly latestMineStmt: StatementSync;
   private readonly getSeen: StatementSync;
   private readonly setSeen: StatementSync;
   private static readonly IMAGE_QUOTA = 20 * 1024 * 1024;
   private static readonly SEEN_KEY = 'wall:seen';
+  private static readonly HIS_SEEN_KEY = 'wall:his-seen';
 
   constructor(
     sql: DatabaseSync,
@@ -58,6 +60,10 @@ export class Wall {
     );
     this.byId = sql.prepare(
       'SELECT id,author AS "from",text,image AS image,created_at AS at FROM kernel_wall WHERE id = ?',
+    );
+    this.latestMineStmt = sql.prepare(
+      // rowid DESC 破同毫秒平局：与 latestHim 同一竞速教训。
+      "SELECT created_at AS at, text FROM kernel_wall WHERE author = 'her' ORDER BY created_at DESC, rowid DESC LIMIT 1",
     );
     // 她上次"凑近看墙"的时刻（kernel_settings）：提示牌与 read_wall 共用。
     this.getSeen = sql.prepare('SELECT value FROM kernel_settings WHERE key = ?');
@@ -109,15 +115,30 @@ export class Wall {
     return row ? { ...row, image: row.image || undefined, text: row.text || '' } : undefined;
   }
 
-  /** 他贴的、她还没"凑近看过"的数量与最近一条预览（材料提示牌的数据面）。 */
+  /** 她贴的、她还没"凑近看过"的数量与最近一条预览（材料提示牌的数据面）。 */
   unseenByHim(): { count: number; latest?: { text: string; at: number } } {
-    const n = (this.unseen.get(this.seenAt()) as { n: number }).n;
+    const n = (this.unseen.get(this.seenValue(Wall.SEEN_KEY)) as { n: number }).n;
     const latest = this.latestHim.get() as { at: number; text: string } | undefined;
     return {
       count: n,
       latest:
-        latest && latest.at > this.seenAt() ? { text: latest.text, at: latest.at } : undefined,
+        latest && latest.at > this.seenValue(Wall.SEEN_KEY)
+          ? { text: latest.text, at: latest.at }
+          : undefined,
     };
+  }
+
+  /** 她最近一张便签：与他的看墙时刻对表，材料里给"被看过"的回执。 */
+  latestMine(): { at: number; text: string } | undefined {
+    return (this.latestMineStmt.get() as { at: number; text: string } | undefined) ?? undefined;
+  }
+
+  /** 他上次看墙（公开页任意一次浏览即算）的时刻：作品的"被看过"回执。 */
+  markHisView(): void {
+    this.setSeen.run(Wall.HIS_SEEN_KEY, JSON.stringify(this.now()));
+  }
+  hisSeenAt(): number {
+    return this.seenValue(Wall.HIS_SEEN_KEY);
   }
 
   /** 墙图快照进沙箱（read_wall {id} 看图用）：图在 wall 目录，读字节即可。 */
@@ -131,8 +152,9 @@ export class Wall {
     this.setSeen.run(Wall.SEEN_KEY, JSON.stringify(this.now()));
   }
 
-  private seenAt(): number {
-    const row = this.getSeen.get(Wall.SEEN_KEY) as { value: string } | undefined;
+  /** 指针值统一解析：缺/坏记录归零。 */
+  private seenValue(key: string): number {
+    const row = this.getSeen.get(key) as { value: string } | undefined;
     const at = row ? JSON.parse(row.value) : 0;
     return typeof at === 'number' && at >= 0 ? at : 0;
   }

@@ -4,10 +4,12 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type { WebDavConfig } from './settings.js';
 
-/** WebDAV 每日备份：数据库快照（gzip）+ 自定义表情目录，PUT 到远端
- *  atri-backup/<日期戳>/，保留最近 KEEP 份，旧目录自动删除。
- *  客户端手写（fetch + Basic auth）：WebDAV 只有五个动词，不为此引依赖。
- *  失败不静默：状态与错误存进 state，管理页可见、可手动重试。 */
+/** WebDAV 每日备份：数据库快照（gzip）+ 自定义表情 + 她的作品（墙图与
+ *  沙箱整棵），PUT 到远端 atri-backup/<日期戳>/，保留最近 KEEP 份。
+ *  轮转按本地记录的日期清单做乐观 DELETE（有的网盘 PROPFIND 不可用，
+ *  记录法不依赖列目录）。客户端手写（fetch + Basic auth）：WebDAV 只有
+ *  五个动词，不为此引依赖。失败不静默：状态与错误存进 state，管理页
+ *  可见、可手动重试。 */
 
 const KEEP = 30;
 const RETRIES = 2;
@@ -46,9 +48,13 @@ export interface BackupState {
 }
 
 export class WebDavBackup {
+  /** 作品文件数上限：超过就明确报错中止，绝不静默截断——ok:true 的
+   *  时候备份必须是完整的。 */
+  static MAX_FILES = 2000;
   #state: BackupState = {};
   #lastDay: string | undefined;
   #lastFailAt = 0;
+  #running = false;
 
   constructor(
     private readonly dataDir: string,
@@ -90,18 +96,27 @@ export class WebDavBackup {
     return this.#state;
   }
 
-  /** 立即备份：管理页按钮调用，绕过每日闸门；成功即记当日已备。 */
+  /** 立即备份：管理页按钮调用，绕过每日闸门；成功即记当日已备。
+   *  重入拒绝：定时 tick 与手动按钮可能撞车，第二个人明确收到
+   *  "备份正在进行中"，而不是两路交错上传。 */
   async run(now: number, day = dayKeyOf(now, this.timeZone())): Promise<void> {
+    if (this.#running) throw new Error('备份正在进行中，稍等它跑完');
+    this.#running = true;
+    try {
+      await this.runOnce(day);
+    } finally {
+      this.#running = false;
+    }
+  }
+
+  private async runOnce(day: string): Promise<void> {
     const cfg = this.config();
     if (!cfg?.url || !cfg.password) throw new Error('WebDAV 未配置');
     const auth = `Basic ${Buffer.from(`${cfg.user}:${cfg.password}`).toString('base64')}`;
     const base = `${cfg.url.replace(/\/+$/, '')}/atri-backup/${day}/`;
     // MKCOL 405 = 目录已存在，幂等不算失败。
     for (const dir of [`${cfg.url.replace(/\/+$/, '')}/atri-backup/`, base])
-      await this.request('MKCOL', dir, auth).catch((error) => {
-        if (!String(error.message).includes('HTTP 405')) throw error;
-      });
-
+      await this.mkcol(dir, auth);
     // 数据库：先 checkpoint 把 wal 并回主库，拷贝即完整一致快照；
     // checkpoint 被并发阻塞时照抄主库再补传 wal，副本靠 wal 自恢复。
     // close 放 finally：连接失败也不能把句柄漏在进程里。
@@ -135,9 +150,7 @@ export class WebDavBackup {
     // 子目录先 MKCOL（405=已存在，幂等）：网盘对未建目录的 PUT 回 409。
     const custom = join(this.dataDir, 'custom');
     if (statSync(custom, { throwIfNoEntry: false })?.isDirectory()) {
-      await this.request('MKCOL', `${base}custom/`, auth).catch((error) => {
-        if (!String(error.message).includes('HTTP 405')) throw error;
-      });
+      await this.mkcol(`${base}custom/`, auth);
       for (const name of readdirSync(custom)) {
         const file = join(custom, name);
         if (statSync(file).isFile())
@@ -145,19 +158,32 @@ export class WebDavBackup {
       }
     }
 
-    // 她的作品：墙图（仅图文件）与沙箱目录整棵逐文件上传。数据库之外
-    // 唯一不可再生的东西——日记和画挂在卷上，卷挂了就永远没了。递归
-    // 上限两层，media/（微信缓存）不算作品不进来。
-    for (const [name, root, depth] of [
-      ['wall', join(this.dataDir, 'wall'), 1],
-      ['sandbox', this.sandboxDir ?? join(this.dataDir, 'sandbox'), 2],
+    // 她的作品：墙图（平铺）与沙箱目录整棵逐文件上传。数据库之外唯一
+    // 不可再生的东西——日记和画挂在卷上，卷挂了就永远没了。文件总数
+    // 超上限明确报错：ok:true 的备份必须是完整的，绝不静默截断。
+    // media/（微信缓存）不算作品不进来。
+    const trees: { remote: string; files: { rel: string; full: string }[] }[] = [];
+    let total = 0;
+    for (const [name, root] of [
+      ['wall', join(this.dataDir, 'wall')],
+      ['sandbox', this.sandboxDir ?? join(this.dataDir, 'sandbox')],
     ] as const) {
       if (!statSync(root, { throwIfNoEntry: false })?.isDirectory()) continue;
-      await this.putTree(`${base}${name}/`, root, auth, depth);
+      const files = this.listFiles(root);
+      total += files.length;
+      trees.push({ remote: `${base}${name}/`, files });
     }
+    if (total > WebDavBackup.MAX_FILES)
+      throw new Error(
+        `作品文件过多（${total} > ${WebDavBackup.MAX_FILES}），备份中止：请清理沙箱或调低作品量`,
+      );
+    for (const tree of trees) await this.putTree(tree.remote, tree.files, auth);
 
-    // 清理失败不影响备份成败：坚果云这类网盘不支持删非空目录，内容
-    // 已经安全上传，轮转留到下一天再说。
+    // 轮转由网盘服务端做（写入后扫日期目录，保留最近 KEEP 份）：客户端
+    // 不再自作轮转——完整信息在存储侧，客户端换机也不丢轮转语义。
+    // 服务端能力上线前的过渡期无轮转（每日多 ~4MB，无害）。
+
+    // 清理失败不影响备份成败：内容已经安全上传。
     try {
       await this.prune(auth);
     } catch (error) {
@@ -169,23 +195,54 @@ export class WebDavBackup {
     this.log(`[atri] backup ok: ${day}`);
   }
 
-  /** 递归上传一棵目录树：relative 路径即远端路径，目录原样镜像。
-   *  depth 限制递归层数（1 = 只收平铺文件），防止异常嵌套拖爆请求。
-   *  每个子目录先 MKCOL：多数网盘对"父目录存在但子目录未建"的 PUT
-   *  回 409（实测 w.webav.us.ci），不建目录直接 PUT 就是死路。405 =
-   *  目录已存在，幂等不算失败——所以"每天重复建"零成本。 */
-  private async putTree(remote: string, root: string, auth: string, depth: number): Promise<void> {
-    await this.request('MKCOL', remote, auth).catch((error) => {
+  /** 收集一棵目录树的全部普通文件（无限深度，深层嵌套照样备份）。
+   *  符号链接一律跳过：沙箱里的链接指向哪不受控，readFileSync 顺着走
+   *  会把沙箱外的东西（数据库、密钥）原样传去网盘。 */
+  private listFiles(root: string): { rel: string; full: string }[] {
+    const out: { rel: string; full: string }[] = [];
+    const walk = (dir: string, rel: string): void => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name);
+        const childRel = rel ? `${rel}/${entry.name}` : entry.name;
+        if (entry.isDirectory()) walk(full, childRel);
+        else if (entry.isFile()) out.push({ rel: childRel, full });
+      }
+    };
+    walk(root, '');
+    return out;
+  }
+
+  /** 镜像一棵文件清单：清单里的相对路径即远端路径。每个子目录先
+   *  MKCOL：网盘对"父目录存在但子目录未建"的 PUT 回 409（RFC 4918
+   *  标准语义），先建目录是客户端本分。405 = 目录已存在，幂等不算
+   *  失败——每天重复建零成本。 */
+  private async putTree(
+    remote: string,
+    files: { rel: string; full: string }[],
+    auth: string,
+  ): Promise<void> {
+    await this.mkcol(remote, auth);
+    const made = new Set<string>();
+    for (const { rel, full } of files) {
+      const cut = rel.lastIndexOf('/');
+      if (cut > 0) {
+        const parts = rel.slice(0, cut).split('/');
+        for (let i = 1; i <= parts.length; i++) {
+          const path = parts.slice(0, i).join('/');
+          if (made.has(path)) continue;
+          await this.mkcol(`${remote}${path}/`, auth);
+          made.add(path);
+        }
+      }
+      await this.request('PUT', `${remote}${rel}`, auth, readFileSync(full));
+    }
+  }
+
+  /** MKCOL 包装：405 = 已存在（幂等），其余错误如实抛。 */
+  private async mkcol(url: string, auth: string): Promise<void> {
+    await this.request('MKCOL', url, auth).catch((error) => {
       if (!String(error.message).includes('HTTP 405')) throw error;
     });
-    for (const entry of readdirSync(root, { withFileTypes: true })) {
-      const full = join(root, entry.name);
-      if (entry.isDirectory()) {
-        if (depth > 1) await this.putTree(`${remote}${entry.name}/`, full, auth, depth - 1);
-        continue;
-      }
-      await this.request('PUT', `${remote}${entry.name}`, auth, readFileSync(full));
-    }
   }
 
   /** WebDAV 只认 2xx：3xx 不能当成功——fetch 对 PUT 的 301/302 会转成
@@ -214,8 +271,10 @@ export class WebDavBackup {
     throw lastError;
   }
 
-  /** 保留最近 KEEP 份：PROPFIND 列日期目录，超出的逐个 DELETE。
-   *  列不出来就不删——备份比清理金贵。 */
+  /** 标准网盘的轮转：PROPFIND 列日期目录，超出 KEEP 的逐个 DELETE。
+   *  自家网盘（w.webav）PROPFIND 不可用，轮转由它的服务端在写入后做
+   *  （保留最近 KEEP 份，语义与此处一致）——这里列不出来就静默跳过，
+   *  备份比清理金贵。服务端轮转覆盖后此方法可整体退役。 */
   private async prune(auth: string): Promise<void> {
     const url = this.config()!.url.replace(/\/+$/, '');
     const res = await fetch(`${url}/atri-backup/`, {

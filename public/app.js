@@ -310,7 +310,7 @@ async function refreshStatus() {
     issuesSnapshot = issuesSig;
     renderIssues(issues);
   }
-  const seen = new Set(JSON.parse(sessionStorage.getItem('issuesSeen') ?? '[]'));
+  const seen = new Set(issuesSeen());
   const unseen = issues.filter((env) => !seen.has(`${env.id}:${env.status}`));
   const count = $('issues-count');
   count.hidden = !unseen.length;
@@ -319,16 +319,31 @@ async function refreshStatus() {
   if (currentTab === 'chat') renderSelfChips(status, config);
 }
 
+/** 已读指纹读取：损坏/不支持（隐身模式配额）时退化为全未读，红点多亮
+ *  一次无害，轮询不能因此挂掉。 */
+function issuesSeen() {
+  try {
+    const raw = JSON.parse(sessionStorage.getItem('issuesSeen') ?? '[]');
+    return Array.isArray(raw) ? raw.filter((item) => typeof item === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
 /** 待办抽屉开着 = 用户正在看：把当前整批件记进已读指纹。 */
 function drawerIssuesOpen() {
   return !$('drawer-issues').hidden;
 }
 function markIssuesSeen() {
   if (!lastIssues.length) return;
-  sessionStorage.setItem(
-    'issuesSeen',
-    JSON.stringify(lastIssues.map((env) => `${env.id}:${env.status}`)),
-  );
+  try {
+    sessionStorage.setItem(
+      'issuesSeen',
+      JSON.stringify(lastIssues.map((env) => `${env.id}:${env.status}`)),
+    );
+  } catch {
+    /* 写不进去就让红点常亮：告警比安静安全 */
+  }
 }
 
 function renderSelfChips(status, config) {

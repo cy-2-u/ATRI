@@ -218,6 +218,8 @@ ${
   app.get('/api/wall', async (request, reply) => {
     // 读也要限速：列表是一次 SQL 查询，公开端点不白送。
     if (wallLimit(request, reply, 0.2) !== undefined) return;
+    // 公开页的每次浏览都是"他看过墙"的事实：她作品的回执数据面。
+    options.wall?.markHisView();
     return wallGet();
   });
   app.post('/api/wall', async (request, reply) => {

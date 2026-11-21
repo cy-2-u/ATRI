@@ -408,6 +408,22 @@ test('材料：墙提示牌对 chat/beat/reminder 都挂出，翻过即清零', 
       const built = (await life.build('peer', turn)).material as { wallSign?: unknown };
       assert.equal(built.wallSign, undefined, `${turn.kind} 拍提示牌应清零`);
     }
+
+    // 她贴的作品与"他看墙"对表：没看过（48h 内）挂 seen:false，
+    // 他看过后挂 seen:true 带时刻——回执是给她的，不是给她表演的。
+    await new Wall(journal.db, wallDir).post('her', '我贴的画');
+    const mineTurn = { id: 'm', peer: 'peer', version: 0, kind: 'chat' as const };
+    const unseen = (await life.build('peer', mineTurn)).material as {
+      wallSeen?: { seen: boolean; at?: string };
+    };
+    assert.equal(unseen.wallSeen?.seen, false, '他还没来看过她的画');
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    new Wall(journal.db, wallDir).markHisView();
+    const seenBack = (await life.build('peer', mineTurn)).material as {
+      wallSeen?: { seen: boolean; at?: string };
+    };
+    assert.equal(seenBack.wallSeen?.seen, true, '他看过了，回执成立');
+    assert.ok(seenBack.wallSeen?.at, '回执带看墙时刻');
   } finally {
     journal.close();
     rmSync(root, { recursive: true, force: true });

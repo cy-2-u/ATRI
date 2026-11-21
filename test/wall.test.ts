@@ -174,6 +174,22 @@ test('表情包上墙：sticker slug 快照成墙图，jpg 也认，坏 slug 报
   }
 });
 
+test('墙：他看过的回执（his-seen 指针与 latestMine 对表）', async () => {
+  const env = wallFixture();
+  try {
+    assert.equal(env.wall.hisSeenAt(), 0, '没人看过墙时指针为零');
+    await env.wall.post('her', '我贴的画');
+    assert.ok(env.wall.latestMine(), '她的便签在 latestMine 里');
+    // 指针落后于她的便签 = 还没看过。
+    assert.ok(env.wall.latestMine()!.at > env.wall.hisSeenAt());
+    env.wall.markHisView();
+    assert.ok(env.wall.hisSeenAt() >= env.wall.latestMine()!.at, '看墙时刻覆盖她的贴出时刻');
+  } finally {
+    env.close();
+    rmSync(env.dir, { recursive: true, force: true });
+  }
+});
+
 test('墙是场所不是信道：SQL 下推翻阅 + unseen 提示牌 + read_wall 推进 seen', async () => {
   const env = wallFixture();
   try {

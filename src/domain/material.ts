@@ -364,9 +364,11 @@ export class LifeMaterial {
     this.recollection = new Recollection(deps.journal, deps.now);
   }
 
-  /** slug → 描述：表情在材料里只以含义出现，slug 是内部标识不外漏。 */
-  private stickerName(slug: string): string {
-    return this.deps.stickers.list().find((s) => s.slug === slug)?.description ?? '';
+  /** slug → 描述的构建级缓存：一次材料构建要渲染几百条事件，逐条回调
+   *  查目录等于几百次同一份 SQL（日记拍实测 500 事件 = 1000 查询）。 */
+  private stickerNames(): (slug: string) => string {
+    const map = new Map(this.deps.stickers.list().map((s) => [s.slug, s.description]));
+    return (slug) => map.get(slug) ?? '';
   }
 
   private body(peer: string, now: number): string {
@@ -443,7 +445,7 @@ export class LifeMaterial {
           when: labels[back - 1]!,
           text: rows
             .slice(-3)
-            .map((row) => plainText(row, (slug) => this.stickerName(slug)))
+            .map((row) => plainText(row, this.stickerNames()))
             .join('；'),
         });
     }
@@ -579,7 +581,7 @@ export class LifeMaterial {
       .filter((e) => e.kind === 'received')
       .slice(-3);
     // 可读文本进查询：received 行是 JSON，原始串会污染词面与向量。
-    return recent.map((e) => plainText(e, (slug) => this.stickerName(slug))).join('\n');
+    return recent.map((e) => plainText(e, this.stickerNames())).join('\n');
   }
 
   /** 记忆的情绪染色：残留够强才显形，用措辞不用数值。 */
@@ -752,7 +754,7 @@ export class LifeMaterial {
       sources: conversation.slice(-12).map((e) => ({
         id: e.id,
         kind: e.kind,
-        content: plainText(e, (slug) => this.stickerName(slug)),
+        content: plainText(e, this.stickerNames()),
         at: e.created_at,
       })),
       // 表情目录已移入系统提示的稳定前缀（前缀缓存），不再逐轮进材料。
@@ -764,14 +766,28 @@ export class LifeMaterial {
       ...(() => {
         if (!this.deps.wall) return {};
         const { count, latest } = this.deps.wall.unseenByHim();
-        if (!count) return {};
+        const wallSign =
+          count > 0
+            ? {
+                unseen: count,
+                latest: latest
+                  ? { text: latest.text.slice(0, 40), at: clock(latest.at, timeZone) }
+                  : undefined,
+              }
+            : undefined;
+        // 她贴出去的作品与"他看墙的时刻"对表：48 小时内有信息量才挂——
+        // 看过是回执，没看过不催，过了窗口就让它沉底。
+        const mine = this.deps.wall.latestMine();
+        const hisSeenAt = this.deps.wall.hisSeenAt();
+        let wallSeen: { seen: boolean; at?: string } | undefined;
+        if (mine) {
+          if (hisSeenAt >= mine.at) wallSeen = { seen: true, at: clock(hisSeenAt, timeZone) };
+          else if (now - mine.at < 48 * 3_600_000) wallSeen = { seen: false };
+        }
+        if (!wallSign && !wallSeen) return {};
         return {
-          wallSign: {
-            unseen: count,
-            latest: latest
-              ? { text: latest.text.slice(0, 40), at: clock(latest.at, timeZone) }
-              : undefined,
-          },
+          ...(wallSign ? { wallSign } : {}),
+          ...(wallSeen ? { wallSeen } : {}),
         };
       })(),
       waitingDrafts: journal.pending(peer),
@@ -838,10 +854,10 @@ export class LifeMaterial {
       day: day.map((e) => ({
         id: e.id,
         kind: e.kind,
-        content: plainText(e, (slug) => this.stickerName(slug)),
+        content: plainText(e, this.stickerNames()),
         at: e.created_at,
       })),
-      lastDiary: lastDiary.map((e) => plainText(e, (slug) => this.stickerName(slug))),
+      lastDiary: lastDiary.map((e) => plainText(e, this.stickerNames())),
       recentMemories: recentMemories.map((m) => ({ id: m.id, content: m.content, kind: m.kind })),
       instructions:
         '以第一人称回看上面的真实对话，为这一天写日记。用 write_journal 工具提交：{"sections":[{"content":"一段日记正文","sources":["实际支持这一段的消息或事件 ID"],"emotion":-1到1}]}，sections 最多六段，每段必须带真实来源 ID；没有值得写的就一段都不写。主观感受属于"我当时的理解"，不把对方没说过的事写成事实；只记录给出的消息，不为离线时间虚构。也可以用 remember 工具把"后来形成的认识"（kind 用 interpretation，至少两处真实来源支撑）存进记忆；如果这段时间沉淀出了定义"你是谁"的长期认识（少而精，比如一个月也不出现几次），用 kind:"identity" 写下来——它会成为你不随时间淡去的自我，同样至少两处来源。夜里只整理已发生的事，不发明新计划。写完用 action=nothing、parts 空数组收尾。',
@@ -882,7 +898,7 @@ export class LifeMaterial {
             newChats: fresh.map((e) => ({
               id: e.id,
               kind: e.kind,
-              content: plainText(e, (slug) => this.stickerName(slug)),
+              content: plainText(e, this.stickerNames()),
               at: e.created_at,
             })),
           }

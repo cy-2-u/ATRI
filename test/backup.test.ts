@@ -136,6 +136,67 @@ test('WebDAV 备份：目录创建、数据库 gzip 上传、表情逐文件、�
   }
 });
 
+test('WebDAV 备份：深层嵌套的作品照样镜像（截断回归钉）', async () => {
+  const env = backupFixture();
+  try {
+    // 旧实现 depth=2：a/b/ 之下的文件被静默不备份而 ok:true 照报——
+    // ok 的备份必须完整，这条断言钉死"嵌套深度不是丢数据的暗门"。
+    mkdirSync(join(env.sandbox, 'works', '2026'), { recursive: true });
+    writeFileSync(join(env.sandbox, 'works', '2026', 'jelly.png'), 'deep-bytes');
+    await env.backup.run(1_700_000_000_000);
+    assert.equal(
+      env.dav.objects.get('dav/atri-backup/2023-11-15/sandbox/works/2026/jelly.png')!.toString(),
+      'deep-bytes',
+    );
+  } finally {
+    env.close();
+  }
+});
+
+test('WebDAV 备份：作品文件超上限明确报错（不静默截断）', async () => {
+  const env = backupFixture();
+  const original = WebDavBackup.MAX_FILES;
+  WebDavBackup.MAX_FILES = 5;
+  try {
+    for (let i = 0; i < 6; i++) writeFileSync(join(env.sandbox, `f${i}.txt`), 'x');
+    await assert.rejects(() => env.backup.run(1_700_000_000_000), /作品文件过多/);
+    // 作品一件都没上传（数据库的两笔 PUT 发生在清点之前，属正常）。
+    const artworkPuts = env.dav.calls.filter(
+      (c) => c.method === 'PUT' && (c.url.includes('/wall/') || c.url.includes('/sandbox/')),
+    );
+    assert.equal(artworkPuts.length, 0);
+  } finally {
+    WebDavBackup.MAX_FILES = original;
+    env.close();
+  }
+});
+
+test('WebDAV 备份：进行中的备份拒绝第二个并发 run（重入钉）', async () => {
+  const env = backupFixture();
+  try {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const stub = globalThis.fetch;
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      // 卡住数据库上传：第一个 run 进入"进行中"，第二个必须被拒。
+      if (String(input).includes('atri.db.gz')) await gate;
+      return stub(input as never, init);
+    };
+    try {
+      const first = env.backup.run(1_700_000_000_000);
+      await assert.rejects(() => env.backup.run(1_700_000_000_000 + 60_000), /备份正在进行中/);
+      release();
+      await first;
+    } finally {
+      globalThis.fetch = stub;
+    }
+  } finally {
+    env.close();
+  }
+});
+
 test('WebDAV 备份：每日闸门同日只跑一次，失败留错误不丢旧 at', async () => {
   const env = backupFixture();
   try {
