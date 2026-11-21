@@ -285,12 +285,14 @@ export class WebDavBackup {
       await this.request('DELETE', `${url}/atri-backup/${old}/`, auth).catch(() => undefined);
   }
 
-  /** 远端现存的备份日期，排序去重。 */
+  /** 远端现存的备份日期，排序去重。两路 fetch 都带凭据，一律
+   *  redirect: 'manual'——跟随跨源跳转等于把密钥送给重定向目标。 */
   private async listBackupDays(url: string, auth: string): Promise<string[]> {
     // 自家网盘：GET 直接给 JSON 日期数组。
     try {
       const res = await fetch(`${url}/atri-backup/`, {
         headers: { authorization: auth },
+        redirect: 'manual',
         signal: AbortSignal.timeout(TIMEOUT_MS),
       });
       if (res.ok) {
@@ -311,6 +313,7 @@ export class WebDavBackup {
     const res = await fetch(`${url}/atri-backup/`, {
       method: 'PROPFIND',
       headers: { authorization: auth, depth: '1' },
+      redirect: 'manual',
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
     if (!res.ok) return [];
