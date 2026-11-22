@@ -1,16 +1,13 @@
 import { test } from 'node:test';
+import { tmpStore } from './tmp.ts';
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { Store } from '../src/store.ts';
 import { Recall } from '../src/memory.ts';
 import { validateConfig, defaults, type Config } from '../src/config.ts';
 
 // 语义召回的决定性断言：查询与记忆词面零重叠，仅靠向量命中。
 // 词面命中通道永远免费；语义通道必须能把"换了说法的同一件事"捞回来。
 const config: Config = validateConfig({ ...defaults('x'), embedding: { url: 'http://127.0.0.1:9', key: 'k', model: 'fake-embed' } });
-const store = new Store(join(mkdtempSync(join(tmpdir(), 'atri-mem-')), 'atri.db'));
+const store = tmpStore('atri-mem-');
 const recall = new Recall(store, () => config);
 const peer = store.ensurePeer({ kind: 'c2c', id: 'u1' }).id;
 const e1 = store.append(peer, 'received', { text: '我喜欢吃苹果' })!;

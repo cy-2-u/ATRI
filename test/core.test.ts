@@ -1,12 +1,10 @@
 import { test } from 'node:test';
+import { tmpOpen, tmpRoot, tmpStore } from './tmp.ts';
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Store } from '../src/store.ts';
 import { sandboxArgs } from '../src/files.ts';
 
-const newStore = (now = Date.now) => new Store(join(mkdtempSync(join(tmpdir(), 'atri-test-')), 'atri.db'), now);
+const newStore = (now = Date.now) => tmpStore('atri-test-', now);
 
 test('沙箱规格：她的窝常驻自愈、能力全卸、只挂作品目录（无密钥无 sock）', () => {
   const args = sandboxArgs('python:3.13-alpine', false, 'Asia/Shanghai', '/srv/atri/data/works');
@@ -150,8 +148,8 @@ test('摘要段：保存与合并', () => {
 });
 
 test('recover：中断状态全部回到可恢复语义', () => {
-  const path = join(mkdtempSync(join(tmpdir(), 'atri-test-')), 'atri.db');
-  const store = new Store(path);
+  const dir = tmpRoot('atri-test-');
+  const store = tmpOpen(join(dir, 'atri.db'));
   const peer = 'c2c:user1';
   store.ensurePeer({ kind: 'c2c', id: 'user1' });
   const event = store.append(peer, 'received', { text: '嗨' })!;
@@ -159,8 +157,8 @@ test('recover：中断状态全部回到可恢复语义', () => {
   store.draft(turn, [{ type: 'text', text: 'x' }], [{}], [store.now()]);
   const envelope = store.deliveries(peer)[0]!;
   store.startSend(envelope.id, {});
-  // 模拟进程中断后的 recover（新实例）
-  const store2 = new Store(path);
+  // 模拟进程中断后的 recover（新实例，同一库）
+  const store2 = tmpOpen(join(dir, 'atri.db'));
   assert.equal(store.deliveries(peer)[0]!.status, 'unknown');
   store2.close();
   store.close();

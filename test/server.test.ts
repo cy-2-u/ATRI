@@ -1,10 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { request } from 'node:http';
-import { mkdtempSync } from 'node:fs';
+import { rmSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { tmpRoot } from './tmp.ts';
 import { Store } from '../src/store.ts';
 import { AdminServer } from '../src/server.ts';
 import { Runtime } from '../src/runtime.ts';
@@ -18,7 +18,7 @@ const config: Config = validateConfig(defaults('测试人格'));
 const getConfig = (): Config => config;
 
 async function withServer(run: (base: string, store: Store) => Promise<void>): Promise<void> {
-  const dir = mkdtempSync(join(tmpdir(), 'atri-server-'));
+  const dir = tmpRoot('atri-server-');
   const store = new Store(join(dir, 'atri.db'));
   const files = new Files(join(dir, 'works'), getConfig); await files.init();
   const publicDir = join(dir, 'public');
@@ -31,7 +31,7 @@ async function withServer(run: (base: string, store: Store) => Promise<void>): P
   const server = new AdminServer({ host: '127.0.0.1', port: 0, password: '管理密码至少12字符', publicDir, store, files, runtime, qq, models, backups, config: getConfig, update: () => undefined });
   const port = await server.listen();
   try { await run(`http://127.0.0.1:${port}`, store); }
-  finally { await server.close(); store.close(); }
+  finally { await server.close(); store.close(); rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); }
 }
 
 const login = async (base: string): Promise<{ cookie: string; csrf: string }> => {
@@ -144,7 +144,7 @@ test('管理端：Host 校验与登录页可达', async () => {
 });
 
 test('管理端：通配监听放行 IP/localhost Host、拒绝域名（容器端口映射场景）', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'atri-server-'));
+  const dir = tmpRoot('atri-server-');
   const store = new Store(join(dir, 'atri.db'));
   const files = new Files(join(dir, 'works'), getConfig); await files.init();
   const publicDir = join(dir, 'public');
@@ -178,5 +178,5 @@ test('管理端：通配监听放行 IP/localhost Host、拒绝域名（容器�
     });
     assert.equal(spoofed.status, 403);
     assert.match(spoofed.body, /通配监听仅接受 IP 或 localhost/);
-  } finally { await server.close(); store.close(); }
+  } finally { await server.close(); store.close(); rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); }
 });

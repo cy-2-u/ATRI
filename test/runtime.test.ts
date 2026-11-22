@@ -1,9 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { tmpRoot, tmpStore } from './tmp.ts';
 import { join } from 'node:path';
-import { Store } from '../src/store.ts';
 import { Runtime } from '../src/runtime.ts';
 import { Files } from '../src/files.ts';
 import { validateConfig, defaults, type Config } from '../src/config.ts';
@@ -12,7 +10,7 @@ const config: Config = validateConfig({ ...defaults('人格'), life: { ...defaul
 const getConfig = (): Config => config;
 
 test('绑定：她只属于一个人（第一个私聊即绑定，群与陌生私聊不进她的世界）', () => {
-  const store = new Store(join(mkdtempSync(join(tmpdir(), 'atri-test-')), 'atri.db'));
+  const store = tmpStore('atri-test-');
   const runtime = new Runtime(store, getConfig, { think: async () => { throw new Error('不该被调用'); } } as never, {} as never, {} as never, () => undefined);
   const at = store.now();
   // 第一条私聊即绑定
@@ -32,7 +30,7 @@ test('绑定：她只属于一个人（第一个私聊即绑定，群与陌生�
 });
 
 test('apply：情绪/记忆/念头/日记/印象落账，气泡节奏与表情剔除，intents 排程', () => {
-  const store = new Store(join(mkdtempSync(join(tmpdir(), 'atri-test-')), 'atri.db'));
+  const store = tmpStore('atri-test-');
   const runtime = new Runtime(store, getConfig, { think: async () => { throw new Error('不该被调用'); } } as never, {} as never, {} as never, () => undefined);
   const peer = store.ensurePeer({ kind: 'c2c', id: 'user1' }).id;
   const r1 = store.append(peer, 'received', { text: '我下周生日' })!;
@@ -86,7 +84,7 @@ test('apply：情绪/记忆/念头/日记/印象落账，气泡节奏与表情�
 });
 
 test('夜间拍：日记与印象落账、parts 空校验在 mind 层', () => {
-  const store = new Store(join(mkdtempSync(join(tmpdir(), 'atri-test-')), 'atri.db'));
+  const store = tmpStore('atri-test-');
   const runtime = new Runtime(store, getConfig, { think: async () => { throw new Error('x'); } } as never, {} as never, {} as never, () => undefined);
   const peer = store.ensurePeer({ kind: 'c2c', id: 'user2' }).id;
   const r1 = store.append(peer, 'received', { text: '晚安' })!;
@@ -109,7 +107,7 @@ test('夜间拍：日记与印象落账、parts 空校验在 mind 层', () => {
 });
 
 test('ensureLife：自主会话有心跳与夜间拍，非自主/群聊无夜间', () => {
-  const store = new Store(join(mkdtempSync(join(tmpdir(), 'atri-test-')), 'atri.db'));
+  const store = tmpStore('atri-test-');
   const runtime = new Runtime(store, getConfig, { think: async () => { throw new Error('x'); } } as never, {} as never, {} as never, () => undefined);
   const c2c = store.ensurePeer({ kind: 'c2c', id: 'user3' });
   c2c.enabled = true; c2c.autonomous = true;
@@ -141,7 +139,7 @@ const until = async (fn: () => boolean, ms = 3000, what = '条件'): Promise<voi
 };
 
 test('盲区钉死：心跳任务终态失败后必须自愈（不能静默停跳）', () => {
-  const store = new Store(join(mkdtempSync(join(tmpdir(), 'atri-test-')), 'atri.db'));
+  const store = tmpStore('atri-test-');
   const runtime = new Runtime(store, getConfig, { think: async () => { throw new Error('x'); } } as never, {} as never, {} as never, () => undefined);
   const peer = store.ensurePeer({ kind: 'c2c', id: 'user7' }).id;
   const p = store.peer(peer)!; p.enabled = true; p.autonomous = true; store.savePeer(p);
@@ -155,7 +153,7 @@ test('盲区钉死：心跳任务终态失败后必须自愈（不能静默停�
 });
 
 test('投递管道：主动发送 → accepted 事件 + 身体记账 + 额度记账', async () => {
-  const store = new Store(join(mkdtempSync(join(tmpdir(), 'atri-test-')), 'atri.db'));
+  const store = tmpStore('atri-test-');
   let activeCount = 0;
   const transport = {
     passiveRequest: () => ({}),
@@ -189,7 +187,7 @@ test('投递管道：主动发送 → accepted 事件 + 身体记账 + 额度记
 });
 
 test('投递管道：额度未到 → defer 等待，不重新思考', async () => {
-  const store = new Store(join(mkdtempSync(join(tmpdir(), 'atri-test-')), 'atri.db'));
+  const store = tmpStore('atri-test-');
   const transport = {
     passiveRequest: () => ({}),
     allowedAt: () => store.now() + 60000,
@@ -218,7 +216,7 @@ test('投递管道：额度未到 → defer 等待，不重新思考', async () 
 });
 
 test('投递管道：主动权限关闭 → 确定性失败（不是未知）', async () => {
-  const store = new Store(join(mkdtempSync(join(tmpdir(), 'atri-test-')), 'atri.db'));
+  const store = tmpStore('atri-test-');
   const transport = {
     passiveRequest: () => ({}),
     allowedAt: () => store.now(),
@@ -246,8 +244,8 @@ test('投递管道：主动权限关闭 → 确定性失败（不是未知）', 
 });
 
 test('并发交错：思考中到达新消息 → 当前轮作废并合并续答', async () => {
-  const store = new Store(join(mkdtempSync(join(tmpdir(), 'atri-test-')), 'atri.db'));
-  const files = new Files(join(mkdtempSync(join(tmpdir(), 'atri-test-')), 'works'), getConfig); await files.init();
+  const store = tmpStore('atri-test-');
+  const files = new Files(join(tmpRoot('atri-test-'), 'works'), getConfig); await files.init();
   const before = JSON.stringify({ url: config.primary.url, key: config.primary.key, model: config.primary.model });
   config.primary.url = 'http://127.0.0.1:9'; config.primary.key = 'k'; config.primary.model = 'm'; // ready() 为真才进思考
   const mind = { think: async (_turn: unknown, signal: AbortSignal) => { await new Promise((_r, rej) => signal.addEventListener('abort', () => rej(new Error('中止')))); throw new Error('不该走到这'); } };

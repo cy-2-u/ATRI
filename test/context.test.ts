@@ -1,9 +1,8 @@
 import { test } from 'node:test';
+import { tmpRoot, tmpStore } from './tmp.ts';
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Store, type Turn } from '../src/store.ts';
+import { type Turn } from '../src/store.ts';
 import { Context } from '../src/context.ts';
 import { Recall } from '../src/memory.ts';
 import { Files } from '../src/files.ts';
@@ -17,8 +16,8 @@ const stubModels = {
   cacheKey: (): string => 'k',
 };
 
-const store = new Store(join(mkdtempSync(join(tmpdir(), 'atri-ctx-')), 'atri.db'));
-const files = new Files(join(mkdtempSync(join(tmpdir(), 'atri-ctx-w-')), 'works'), configGet); await files.init();
+const store = tmpStore('atri-ctx-');
+const files = new Files(join(tmpRoot('atri-ctx-w-'), 'works'), configGet); await files.init();
 const context = new Context(store, configGet, stubModels as never, files, new Recall(store, configGet));
 
 const peer = store.ensurePeer({ kind: 'c2c', id: 'u1' }).id;

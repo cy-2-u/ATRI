@@ -1,14 +1,13 @@
 import { test } from 'node:test';
+import { tmpRoot, tmpStore } from './tmp.ts';
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Store, type Turn } from '../src/store.ts';
+import { type Turn } from '../src/store.ts';
 import { Mind, parseThought } from '../src/mind.ts';
 import { validateConfig, defaults } from '../src/config.ts';
 
 const config = validateConfig(defaults('人格'));
-const store = new Store(join(mkdtempSync(join(tmpdir(), 'atri-mind-')), 'atri.db'));
+const store = tmpStore('atri-mind-');
 const mind = new Mind(store, () => config, { complete: async () => { throw new Error('不该调用'); } } as never, { build: async () => { throw new Error('不该调用'); } } as never, []);
 
 const peer = store.ensurePeer({ kind: 'c2c', id: 'u1' }).id;
@@ -93,7 +92,7 @@ test('工具按配置注入：没配画笔/搜索/沙箱，她收到的工具定
   const { tools } = await import('../src/tools.ts');
   const { Files } = await import('../src/files.ts');
   const { Recall } = await import('../src/memory.ts');
-  const files = new Files(join(mkdtempSync(join(tmpdir(), 'atri-mind-')), 'works'), () => config);
+  const files = new Files(join(tmpRoot('atri-mind-'), 'works'), () => config);
   const recall = new Recall(store, () => config);
   const captured: string[][] = [];
   const capture = { complete: async (_m: unknown, defs: { name: string }[]) => { captured.push(defs.map(d => d.name)); throw new Error('到此为止'); } };
