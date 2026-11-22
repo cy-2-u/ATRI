@@ -848,10 +848,10 @@ async function confirmExternal(patch, config) {
     const [section, key] = path.split('.');
     return patch[section]?.[key] === true && !config?.[section]?.[key];
   };
-  const external = ['qq.enabled', 'backup.enabled', 'execution.network'].some(turningOn);
+  const external = ['qq.enabled', 'backup.enabled'].some(turningOn);
   if (!external) return true;
   return window.confirm(
-    '将启用对外连接（QQ 网关 / WebDAV 上传 / 沙箱出网）。确认继续？',
+    '将启用对外连接（QQ 网关 / WebDAV 上传）。确认继续？',
   );
 }
 

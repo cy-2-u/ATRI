@@ -165,7 +165,7 @@ export class AdminServer {
       if (path === '/api/logout') { for (const [key, value] of this.sessions) if (value === session) this.sessions.delete(key); res.setHeader('set-cookie', 'atri_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0'); this.json(res, { ok: true }); }
       else if (path === '/api/config') {
         const before = o.config(), next = mergeConfig(before, body.patch);
-        if ((!before.qq.enabled && next.qq.enabled || !before.backup.enabled && next.backup.enabled || !before.execution.network && next.execution.network) && body.confirmExternal !== true) throw new RequestError(400, '启用外部通信或公开功能需要明确确认');
+        if ((!before.qq.enabled && next.qq.enabled || !before.backup.enabled && next.backup.enabled) && body.confirmExternal !== true) throw new RequestError(400, '启用外部通信需要明确确认');
         if (next.qq.enabled && (!next.qq.appId || !next.qq.secret)) throw new RequestError(400, '启用QQ前请填写AppID和AppSecret');
         o.update(next); this.json(res, publicConfig(next));
       } else if (path === '/api/peer') {
