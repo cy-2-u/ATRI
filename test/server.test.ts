@@ -131,7 +131,7 @@ test('管理端：Host 校验与登录页可达', async () => {
     // 伪造 Host 被拒：fetch 会丢弃 Host 头，必须用原生 http 客户端
     const port = Number(new URL(base).port);
     const spoofed = await new Promise<{ status: number; body: string }>(resolve => {
-      const req = request({ host: '127.0.0.1', port, path: '/health', headers: { host: 'evil.example.com' } }, res => {
+      const req = request({ host: '127.0.0.1', port, path: '/health', headers: { host: 'evil.example.com' }, agent: false }, res => {
         const chunks: Buffer[] = [];
         res.on('data', c => chunks.push(c));
         res.on('end', () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString() }));
@@ -159,7 +159,7 @@ test('管理端：通配监听放行 IP/localhost Host、拒绝域名（容器�
   try {
     // IP 形式 Host（宿主端口 ≠ 监听端口也不限）→ 放行
     const viaIp = await new Promise<{ status: number; body: string }>(resolve => {
-      const req = request({ host: '127.0.0.1', port, path: '/health', headers: { host: '203.0.113.9:3000' } }, res => {
+      const req = request({ host: '127.0.0.1', port, path: '/health', headers: { host: '203.0.113.9:3000' }, agent: false }, res => {
         const chunks: Buffer[] = [];
         res.on('data', c => chunks.push(c));
         res.on('end', () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString() }));
@@ -169,7 +169,7 @@ test('管理端：通配监听放行 IP/localhost Host、拒绝域名（容器�
     assert.equal(viaIp.status, 200);
     // 陌生域名（DNS rebinding 形态）→ 403
     const spoofed = await new Promise<{ status: number; body: string }>(resolve => {
-      const req = request({ host: '127.0.0.1', port, path: '/health', headers: { host: 'evil.example.com' } }, res => {
+      const req = request({ host: '127.0.0.1', port, path: '/health', headers: { host: 'evil.example.com' }, agent: false }, res => {
         const chunks: Buffer[] = [];
         res.on('data', c => chunks.push(c));
         res.on('end', () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString() }));

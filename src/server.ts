@@ -37,7 +37,7 @@ export class AdminServer {
     await new Promise<void>((resolve, reject) => { this.server.once('error', reject); this.server.listen(this.options.port, this.options.host, () => { this.server.removeListener('error', reject); resolve(); }); });
     return (this.server.address() as { port: number }).port;
   }
-  async close(): Promise<void> { this.server.closeIdleConnections(); await new Promise<void>((resolve, reject) => this.server.close(error => error ? reject(error) : resolve())); }
+  async close(): Promise<void> { this.server.closeAllConnections(); await new Promise<void>((resolve, reject) => this.server.close(error => error ? reject(error) : resolve())); }
 
   private headers(res: ServerResponse): void {
     res.setHeader('x-content-type-options', 'nosniff'); res.setHeader('referrer-policy', 'no-referrer');
