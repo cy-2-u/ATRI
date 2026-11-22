@@ -142,3 +142,41 @@ test('管理端：Host 校验与登录页可达', async () => {
     assert.match(spoofed.body, /Host 不允许/);
   });
 });
+
+test('管理端：通配监听放行 IP/localhost Host、拒绝域名（容器端口映射场景）', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'atri-server-'));
+  const store = new Store(join(dir, 'atri.db'));
+  const files = new Files(join(dir, 'works'), getConfig); await files.init();
+  const publicDir = join(dir, 'public');
+  await mkdir(publicDir, { recursive: true });
+  await writeFile(join(publicDir, 'index.html'), '<!doctype html><html lang="zh-CN"><body>ATRI 测试页</body></html>');
+  const runtime = new Runtime(store, getConfig, { think: async () => { throw new Error('x'); } } as never, {} as never, files, () => undefined);
+  const qq = new QQ(getConfig, store, async () => undefined, () => undefined);
+  const models = new Models(getConfig, store);
+  const backups = new Backups(store, getConfig, dir, Buffer.alloc(32, 1));
+  const server = new AdminServer({ host: '0.0.0.0', port: 0, password: '管理密码至少12字符', publicDir, store, files, runtime, qq, models, backups, config: getConfig, update: () => undefined });
+  const port = await server.listen();
+  try {
+    // IP 形式 Host（宿主端口 ≠ 监听端口也不限）→ 放行
+    const viaIp = await new Promise<{ status: number; body: string }>(resolve => {
+      const req = request({ host: '127.0.0.1', port, path: '/health', headers: { host: '203.0.113.9:3000' } }, res => {
+        const chunks: Buffer[] = [];
+        res.on('data', c => chunks.push(c));
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString() }));
+      });
+      req.end();
+    });
+    assert.equal(viaIp.status, 200);
+    // 陌生域名（DNS rebinding 形态）→ 403
+    const spoofed = await new Promise<{ status: number; body: string }>(resolve => {
+      const req = request({ host: '127.0.0.1', port, path: '/health', headers: { host: 'evil.example.com' } }, res => {
+        const chunks: Buffer[] = [];
+        res.on('data', c => chunks.push(c));
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString() }));
+      });
+      req.end();
+    });
+    assert.equal(spoofed.status, 403);
+    assert.match(spoofed.body, /通配监听仅接受 IP 或 localhost/);
+  } finally { await server.close(); store.close(); }
+});

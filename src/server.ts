@@ -1,5 +1,6 @@
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'node:http';
 import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
+import { isIP } from 'node:net';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Config } from './config.ts';
@@ -54,9 +55,16 @@ export class AdminServer {
     const host = req.headers.host ?? '', address = this.server.address();
     if (!address || typeof address === 'string') throw new RequestError(503, '服务尚未监听');
     const configured = this.options.host, port = address.port;
-    const allowed = new Set([`${configured.includes(':') ? `[${configured}]` : configured}:${port}`]);
-    if (['127.0.0.1', '::1', 'localhost', '0.0.0.0', '::'].includes(configured)) { allowed.add(`localhost:${port}`); allowed.add(`127.0.0.1:${port}`); allowed.add(`[::1]:${port}`); }
-    if (!allowed.has(host.toLowerCase())) throw new RequestError(403, 'Host 不允许；远程部署请明确设置 ATRI_HOST 或由反向代理保留本机 Host');
+    if (configured === '0.0.0.0' || configured === '::') {
+      // 通配监听（如容器端口映射）：宿主对外端口容器不可知，放行任意 IP/localhost 直连；
+      // 仍拒绝陌生域名，DNS rebinding（依赖域名解析）无法通过。
+      const bare = host.startsWith('[') ? host.slice(1, host.indexOf(']')) : host.slice(0, Math.max(host.indexOf(':'), 0) || undefined);
+      if (bare !== 'localhost' && isIP(bare) === 0) throw new RequestError(403, 'Host 不允许；通配监听仅接受 IP 或 localhost 直连，域名访问请将 ATRI_HOST 设为该域名');
+    } else {
+      const allowed = new Set([`${configured.includes(':') ? `[${configured}]` : configured}:${port}`]);
+      if (['127.0.0.1', '::1', 'localhost'].includes(configured)) { allowed.add(`localhost:${port}`); allowed.add(`127.0.0.1:${port}`); allowed.add(`[::1]:${port}`); }
+      if (!allowed.has(host.toLowerCase())) throw new RequestError(403, 'Host 不允许；远程部署请明确设置 ATRI_HOST 或由反向代理保留本机 Host');
+    }
     const origin = req.headers.origin;
     if (origin && ![`http://${host}`, `https://${host}`].includes(origin)) throw new RequestError(403, '跨站请求被拒绝');
     if (req.headers['sec-fetch-site'] === 'cross-site') throw new RequestError(403, '跨站请求被拒绝');
