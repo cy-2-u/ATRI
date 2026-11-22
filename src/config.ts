@@ -49,7 +49,7 @@ const endpoint = (): Endpoint => ({
   url: '', key: '', model: '', format: 'openai', contextTokens: 32768,
   outputTokens: 4096, timeoutMs: 120000, vision: true, json: false,
   completionTokens: false, cache: 'automatic', cacheRetention: 'default',
-  inputPrice: 0, cachedPrice: 0, cacheWritePrice: 0, outputPrice: 0,
+  temperature: 1, inputPrice: 0, cachedPrice: 0, cacheWritePrice: 0, outputPrice: 0,
 });
 
 export const defaults = (persona = ''): Config => ({

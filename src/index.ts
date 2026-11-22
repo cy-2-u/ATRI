@@ -23,6 +23,7 @@ await mkdir(data, { recursive: true, mode: 0o700 });
 const store = new Store(join(data, 'atri.db'));
 let config = store.get<Config>('config', defaults(await readFile(join(root, 'prompts', 'persona.md'), 'utf8')));
 config.primary.cacheWritePrice ??= 0; config.fallback.cacheWritePrice ??= 0;
+config.primary.temperature ??= 1; config.fallback.temperature ??= 1; // 存量配置无此键：mergeConfig 的 hasOwn 检查要求键必须存在
 config.image.enabled ??= false; // 旧存量配置无此键：默认关——她没有画笔，直到你打开开关
 const patch: Record<string, unknown> = {};
 if (!config.qq.appId && process.env.QQ_APP_ID) patch.qq = { appId: process.env.QQ_APP_ID, secret: process.env.QQ_APP_SECRET ?? '' };
