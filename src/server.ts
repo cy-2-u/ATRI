@@ -185,10 +185,8 @@ export class AdminServer {
         const event = store.append(peer, 'received', { author: '管理员确认', text: body.op === 'complete' ? `人工确认约定已完成：${id}` : `人工取消约定：${id}` })!;
         const commitment = store.changeCommitment(peer, { op: body.op as 'complete' | 'cancel', id, sources: [event.id] }); this.json(res, commitment); o.runtime.wake();
       } else if (path === '/api/qq/probe') {
-        if (body.confirmExternal !== true) throw new RequestError(400, '凭证检查会连接QQ，请明确确认');
         this.json(res, await o.qq.probe(AbortSignal.timeout(20000)));
       } else if (path === '/api/model/probe') {
-        if (body.confirmExternal !== true) throw new RequestError(400, '模型检查会产生一次调用，请明确确认');
         const fallback = body.channel === 'fallback';
         const channel = fallback ? o.config().fallback : o.config().primary;
         if (!configured(channel)) throw new RequestError(400, fallback ? '备用渠道未配置' : '请先配置主模型渠道');

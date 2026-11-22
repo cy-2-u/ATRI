@@ -98,27 +98,6 @@ function confirmButton(label, message, handler, classes = 'ghost small danger') 
   };
   return node;
 }
-/** 双击确认：第一次点进入待确认态，3 秒内再点才执行。 */
-function armedClick(button, label, action) {
-  if (button.dataset.armed !== '1') {
-    button.dataset.armed = '1';
-    button.dataset.original = button.textContent;
-    button.textContent = label;
-    button.classList.add('armed');
-    setTimeout(() => {
-      if (button.isConnected && button.dataset.armed === '1') {
-        button.dataset.armed = '';
-        button.textContent = button.dataset.original;
-        button.classList.remove('armed');
-      }
-    }, 3000);
-    return;
-  }
-  button.dataset.armed = '';
-  button.textContent = button.dataset.original ?? label;
-  button.classList.remove('armed');
-  void perform(action, button);
-}
 function usageDayLine(label, totals, isTotal) {
   const line = el('div', undefined, 'usage-day' + (isTotal ? ' usage-total' : ''));
   const nums = (value) => value.toLocaleString('zh-CN');
@@ -945,40 +924,30 @@ $('save-system').onclick = () =>
 
 $('test-llm').onclick = () =>
   perform(async () => {
-    const result = await api('/api/model/probe', { method: 'POST', body: { confirmExternal: true } });
-    show(`模型连通正常，她回了：“${result.reply}”`);
+    const result = await api('/api/model/probe', { method: 'POST', body: { mode: 'system' } });
+    show(
+      result.follows
+        ? '渠道连通正常，角色生效'
+        : '渠道连通正常，但角色不生效：渠道丢弃了 system 提示，人设无法工作，建议更换渠道',
+      !result.follows,
+    );
   }, $('test-llm'));
-$('test-system').onclick = () =>
-  armedClick($('test-system'), '确认测试？', async () => {
-    const result = await api('/api/model/probe', { method: 'POST', body: { mode: 'system', confirmExternal: true } });
-    show(
-      result.follows
-        ? `角色生效（回复“${result.reply}”）`
-        : `角色不生效：渠道丢弃了 system 提示，人设无法工作，建议更换渠道（回复“${result.reply}”）`,
-      !result.follows,
-    );
-  });
 $('test-fallback').onclick = () =>
-  armedClick($('test-fallback'), '确认测试？', async () => {
-    const result = await api('/api/model/probe', { method: 'POST', body: { channel: 'fallback', confirmExternal: true } });
-    show(`备用渠道连通正常，她回了：“${result.reply}”`);
-  });
-$('test-fallback-system').onclick = () =>
-  armedClick($('test-fallback-system'), '确认测试？', async () => {
-    const result = await api('/api/model/probe', { method: 'POST', body: { channel: 'fallback', mode: 'system', confirmExternal: true } });
+  perform(async () => {
+    const result = await api('/api/model/probe', { method: 'POST', body: { channel: 'fallback', mode: 'system' } });
     show(
       result.follows
-        ? `角色生效（回复“${result.reply}”）`
-        : `角色不生效：渠道丢弃了 system 提示，人设无法工作，建议更换渠道（回复“${result.reply}”）`,
+        ? '备用渠道连通正常，角色生效'
+        : '备用渠道连通正常，但角色不生效：渠道丢弃了 system 提示，人设无法工作，建议更换渠道',
       !result.follows,
     );
-  });
+  }, $('test-fallback'));
 $('qq-probe').onclick = () =>
-  armedClick($('qq-probe'), '确认检查？', async () => {
-    const result = await api('/api/qq/probe', { method: 'POST', body: { confirmExternal: true } });
+  perform(async () => {
+    const result = await api('/api/qq/probe', { method: 'POST', body: {} });
     const name = result.bot?.username ? `：${result.bot.username}` : '';
     show(`QQ 凭证有效${name}`);
-  });
+  }, $('qq-probe'));
 
 // ---------- 模型目录（主/备用渠道一比一） ----------
 
