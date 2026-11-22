@@ -1,0 +1,20 @@
+{
+  "name": "atri",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24.0.0" },
+  "scripts": {
+    "dev": "node --env-file-if-exists=.env src/index.ts",
+    "start": "node --env-file-if-exists=.env dist/src/index.js",
+    "build": "tsc -p tsconfig.build.json",
+    "restore": "node --env-file-if-exists=.env scripts/restore.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test test/*.test.ts",
+    "check": "npm run typecheck && npm test && npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.3"
+  }
+}

@@ -1,0 +1,23 @@
+# 她住在容器里，沙箱是她的窝：宿主 daemon 起兄弟容器 atrisandbox，
+# 作品目录三处同源（宿主 /srv/atri/data/works = 项目容器 /app/data/works = 沙箱 /work）。
+# 首次准备：mkdir -p /srv/atri/data && chown -R 1000:1000 /srv/atri/data
+services:
+  atri:
+    build: .
+    restart: unless-stopped
+    user: node            # uid 1000，非 root
+    cap_drop: [ALL]
+    read_only: true       # 项目容器根只读：可写面只剩 /tmp 与挂载的数据
+    tmpfs:
+      - /tmp:rw,nosuid,size=64m
+    security_opt:
+      - no-new-privileges
+    environment:
+      - ATRI_HOST=0.0.0.0
+      # 沙箱按宿主 daemon 视角挂载作品目录（与上面的 data bind 同一物理目录）
+      - ATRI_SANDBOX_WORKS_PATH=/srv/atri/data/works
+    volumes:
+      - /srv/atri/data:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock
+    ports:
+      - "127.0.0.1:3010:3010"
