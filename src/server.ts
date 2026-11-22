@@ -165,7 +165,6 @@ export class AdminServer {
       if (path === '/api/logout') { for (const [key, value] of this.sessions) if (value === session) this.sessions.delete(key); res.setHeader('set-cookie', 'atri_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0'); this.json(res, { ok: true }); }
       else if (path === '/api/config') {
         const before = o.config(), next = mergeConfig(before, body.patch);
-        if ((!before.qq.enabled && next.qq.enabled || !before.backup.enabled && next.backup.enabled) && body.confirmExternal !== true) throw new RequestError(400, '启用外部通信需要明确确认');
         if (next.qq.enabled && (!next.qq.appId || !next.qq.secret)) throw new RequestError(400, '启用QQ前请填写AppID和AppSecret');
         o.update(next); this.json(res, publicConfig(next));
       } else if (path === '/api/peer') {
@@ -209,7 +208,8 @@ export class AdminServer {
         if (!endpoint.url || !endpoint.key) throw new RequestError(400, '请先填写地址和密钥');
         this.json(res, { models: await o.models.list(endpoint, AbortSignal.timeout(30000)) });
       } else if (path === '/api/preview') {
-        if (body.confirmExternal !== true || !(configured(o.config().primary) || configured(o.config().fallback))) throw new RequestError(400, '本地预演仍需调用模型，请配置并明确确认');
+        // 预演通道：UI 无入口，e2e 测试驱动器（HTTP→runtime.receive 全真链路，不出 QQ）。
+        if (!(configured(o.config().primary) || configured(o.config().fallback))) throw new RequestError(400, '本地预演需先配置模型渠道');
         const target = { kind: 'c2c' as const, id: 'preview' }, peer = store.ensurePeer(target); store.savePeer({ ...peer, enabled: true, name: '本地预演（不发送QQ）' });
         o.runtime.receive({ key: randomBytes(16).toString('hex'), target, messageId: `preview-${Date.now()}`, author: '本地管理员', text: string(body.text, '消息', 20000), at: store.now(), attachments: [] }); this.json(res, { ok: true, peer: peer.id });
       } else if (path === '/api/stickers') {
@@ -218,7 +218,7 @@ export class AdminServer {
         const old = store.get<{ slug: string; path: string; description: string }[]>('stickers', []); if (old.some(s => s.slug === slug)) throw new RequestError(409, '标识已存在，请使用新标识');
         const path2 = `stickers/${slug}.${mime === 'image/jpeg' ? 'jpg' : mime.slice(6)}`; await o.files.write(path2, bytes); store.set('stickers', [...old, { slug, path: path2, description: string(body.description, '表情描述', 300) }]); this.json(res, { ok: true });
       } else if (path === '/api/backup') {
-        if (body.confirmExternal !== true) throw new RequestError(400, '备份将上传加密数据，请明确确认'); this.json(res, { ok: true, name: await o.backups.run() });
+        this.json(res, { ok: true, name: await o.backups.run() });
       } else throw new RequestError(404, '接口不存在');
     } catch (error) {
       if (res.headersSent) { res.destroy(); return; }

@@ -186,10 +186,8 @@ $('logout').onclick = async () => {
 async function enter() {
   authenticated = true;
   peers = await api('/api/peers');
-  // 她只属于一个人：真实会话优先，预演会话只是管理员的当面试验场。
   const real = peers.find((p) => p.id !== 'c2c:preview');
-  if (!peerId || !peers.some((p) => p.id === peerId))
-    peerId = (real ?? peers.find((p) => p.id === 'c2c:preview'))?.id ?? '';
+  if (!peerId || !peers.some((p) => p.id === peerId)) peerId = real?.id ?? '';
   $('chat-head-name').textContent = peerId ? peerName(peerId) : '她';
   fillPersonaForm.done = false;
   fillSystemForm.done = false;
@@ -453,7 +451,7 @@ async function refreshChat() {
     msg.append(bubble, el('div', timeText(event.at), 'bubble-meta'));
     list.append(msg);
   }
-  if (!visible.length) empty(list, '还没有对话。先在 QQ 上打个招呼，或在下面的本地预演里说一句。');
+  if (!visible.length) empty(list, '还没有对话。她只属于一个人：在 QQ 上加她好友打个招呼。');
   if (nearBottom) list.scrollTop = list.scrollHeight;
 }
 
@@ -842,19 +840,6 @@ $('backup-on').onchange = () => {
   $('backup-fields').hidden = !$('backup-on').checked;
 };
 
-/** 从关到开的外部通信必须明确确认：后端也有同一条闸，前端先问清楚。 */
-async function confirmExternal(patch, config) {
-  const turningOn = (path) => {
-    const [section, key] = path.split('.');
-    return patch[section]?.[key] === true && !config?.[section]?.[key];
-  };
-  const external = ['qq.enabled', 'backup.enabled'].some(turningOn);
-  if (!external) return true;
-  return window.confirm(
-    '将启用对外连接（QQ 网关 / WebDAV 上传）。确认继续？',
-  );
-}
-
 $('save-system').onclick = () =>
   perform(async () => {
     const primary = {
@@ -912,8 +897,7 @@ $('save-system').onclick = () =>
     if ($('embedding-key').value.trim()) patch.embedding.key = $('embedding-key').value.trim();
     if ($('image-key').value.trim()) patch.image.key = $('image-key').value.trim();
     if ($('backup-password').value.trim()) patch.backup.password = $('backup-password').value.trim();
-    if (!(await confirmExternal(patch, configCache))) return;
-    await api('/api/config', { method: 'POST', body: { patch, confirmExternal: true } });
+    await api('/api/config', { method: 'POST', body: { patch } });
     configCache = null;
     fillSystemForm.done = false;
     await refreshSystem();
@@ -1027,7 +1011,7 @@ function renderBackupState(state) {
 }
 $('backup-now').onclick = () =>
   perform(async () => {
-    const result = await api('/api/backup', { method: 'POST', body: { confirmExternal: true } });
+    const result = await api('/api/backup', { method: 'POST', body: {} });
     renderBackupState({ at: Date.now(), ok: true, name: result.name });
     show(`备份完成：${result.name}`);
   }, $('backup-now'));
@@ -1210,8 +1194,7 @@ $('save-qq').onclick = () =>
       throw new Error('启用 QQ 前请填写 AppID 和 AppSecret');
     const patch = { qq: { appId, enabled } };
     if ($('qq-secret').value.trim()) patch.qq.secret = $('qq-secret').value.trim();
-    if (!(await confirmExternal(patch, configCache))) return;
-    await api('/api/config', { method: 'POST', body: { patch, confirmExternal: true } });
+    await api('/api/config', { method: 'POST', body: { patch } });
     configCache = null;
     fillQQForm();
     show('已保存。网关连上后她会出现在 QQ 里。');

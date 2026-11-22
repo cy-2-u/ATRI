@@ -69,7 +69,7 @@ test('端到端：入站 → 思考 → 校验修复 → 落账 → 预演投递
     const cfg = await fetch(`${base}/api/config`, { method: 'POST', headers: auth, body: JSON.stringify({ patch: { primary: { url: `http://127.0.0.1:${llmPort}`, key: 'k', model: 'fake' } } }) });
     assert.equal(cfg.status, 200, await cfg.text());
     // 预演：第一条消息 → 正常回复
-    const p1 = await fetch(`${base}/api/preview`, { method: 'POST', headers: auth, body: JSON.stringify({ text: '在吗', confirmExternal: true }) });
+    const p1 = await fetch(`${base}/api/preview`, { method: 'POST', headers: auth, body: JSON.stringify({ text: '在吗' }) });
     assert.equal(p1.status, 200, await p1.text());
     let accepted1: { status: string; text?: string } | undefined;
     await until(async () => {
@@ -79,7 +79,7 @@ test('端到端：入站 → 思考 → 校验修复 → 落账 → 预演投递
     }, 15000, '第一条回复投递');
     assert.equal(accepted1!.text, '在的，怎么了？');
     // 第二条：触发校验失败 → 修复回路 → 有效回复
-    await fetch(`${base}/api/preview`, { method: 'POST', headers: auth, body: JSON.stringify({ text: '再陪我聊两句', confirmExternal: true }) });
+    await fetch(`${base}/api/preview`, { method: 'POST', headers: auth, body: JSON.stringify({ text: '再陪我聊两句' }) });
     await until(async () => {
       const list = await (await fetch(`${base}/api/deliveries?peer=c2c:preview`, { headers: { cookie } })).json() as { status: string; part: { text?: string } }[];
       return list.some(d => d.status === 'accepted' && d.part.text === '好');
@@ -96,18 +96,18 @@ test('端到端：入站 → 思考 → 校验修复 → 落账 → 预演投递
     const previewJobs = jobs.filter(j => j.peer === 'c2c:preview');
     assert.deepEqual(previewJobs, [], `预演会话泄漏了常驻任务: ${JSON.stringify(previewJobs)}`);
     // 模型目录拉取（去重后按序）与 system 哨兵探针
-    const list = await (await fetch(`${base}/api/model/list`, { method: 'POST', headers: auth, body: JSON.stringify({ confirmExternal: true, url: `http://127.0.0.1:${llmPort}`, key: 'k' }) })).json() as { models: string[] };
+    const list = await (await fetch(`${base}/api/model/list`, { method: 'POST', headers: auth, body: JSON.stringify({ url: `http://127.0.0.1:${llmPort}`, key: 'k' }) })).json() as { models: string[] };
     assert.deepEqual(list.models, ['fake', 'fake-pro']);
-    const probe = await (await fetch(`${base}/api/model/probe`, { method: 'POST', headers: auth, body: JSON.stringify({ mode: 'system', confirmExternal: true }) })).json() as { ok: boolean; follows: boolean; reply: string };
+    const probe = await (await fetch(`${base}/api/model/probe`, { method: 'POST', headers: auth, body: JSON.stringify({ mode: 'system' }) })).json() as { ok: boolean; follows: boolean; reply: string };
     assert.equal(probe.ok, true);
     assert.equal(probe.follows, true, `system 哨兵未生效：${probe.reply}`);
     // 备用渠道配置后可被独立探测（only 通道，不走 failover）
     const fb = await fetch(`${base}/api/config`, { method: 'POST', headers: auth, body: JSON.stringify({ patch: { fallback: { url: `http://127.0.0.1:${llmPort}`, key: 'k', model: 'fake' } } }) });
     assert.equal(fb.status, 200, await fb.text());
-    const fbProbe = await (await fetch(`${base}/api/model/probe`, { method: 'POST', headers: auth, body: JSON.stringify({ channel: 'fallback', confirmExternal: true }) })).json() as { ok: boolean; reply: string };
+    const fbProbe = await (await fetch(`${base}/api/model/probe`, { method: 'POST', headers: auth, body: JSON.stringify({ channel: 'fallback' }) })).json() as { ok: boolean; reply: string };
     assert.equal(fbProbe.ok, true);
     // 备用渠道同样可测 system 哨兵
-    const fbSystem = await (await fetch(`${base}/api/model/probe`, { method: 'POST', headers: auth, body: JSON.stringify({ channel: 'fallback', mode: 'system', confirmExternal: true }) })).json() as { ok: boolean; follows: boolean };
+    const fbSystem = await (await fetch(`${base}/api/model/probe`, { method: 'POST', headers: auth, body: JSON.stringify({ channel: 'fallback', mode: 'system' }) })).json() as { ok: boolean; follows: boolean };
     assert.equal(fbSystem.follows, true);
   } finally {
     child.kill();

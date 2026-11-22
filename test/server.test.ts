@@ -70,16 +70,14 @@ test('管理端：登录限速、CSRF、静态资源、状态接口', async () =
   });
 });
 
-test('管理端：配置合并与外部启用需确认', async () => {
+test('管理端：配置合并与校验', async () => {
   await withServer(async (base) => {
     const { cookie, csrf } = await login(base);
     const auth = { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' };
-    // 未确认就启用 QQ → 400
-    const noConfirm = await fetch(`${base}/api/config`, { method: 'POST', headers: auth, body: JSON.stringify({ patch: { qq: { enabled: true, appId: 'a', secret: 'b' } } }) });
-    assert.equal(noConfirm.status, 400);
-    const confirmed = await fetch(`${base}/api/config`, { method: 'POST', headers: auth, body: JSON.stringify({ patch: { qq: { enabled: true, appId: 'a', secret: 'b' } }, confirmExternal: true }) });
-    assert.equal(confirmed.status, 200);
-    assert.equal(((await confirmed.json()) as { qq: { enabled: boolean } }).qq.enabled, true);
+    // 启用 QQ（确认闸已删：保存动作即知情）
+    const enabled = await fetch(`${base}/api/config`, { method: 'POST', headers: auth, body: JSON.stringify({ patch: { qq: { enabled: true, appId: 'a', secret: 'b' } } }) });
+    assert.equal(enabled.status, 200);
+    assert.equal(((await enabled.json()) as { qq: { enabled: boolean } }).qq.enabled, true);
     // 非法配置值 → 400
     const invalid = await fetch(`${base}/api/config`, { method: 'POST', headers: auth, body: JSON.stringify({ patch: { life: { beatMinutes: 3 } } }) });
     assert.equal(invalid.status, 400);
