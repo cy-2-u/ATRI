@@ -110,10 +110,11 @@ test('管理端：表情图片通道（/api/sticker）', async () => {
   });
 });
 
-test('管理端：模型列表与 system 探针需明确确认', async () => {
+test('管理端：system 探针需明确确认，模型目录只认地址密钥', async () => {
   await withServer(async (base) => {
     const { cookie, csrf } = await login(base);
     const auth = { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' };
+    // 模型目录：无地址密钥 400（不再要求 confirmExternal 与模型名）
     assert.equal((await fetch(`${base}/api/model/list`, { method: 'POST', headers: auth, body: JSON.stringify({}) })).status, 400);
     assert.equal((await fetch(`${base}/api/model/probe`, { method: 'POST', headers: auth, body: JSON.stringify({ mode: 'system' }) })).status, 400);
     // 备用渠道未配置时禁止探测

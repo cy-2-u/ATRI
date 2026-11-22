@@ -203,13 +203,12 @@ export class AdminServer {
           const reply = await o.models.complete([{ role: 'user', content: '仅回复OK' }], [], options); this.json(res, { ok: true, reply: reply.message.content, usage: reply.usage });
         }
       } else if (path === '/api/model/list') {
-        if (body.confirmExternal !== true) throw new RequestError(400, '拉取模型列表会连接渠道，请明确确认');
+        // 拉取模型目录不需要已填模型名——拉目录就是为了选模型；地址+密钥即可。
         const fallback = body.channel === 'fallback';
         const stored = fallback ? o.config().fallback : o.config().primary;
-        if (fallback && !configured(stored)) throw new RequestError(400, '备用渠道未配置');
         const url = typeof body.url === 'string' ? body.url.trim() : '', key = typeof body.key === 'string' ? body.key.trim() : '';
         const endpoint = { ...stored, format: body.format === 'anthropic' ? 'anthropic' as const : 'openai' as const, ...(url ? { url } : {}), ...(key ? { key } : {}) };
-        if (!configured(endpoint)) throw new RequestError(400, '请先填写地址和密钥');
+        if (!endpoint.url || !endpoint.key) throw new RequestError(400, '请先填写地址和密钥');
         this.json(res, { models: await o.models.list(endpoint, AbortSignal.timeout(30000)) });
       } else if (path === '/api/preview') {
         if (body.confirmExternal !== true || !(configured(o.config().primary) || configured(o.config().fallback))) throw new RequestError(400, '本地预演仍需调用模型，请配置并明确确认');

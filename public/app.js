@@ -855,7 +855,6 @@ function fillSystemForm(config) {
   const execution = config.execution ?? {};
   $('execution-on').checked = Boolean(execution.enabled);
   $('execution-net').checked = Boolean(execution.network);
-  $('qq-sandbox').checked = Boolean(config.qq?.sandbox);
 }
 $('fallback-on').onchange = () => {
   $('fallback-fields').hidden = !$('fallback-on').checked;
@@ -923,7 +922,6 @@ $('save-system').onclick = () =>
         enabled: $('execution-on').checked,
         network: $('execution-net').checked,
       },
-      qq: { sandbox: $('qq-sandbox').checked },
       backup: {
         enabled: $('backup-on').checked,
         url: $('backup-url').value.trim(),
@@ -986,12 +984,10 @@ $('qq-probe').onclick = () =>
 
 const fetchedModels = {};
 const chanId = (channel, base) => `${base}-${channel}`;
-$('fetch-models').onclick = () =>
-  armedClick($('fetch-models'), '确认拉取？', () => fetchModels('primary'));
-$('fetch-models-fallback').onclick = () =>
-  armedClick($('fetch-models-fallback'), '确认拉取？', () => fetchModels('fallback'));
+$('fetch-models').onclick = () => fetchModels('primary');
+$('fetch-models-fallback').onclick = () => fetchModels('fallback');
 async function fetchModels(channel) {
-  const body = { confirmExternal: true, channel };
+  const body = { channel };
   const urlValue = $(channel === 'fallback' ? 'fallback-url' : 'primary-url').value.trim();
   const keyValue = $(channel === 'fallback' ? 'fallback-key' : 'primary-key').value.trim();
   if (urlValue) body.url = urlValue;
