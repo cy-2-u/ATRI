@@ -855,6 +855,7 @@ function fillSystemForm(config) {
   const execution = config.execution ?? {};
   $('execution-on').checked = Boolean(execution.enabled);
   $('execution-net').checked = Boolean(execution.network);
+  $('qq-sandbox').checked = Boolean(config.qq?.sandbox);
 }
 $('fallback-on').onchange = () => {
   $('fallback-fields').hidden = !$('fallback-on').checked;
@@ -922,6 +923,7 @@ $('save-system').onclick = () =>
         enabled: $('execution-on').checked,
         network: $('execution-net').checked,
       },
+      qq: { sandbox: $('qq-sandbox').checked },
       backup: {
         enabled: $('backup-on').checked,
         url: $('backup-url').value.trim(),
@@ -1170,7 +1172,6 @@ function fillQQForm() {
   $('qq-secret-state').textContent = config.qq?.secretConfigured ? '（已保存）' : '（未设置）';
   $('qq-secret').placeholder = config.qq?.secretConfigured ? '••••••••' : '';
   $('qq-enabled').checked = Boolean(config.qq?.enabled);
-  $('qq-sandbox').checked = Boolean(config.qq?.sandbox);
 }
 
 async function refreshDrawers() {
@@ -1242,7 +1243,7 @@ $('save-qq').onclick = () =>
     const enabled = $('qq-enabled').checked;
     if (enabled && !appId && !configCache?.qq?.appId)
       throw new Error('启用 QQ 前请填写 AppID 和 AppSecret');
-    const patch = { qq: { appId, enabled, sandbox: $('qq-sandbox').checked } };
+    const patch = { qq: { appId, enabled } };
     if ($('qq-secret').value.trim()) patch.qq.secret = $('qq-secret').value.trim();
     if (!(await confirmExternal(patch, configCache))) return;
     await api('/api/config', { method: 'POST', body: { patch, confirmExternal: true } });
