@@ -278,6 +278,18 @@ const runtime = new Runtime(journal, mind, {
   material: (turn) => material.build(turn.peer, turn).then((built) => built.material),
   send: (peer, part) => bridge.send(peer, part),
   nextBeat,
+  // 提醒的下限 = 折进睡眠窗：凌晨到期的提醒（含写错到过去的 dueAt）
+  // 推到她醒来，夜里不再被闹钟拽着空转。
+  reminderFloor: () => {
+    const c = config();
+    return nextWakeAfter(
+      Date.now() + 600_000,
+      c.timezone,
+      c.sleepStart,
+      c.sleepEnd,
+      tonightArousal(),
+    );
+  },
   onComposing: (peer, active) => bridge.composing(peer, active),
   onError,
   timeoutMs: () => config().turnTimeoutMs,

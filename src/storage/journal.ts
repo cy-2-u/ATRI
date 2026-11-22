@@ -425,7 +425,7 @@ export class Journal {
                 item.id,
                 String(row.peer),
               );
-          this.refreshReminder(String(row.peer));
+          this.refreshReminder(String(row.peer), 0);
         }
       }
       const unresolved = this.statement(
@@ -936,21 +936,42 @@ export class Journal {
       .map((row) => JSON.parse(String(row.value)) as Commitment);
   }
 
-  private refreshReminder(peer: string): void {
+  /** 同一约定的两次提醒拍之间的最小间隔：模型没处理（没问）的到期约定
+   *  若立刻重排，会变成十几秒一拍的思考风暴——2026-11-22 实锤：一条
+   *  dueAt 写错到昨天的约定烧掉一整夜 9000 万 input token，心跳/日记/
+   *  聊天全被它挤出调度。10 分钟与心跳节拍同量级：催而不轰炸。 */
+  private static readonly REMINDER_COOLDOWN = 600_000;
+
+  private refreshReminder(peer: string, floor: number): void {
+    const now = this.now();
     const due = this.commitments(peer)
       .filter((item) => item.state === 'open' && item.dueAt > 0 && !item.askedAt)
       .map((item) => item.dueAt);
-    if (due.length)
-      this.statement(
-        "INSERT INTO kernel_jobs(peer,kind,due_at) VALUES(?,'reminder',?) ON CONFLICT(peer,kind) DO UPDATE SET due_at=excluded.due_at",
-      ).run(peer, Math.min(...due));
-    else this.statement("DELETE FROM kernel_jobs WHERE peer=? AND kind='reminder'").run(peer);
+    if (!due.length) {
+      this.statement("DELETE FROM kernel_jobs WHERE peer=? AND kind='reminder'").run(peer);
+      return;
+    }
+    const earliest = Math.min(...due);
+    let next: number;
+    if (earliest > now) {
+      next = earliest;
+    } else {
+      // 有已到期的约定：冷却防风暴（同一条不许十几秒一拍地催），floor
+      // 是装配层折进来的睡眠窗下限；未来时刻不受牵连，照旧精确触发。
+      const cooled = Math.max(now + Journal.REMINDER_COOLDOWN, floor);
+      const future = Math.min(...due.filter((item) => item > now));
+      next = Number.isFinite(future) ? Math.min(cooled, future) : cooled;
+    }
+    this.statement(
+      "INSERT INTO kernel_jobs(peer,kind,due_at) VALUES(?,'reminder',?) ON CONFLICT(peer,kind) DO UPDATE SET due_at=excluded.due_at",
+    ).run(peer, next);
   }
 
   /** 提醒拍结束后重算：问过的退场，没问到的保持到期状态（不会因为一次
-   *  安静的提醒拍就永远失去下一次提醒机会）。 */
-  rearmReminders(peer: string): void {
-    this.transaction(() => this.refreshReminder(peer));
+   *  安静的提醒拍就永远失去下一次提醒机会）。floor 是提醒最早可排到的
+   *  时刻——装配层把睡眠窗折进来，凌晨到期的提醒推到她醒来。 */
+  rearmReminders(peer: string, floor = 0): void {
+    this.transaction(() => this.refreshReminder(peer, floor));
   }
 
   keepCommitment(
@@ -992,7 +1013,7 @@ export class Journal {
       this.statement(
         'INSERT INTO kernel_commitments(id,peer,value) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value',
       ).run(value.id, peer, JSON.stringify(value));
-      this.refreshReminder(peer);
+      this.refreshReminder(peer, 0);
       return value;
     });
   }
@@ -1010,7 +1031,7 @@ export class Journal {
         id,
         peer,
       );
-      this.refreshReminder(peer);
+      this.refreshReminder(peer, 0);
       return true;
     });
   }

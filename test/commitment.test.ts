@@ -66,6 +66,33 @@ test('提醒独立于心跳，改期和了结后重算最近到期时间', () =>
   }
 });
 
+test('到期约定重排进冷却，未来约定不受牵连——模型没处理就不许十几秒一拍地烧', () => {
+  const journal = new Journal(':memory:', () => 1000);
+  try {
+    journal.receive('peer', 'one', '别忘了');
+    const source = journal.events('peer')[0]!.id;
+    const overdue = {
+      content: '过期的提醒',
+      kind: 'reminder' as const,
+      sources: [source],
+      dueAt: 500,
+      recurring: 'none' as const,
+    };
+    journal.keepCommitment('peer', overdue);
+    // 已到期的约定不再排 0 间隔（dueAt 写错到过去的风暴回归钉）
+    assert.equal(journal.jobs().find((job) => job.kind === 'reminder')!.due_at, 1000 + 600_000);
+    // 拍后重算带睡眠窗下限：floor 更晚则取 floor
+    journal.rearmReminders('peer', 700_000);
+    assert.equal(journal.jobs().find((job) => job.kind === 'reminder')!.due_at, 700_000);
+    // 未来约定不受冷却拖累，也不被 floor 推迟
+    journal.keepCommitment('peer', { ...overdue, content: '未来的提醒', dueAt: 2000 });
+    journal.rearmReminders('peer', 700_000);
+    assert.equal(journal.jobs().find((job) => job.kind === 'reminder')!.due_at, 2000);
+  } finally {
+    journal.close();
+  }
+});
+
 test('约定来源隔离，周年解决后续期，普通挂念解决后退场', () => {
   const now = Date.UTC(2026, 10, 13);
   const journal = new Journal(':memory:', () => now);

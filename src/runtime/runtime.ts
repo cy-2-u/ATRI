@@ -14,6 +14,9 @@ export interface RuntimeOptions {
     part: Bubble,
   ): Promise<'sent' | 'unknown' | 'failed' | ['failed' | 'unknown', string]>;
   nextBeat(peer: string): number | undefined;
+  /** 提醒重排的时刻下限：装配层把睡眠窗折进来（内核不懂时区）——凌晨
+   *  到期的提醒推到她醒来，而不是整夜空转。 */
+  reminderFloor?(): number;
   onComposing?(peer: string, active: boolean): Promise<void>;
   onError(error: unknown): void;
   timeoutMs: number | (() => number);
@@ -330,7 +333,7 @@ export class Runtime {
           const next = this.options.nextBeat(turn.peer);
           if (next !== undefined) this.journal.schedule(turn.peer, 'beat', next);
         } else if (turn.kind === 'reminder') {
-          this.journal.rearmReminders(turn.peer);
+          this.journal.rearmReminders(turn.peer, this.options.reminderFloor?.() ?? 0);
         }
       }
     }
