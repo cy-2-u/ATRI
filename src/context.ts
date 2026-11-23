@@ -1,11 +1,10 @@
 import type { Config } from './config.ts';
-import { configured } from './config.ts';import type { Store, Turn } from './store.ts';
+import { configured, imageEndpoint } from './config.ts';
+import type { Store, Turn } from './store.ts';
 import type { Event, Feeling, Memory, Message } from './types.ts';
 import { body, dayKey, dayStart, estimate, eveningArousalMinutes, grams, inSleepMinutes, jitteredSleepWindow, minutesOfDay, renderMood, renderMoodTrail, renderMotives, renderSelfHour, sleepDayKeyOf, sleepWindow } from './state.ts';
 import { emotionalBaseline, Recall, type RecalledMemory } from './memory.ts';
 
-/** 当前引擎的画图渠道：双份配置各存一套，engine 只决定用哪份。 */
-export const imageEndpoint = (c: Config): { url: string; key: string; model: string } => c.image.engine === 'nai' ? c.image.nai : c.image.gpt;
 import { Models, requestTokens } from './model.ts';
 import { Files } from './files.ts';
 import type { Tool } from './tools.ts';
@@ -149,7 +148,7 @@ export class Context {
 
   private async buildNight(turn: Turn, peerId: string, prefix: string): Promise<{ messages: Message[]; cacheKey: string }> {
     const c = this.config(), now = this.store.now();
-    const day = this.store.eventsBetween(peerId, ['received', 'accepted'], now - 86400000, now + 1, 400);
+    const day = this.store.eventsBetween(peerId, ['received', 'accepted'], now - 86400000, now + 1, 400); // 400 条封顶：挤掉的是一天最早的闲聊，夜间材料优先保近期
     const actives = this.store.memories(peerId);
     const gramSets = actives.map(m => new Set(grams(m.content)));
     const pairs: { a: { id: string; content: string }; b: { id: string; content: string } }[] = [];

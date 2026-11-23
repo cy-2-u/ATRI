@@ -1,5 +1,5 @@
 import type { Config } from './config.ts';
-import { apiBase, configured } from './config.ts';
+import { apiBase, configured, imageEndpoint } from './config.ts';
 import type { Store, Turn } from './store.ts';
 import type { ToolDefinition } from './types.ts';
 import { object, string, strings } from './types.ts';
@@ -39,7 +39,9 @@ export function tools(store: Store, config: () => Config, files: Files, recall: 
         if (args.op === 'list') return workspace.list(path);
         if (args.op === 'read') {
           const bytes = await workspace.read(path, 2 * 1024 * 1024), start = page(args.offset, 0), length = page(args.length, 6000, 12000);
-          const body = bytes.toString('utf8'); return { path, text: body.slice(start, start + length), next: start + length < body.length ? start + length : null, total: body.length };
+          // 码点分页：按码元 slice 会把 emoji（代理对）拦腰截断成乱码
+          const chars = [...bytes.toString('utf8')];
+          return { path, text: chars.slice(start, start + length).join(''), next: start + length < chars.length ? start + length : null, total: chars.length };
         }
         if (args.op === 'write') {
           if (typeof args.content !== 'string' || args.content.length > 1000000) throw new TypeError('文件内容无效或过大');
@@ -90,12 +92,13 @@ export function tools(store: Store, config: () => Config, files: Files, recall: 
         const raw = result.bytes.toString('utf8');
         const body = result.mime.includes('html') ? raw.replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi, '').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/\s+/g, ' ').trim() : raw;
         const offset = page(args.offset, 0);
-        return { url: result.url, text: body.slice(offset, offset + 10000), next: offset + 10000 < body.length ? offset + 10000 : null };
+        const chars = [...body]; // 码点分页：代理对不截断
+        return { url: result.url, text: chars.slice(offset, offset + 10000).join(''), next: offset + 10000 < chars.length ? offset + 10000 : null };
       } },
     { definition: { name: 'draw', description: '', parameters: schema({ prompt: text }, ['prompt']) }, mutates: true,
       async run(args, ctx) {
         const c = config().image;
-        const endpoint = c.engine === 'nai' ? c.nai : c.gpt;
+        const endpoint = imageEndpoint(config());
         if (!configured(endpoint)) throw new Error(c.engine === 'nai' ? 'NAI 画图渠道未配置' : '画图渠道未配置');
         const prompt = string(args.prompt, 'prompt', 8000), started = store.now();
         try {

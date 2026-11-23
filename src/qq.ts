@@ -161,6 +161,9 @@ export class QQ {
         failures = 0;
       } catch (error) {
         if (!this.stopped && !controller.signal.aborted) { this.error = errorText(error); this.onError(error); failures++; }
+        // 鉴权/配置类关闭码，重连无解（码位与 Discord 网关同构：4002 无效 Token；4010-4014 无效
+        // shard/intents/版本，其中 4013 是无效 intents 而非限流；4914-4915 服务器已关闭；
+        // 100007/100016/10004 为 API 鉴权错误）——停机等配置变更，而不是退避空转。
         if (error instanceof QQError && [100007, 100016, 10004, 4001, 4002, 4010, 4011, 4012, 4013, 4014, 4914, 4915].includes(error.code)) { this.stopped = true; break; }
       }
       this.online = false;
@@ -233,7 +236,7 @@ export class QQ {
     if (part.reply && !reply) throw new QQError('引用入站消息不存在');
     const key = reply ? `reply-seq:${peer.id}:${reply.data.messageId}` : '';
     const stored = key ? this.store.get<{ used: number; at: number } | number>(key, 0) : 0;
-    const used = typeof stored === 'number' ? stored : stored.used;
+    const used = typeof stored === 'number' ? stored : stored.used; // 旧版存裸数字，新版存对象——读到旧数据也能对上
     const usable = reply && this.store.now() - reply.at < this.config().qq.passiveMinutes * 60000 && used < (peer.target.kind === 'c2c' ? 4 : 5);
     const request: Record<string, unknown> = part.type === 'text' ? { msg_type: 0, content: part.text } : { msg_type: 7 };
     if (usable) { request.msg_id = reply.data.messageId; request.msg_seq = used + 1; if (reserve) this.store.set(key, { used: used + 1, at: this.store.now() }); }

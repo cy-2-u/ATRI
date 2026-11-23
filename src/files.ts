@@ -93,11 +93,12 @@ export class Files {
     let output = '', errors = '', truncated = false;
     const clip = (chunk: Buffer, old: string): string => { if (old.length + chunk.length > 64000) truncated = true; return (old + chunk.toString('utf8')).slice(0, 64000); };
     return await new Promise<Record<string, unknown>>((resolvePromise, reject) => {
-      const child = this.launch('docker', ['exec', name, 'timeout', `${seconds}s`, 'sh', '-c', command], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
-      deadline.addEventListener('abort', () => child.kill(), { once: true }); if (deadline.aborted) child.kill();
-      child.stdout.on('data', chunk => { output = clip(chunk as Buffer, output); }); child.stderr.on('data', chunk => { errors = clip(chunk as Buffer, errors); });
-      child.on('error', error => { deadline.removeEventListener('abort', () => child.kill()); reject(new Error(`容器执行不可用：${errorText(error)}`)); });
-      child.on('close', code => { deadline.removeEventListener('abort', () => child.kill()); resolvePromise({ ok: code === 0 && !deadline.aborted, code, stdout: output, stderr: errors, truncated, interrupted: deadline.aborted, isolation: 'persistent-workshop' }); });
+    const child = this.launch('docker', ['exec', name, 'timeout', `${seconds}s`, 'sh', '-c', command], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+    // abort 事件只发一次，once 即自动清理；对已结束的子进程 kill 无害。
+    deadline.addEventListener('abort', () => child.kill(), { once: true }); if (deadline.aborted) child.kill();
+    child.stdout.on('data', chunk => { output = clip(chunk as Buffer, output); }); child.stderr.on('data', chunk => { errors = clip(chunk as Buffer, errors); });
+    child.on('error', error => reject(new Error(`容器执行不可用：${errorText(error)}`)));
+    child.on('close', code => resolvePromise({ ok: code === 0 && !deadline.aborted, code, stdout: output, stderr: errors, truncated, interrupted: deadline.aborted, isolation: 'persistent-workshop' }));
     });
   }
 

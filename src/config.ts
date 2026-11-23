@@ -145,6 +145,9 @@ export function publicConfig(c: Config): Record<string, unknown> {
 
 export const configured = (e: { url: string; key: string; model: string }): boolean => !!(e.url && e.key && e.model);
 
+/** 当前引擎的画图渠道：双份配置各存一套，engine 只决定用哪份。 */
+export const imageEndpoint = (c: Config): { url: string; key: string; model: string } => c.image.engine === 'nai' ? c.image.nai : c.image.gpt;
+
 export function apiBase(url: string): string {
   const base = url.replace(/\/+$/, '');
   return /\/v\d+(?:beta)?$/.test(base) ? base : `${base}/v1`;

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { Config } from './config.ts';
-import { configured } from './config.ts';
+import { configured, imageEndpoint } from './config.ts';
 import type { Store, Turn } from './store.ts';
 import type { Thought, Part, CommitmentInput, MemoryInput, Message, ThoughtOp, DiaryInput } from './types.ts';
 import { object, string, strings, axis, errorText } from './types.ts';
@@ -83,7 +83,7 @@ export class Mind {
 
   private available(): Tool[] {
     const c = this.config();
-    const img = c.image.engine === 'nai' ? c.image.nai : c.image.gpt;
+    const img = imageEndpoint(c);
     return [...this.tools.values()]
       .filter(t => t.definition.name !== 'execute' || c.execution.enabled)
       .filter(t => t.definition.name !== 'draw' || c.image.enabled && !!(img.url && img.key && img.model))
