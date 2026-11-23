@@ -93,7 +93,9 @@ export class Store {
     const id = peerKey(target);
     const existing = this.peer(id);
     if (existing) return existing;
-    const p: Peer = { id, target, name: id, enabled: false, autonomous: false, activeAllowed: null, lastReceived: 0, lastAccepted: 0 };
+    // 开箱即活：能收到消息的会话天然就是她在乎的人，默认处理消息+自主心智。
+    // 开关降级为「想关时才碰」——部署完不该再有一轮手动点燃仪式。
+    const p: Peer = { id, target, name: id, enabled: true, autonomous: true, activeAllowed: null, lastReceived: 0, lastAccepted: 0 };
     this.savePeer(p);
     return p;
   }

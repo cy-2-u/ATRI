@@ -210,7 +210,7 @@ export class AdminServer {
       } else if (path === '/api/preview') {
         // 预演通道：UI 无入口，e2e 测试驱动器（HTTP→runtime.receive 全真链路，不出 QQ）。
         if (!(configured(o.config().primary) || configured(o.config().fallback))) throw new RequestError(400, '本地预演需先配置模型渠道');
-        const target = { kind: 'c2c' as const, id: 'preview' }, peer = store.ensurePeer(target); store.savePeer({ ...peer, enabled: true, name: '本地预演（不发送QQ）' });
+        const target = { kind: 'c2c' as const, id: 'preview' }, peer = store.ensurePeer(target); store.savePeer({ ...peer, enabled: true, autonomous: false, name: '本地预演（不发送QQ）' }); // 预演不吃「开箱即活」默认：测试驱动器不该有心跳/夜间常驻任务
         o.runtime.receive({ key: randomBytes(16).toString('hex'), target, messageId: `preview-${Date.now()}`, author: '本地管理员', text: string(body.text, '消息', 20000), at: store.now(), attachments: [] }); this.json(res, { ok: true, peer: peer.id });
       } else if (path === '/api/stickers') {
         const slug = string(body.slug, '表情标识', 64); if (!/^[a-zA-Z0-9_-]+$/.test(slug) || typeof body.bytes !== 'string') throw new RequestError(400, '表情标识或内容无效');
