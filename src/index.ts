@@ -15,6 +15,7 @@ import { QQ, normalizeEvent, type QQEvent } from './qq.ts';
 import { AdminServer } from './server.ts';
 import { Backups } from './backup.ts';
 import { object, errorText } from './types.ts';
+import { seedStickers } from './seed.ts';
 
 const location = dirname(fileURLToPath(import.meta.url));
 const root = location.endsWith(`${process.platform === 'win32' ? '\\' : '/'}dist${process.platform === 'win32' ? '\\' : '/'}src`) ? resolve(location, '../..') : resolve(location, '..');
@@ -49,6 +50,8 @@ const logError = (error: unknown): void => {
   console.error(text);
 };
 const files = new Files(join(data, 'works'), getConfig); await files.init();
+const seeded = await seedStickers(data, root, (key, fallback) => store.get(key, fallback), (key, value) => store.set(key, value));
+if (seeded) console.log(`表情库入库：新增 ${seeded} 个（assets/stickers → 数据目录）`);
 const models = new Models(getConfig, store), recall = new Recall(store, getConfig);
 const context = new Context(store, getConfig, models, files, recall);
 const mind = new Mind(store, getConfig, models, context, tools(store, getConfig, files, recall));
