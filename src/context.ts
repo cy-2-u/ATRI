@@ -212,7 +212,7 @@ export class Context {
       ...(moodLine ? { feeling: moodLine } : {}),
       ...(trailLine ? { moodTrail: trailLine } : {}),
       ...(impressions?.beliefs.length ? { himModel: { ...impressions, staleness: `${Math.floor((now - impressions.updatedAt) / 3600000)} 小时前核实；人会变，这些可能已经过时` } } : {}),
-      ...(recalled.length ? { recollections: recalled.map(h => ({ id: h.memory.id, kind: h.memory.kind, text: h.text, certainty: h.certainty, ...(h.feeling ? { feeling: h.feeling } : {}) })) } : {}),
+      ...(recalled.length ? { recollections: { note: '这些是浮上来的过往经历，不是当前现场；自然承接，别当作刚刚发生的事', items: recalled.map(h => ({ id: h.memory.id, kind: h.memory.kind, text: h.text, certainty: h.certainty, ...(h.feeling ? { feeling: h.feeling } : {}) })) } } : {}),
       ...(diaryEchoes.length ? { diaryEchoes: diaryEchoes.map(e => ({ at: new Date(e.at).toISOString(), text: e.text })) } : {}),
       ...(idleThoughts.length ? { thoughts: idleThoughts.map(t => ({ id: t.id, topic: t.topic, meaning: t.meaning, ...(t.dueAt ? { due: new Date(t.dueAt).toISOString() } : {}) })) } : {}),
       ...(commitments.length ? { commitments: commitments.map(item => ({ id: item.id, kind: item.kind, content: item.content, due: item.dueAt ? new Date(item.dueAt).toISOString() : '' })) } : {}),
@@ -319,7 +319,7 @@ export class Context {
     const c = this.config(), endpoint = configured(c.primary) ? c.primary : c.fallback;
     if (estimate(content) > endpoint.contextTokens - endpoint.outputTokens - 1024) return undefined;
     const messages: Message[] = [
-      { role: 'system', content: '只压缩提供的真实事件或既有摘要：保留人物、时间、事实变化、情绪转折、未了话题、约定和原始事件ID。推测标明推测，不增加经历，不把未发送内容当作对方已收到。只返回纯文本事实摘要，目标约1000字；重要信息可多写。原文仍能 history 核实，摘要不是精确引用。' },
+      { role: 'system', content: '只压缩提供的真实事件或既有摘要：保留人物、时间、事实变化、情绪转折、未了话题、约定和原始事件ID。推测标明推测，不增加经历，不把未发送内容当作对方已收到。禁用无具体事实的空话，如「双方进行了交流」「关系有所发展」「气氛发生变化」「剧情继续推进」。只返回纯文本事实摘要，目标约1000字；重要信息可多写。原文仍能 history 核实，摘要不是精确引用。' },
       { role: 'user', content },
     ];
     try { const completion = await this.models.complete(messages, [], { signal, purpose, cacheKey: `compact:${peer}`, final: true }); return completion.message.content.trim() || undefined; }
