@@ -92,27 +92,28 @@ export function tools(store: Store, config: () => Config, files: Files, recall: 
         const offset = page(args.offset, 0);
         return { url: result.url, text: body.slice(offset, offset + 10000), next: offset + 10000 < body.length ? offset + 10000 : null };
       } },
-    { definition: { name: 'draw', description: '调用画图渠道生成真实作品并保存。未配置不伪造，描述清楚再画。作品目录里已有的图不必重画：path 直接发送即可。', parameters: schema({ prompt: text }, ['prompt']) }, mutates: true,
+    { definition: { name: 'draw', description: '', parameters: schema({ prompt: text }, ['prompt']) }, mutates: true,
       async run(args, ctx) {
         const c = config().image;
-        if (!configured(c)) throw new Error('画图渠道未配置');
+        const endpoint = c.engine === 'nai' ? c.nai : c.gpt;
+        if (!configured(endpoint)) throw new Error(c.engine === 'nai' ? 'NAI 画图渠道未配置' : '画图渠道未配置');
         const prompt = string(args.prompt, 'prompt', 8000), started = store.now();
         try {
           // NAI 免费额度：纯文生图、单张、28 步内、固定尺寸白名单；超出按全价计费，所以这里硬性收口。
           const nai = c.engine === 'nai';
           const body: Record<string, unknown> = nai
-            ? { model: c.model || 'nai-diffusion-4-5-full', prompt, n: 1, response_format: 'b64_json', parameters: { steps: Math.min(28, Math.max(1, Math.round(c.naiSteps || 28))), cfg_scale: 6, sampler: 'k_dpmpp_2m_sde', noise_schedule: 'karras' } }
-            : { model: c.model, prompt, n: 1, response_format: 'b64_json' };
-          const { data } = await jsonRequest(`${apiBase(c.url)}/images/generations`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${c.key}` }, body: JSON.stringify(body), signal: AbortSignal.any([ctx.signal, AbortSignal.timeout(180000)]) }, 32 * 1024 * 1024);
+            ? { model: endpoint.model || 'nai-diffusion-4-5-full', prompt, n: 1, response_format: 'b64_json', parameters: { steps: Math.min(28, Math.max(1, Math.round(c.nai.steps || 28))), cfg_scale: 6, sampler: 'k_dpmpp_2m_sde', noise_schedule: 'karras' } }
+            : { model: endpoint.model, prompt, n: 1, response_format: 'b64_json' };
+          const { data } = await jsonRequest(`${apiBase(endpoint.url)}/images/generations`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${endpoint.key}` }, body: JSON.stringify(body), signal: AbortSignal.any([ctx.signal, AbortSignal.timeout(180000)]) }, 32 * 1024 * 1024);
           const image = Array.isArray(data.data) ? object(data.data[0]) : {};
           const bytes = typeof image.b64_json === 'string' ? Buffer.from(image.b64_json, 'base64') : typeof image.url === 'string' ? (await publicDownload(image.url, ctx.signal)).bytes : undefined;
           const mime = bytes ? mimeOf(bytes) : '';
           if (!bytes?.length || !mime.startsWith('image/')) throw new Error('画图服务没有返回有效图片');
           const extension = mime === 'image/jpeg' ? 'jpg' : mime.slice(6);
           const result = await (await files.scope(ctx.turn.peer)).write(`pictures/${ctx.turn.episode.slice(0, 16)}-${started}.${extension}`, bytes);
-          store.recordUsage({ purpose: 'draw', model: c.model, endpoint: c.url, status: 'ok', latency: store.now() - started });
+          store.recordUsage({ purpose: 'draw', model: endpoint.model, endpoint: endpoint.url, status: 'ok', latency: store.now() - started });
           return result;
-        } catch (error) { store.recordUsage({ purpose: 'draw', model: c.model, endpoint: c.url, status: ctx.signal.aborted ? 'cancelled' : 'failed', latency: store.now() - started }); throw error; }
+        } catch (error) { store.recordUsage({ purpose: 'draw', model: endpoint.model, endpoint: endpoint.url, status: ctx.signal.aborted ? 'cancelled' : 'failed', latency: store.now() - started }); throw error; }
       } },
     { definition: { name: 'execute', description: '在独立无密钥容器内执行 shell，推进作品或研究。未安装容器则不可用，绝不退回宿主执行。', parameters: schema({ command: text }, ['command']) }, mutates: true,
       async run(args, ctx) { return (await files.scope(ctx.turn.peer)).execute(string(args.command, 'command', 12000), ctx.signal); } },
@@ -127,5 +128,10 @@ export function tools(store: Store, config: () => Config, files: Files, recall: 
         return { id: store.post(ctx.turn.peer, 'atri', body, path), public: false, note: '作品已私有保存；公开需要管理员逐件确认' };
       } },
   ];
+  // draw 的提示词格式随引擎走：定义在注册时静态生成会锁死引擎，改为读取时动态求值。
+  const draw = registered.find(t => t.definition.name === 'draw')!;
+  Object.defineProperty(draw.definition, 'description', { get: (): string => config().image.engine === 'nai'
+    ? '调用 NAI 画图生成真实作品并保存。prompt 必须是英文 danbooru tag 串：逗号分隔的英文标签（如 1girl, white hair, looking at viewer, smile, simple background），质量词开头（best quality, masterpiece），复合概念拆成独立 tag，角色名用官方英文 tag；禁止中文、禁止自然句子、禁止引号内对话。未配置不伪造；作品目录里已有的图不必重画：path 直接发送即可。'
+    : '调用画图渠道生成真实作品并保存。prompt 用自然语言详尽描述画面：主体、动作、表情、构图、光线、风格，一句话到几句均可。未配置不伪造；作品目录里已有的图不必重画：path 直接发送即可。' });
   return registered.sort((a, b) => a.definition.name.localeCompare(b.definition.name));
 }

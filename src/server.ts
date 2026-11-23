@@ -48,7 +48,7 @@ export class AdminServer {
   private safeError(error: unknown): string {
     let text = errorText(error);
     const c = this.options.config();
-    for (const secret of [c.primary.key, c.fallback.key, c.embedding.key, c.qq.secret, c.web.key, c.image.key, c.backup.password]) if (secret) text = text.replaceAll(secret, '[密钥已隐藏]');
+    for (const secret of [c.primary.key, c.fallback.key, c.embedding.key, c.qq.secret, c.web.key, c.image.gpt.key, c.image.nai.key, c.backup.password]) if (secret) text = text.replaceAll(secret, '[密钥已隐藏]');
     return text.slice(0, 2000);
   }
   private verifyHost(req: IncomingMessage): void {

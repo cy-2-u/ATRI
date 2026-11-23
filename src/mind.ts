@@ -83,9 +83,10 @@ export class Mind {
 
   private available(): Tool[] {
     const c = this.config();
+    const img = c.image.engine === 'nai' ? c.image.nai : c.image.gpt;
     return [...this.tools.values()]
       .filter(t => t.definition.name !== 'execute' || c.execution.enabled)
-      .filter(t => t.definition.name !== 'draw' || c.image.enabled && !!(c.image.url && c.image.key && c.image.model))
+      .filter(t => t.definition.name !== 'draw' || c.image.enabled && !!(img.url && img.key && img.model))
       .filter(t => t.definition.name !== 'search' || c.web.enabled && !!c.web.key);
   }
 

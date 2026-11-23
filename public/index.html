@@ -443,23 +443,40 @@
                       <option value="nai">NAI（NovelAI 4.5）</option>
                     </select></label
                   >
-                  <label class="field"
-                    ><span>画图模型</span><input id="image-model" type="text"
-                  /></label>
                 </div>
-                <div class="grid-2">
-                  <label class="field"
-                    ><span>画图地址（留空复用主渠道）</span><input id="image-url" type="text"
-                  /></label>
-                  <label class="field"
-                    ><span>NAI 步数（免费上限 28）</span
-                    ><input id="image-nai-steps" type="number" min="1" max="28" value="28"
-                  /></label>
+                <div id="image-gpt-fields">
+                  <div class="grid-2">
+                    <label class="field"
+                      ><span>GPT 画图模型</span><input id="image-gpt-model" type="text"
+                    /></label>
+                    <label class="field"
+                      ><span>GPT 地址（留空复用主渠道）</span><input id="image-gpt-url" type="text"
+                    /></label>
+                  </div>
+                  <label class="field">
+                    <span>GPT 密钥<span id="image-gpt-key-state" class="hint"></span></span>
+                    <input id="image-gpt-key" type="password" autocomplete="new-password" />
+                  </label>
                 </div>
-                <label class="field">
-                  <span>画图密钥<span id="image-key-state" class="hint"></span></span>
-                  <input id="image-key" type="password" autocomplete="new-password" />
-                </label>
+                <div id="image-nai-fields">
+                  <div class="grid-2">
+                    <label class="field"
+                      ><span>NAI 模型（默认 4.5-full）</span><input id="image-nai-model" type="text"
+                    /></label>
+                    <label class="field"
+                      ><span>NAI 步数（免费上限 28）</span
+                      ><input id="image-nai-steps" type="number" min="1" max="28" value="28"
+                    /></label>
+                  </div>
+                  <label class="field"
+                    ><span>NAI 地址</span><input id="image-nai-url" type="text"
+                  /></label>
+                  <label class="field">
+                    <span>NAI 密钥<span id="image-nai-key-state" class="hint"></span></span>
+                    <input id="image-nai-key" type="password" autocomplete="new-password" />
+                  </label>
+                  <p class="hint">NAI 用英文 danbooru tag 串作画，免费档自动收口（单张/28 步/纯文生图）。</p>
+                </div>
               </div>
               <div class="card">
                 <h2>每日备份</h2>

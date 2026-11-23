@@ -818,12 +818,23 @@ function fillSystemForm(config) {
   const image = config.image ?? {};
   $('image-on').checked = Boolean(image.enabled);
   $('image-engine').value = image.engine === 'nai' ? 'nai' : 'gpt';
-  $('image-model').value = image.model ?? '';
-  $('image-url').value = image.url ?? '';
-  $('image-nai-steps').value = image.naiSteps ?? 28;
-  $('image-key').value = '';
-  $('image-key-state').textContent = image.keyConfigured ? '（已保存）' : '（未设置）';
-  $('image-key').placeholder = image.keyConfigured ? '••••••••' : '';
+  $('image-gpt-model').value = image.gpt?.model ?? '';
+  $('image-gpt-url').value = image.gpt?.url ?? '';
+  $('image-gpt-key').value = '';
+  $('image-gpt-key-state').textContent = image.gpt?.keyConfigured ? '（已保存）' : '（未设置）';
+  $('image-gpt-key').placeholder = image.gpt?.keyConfigured ? '••••••••' : '';
+  $('image-nai-model').value = image.nai?.model ?? 'nai-diffusion-4-5-full';
+  $('image-nai-url').value = image.nai?.url ?? '';
+  $('image-nai-steps').value = image.nai?.steps ?? 28;
+  $('image-nai-key').value = '';
+  $('image-nai-key-state').textContent = image.nai?.keyConfigured ? '（已保存）' : '（未设置）';
+  $('image-nai-key').placeholder = image.nai?.keyConfigured ? '••••••••' : '';
+  const syncImageFields = () => {
+    $('image-gpt-fields').hidden = $('image-engine').value !== 'gpt';
+    $('image-nai-fields').hidden = $('image-engine').value !== 'nai';
+  };
+  $('image-engine').onchange = syncImageFields;
+  syncImageFields();
   const backup = config.backup ?? {};
   $('backup-on').checked = Boolean(backup.enabled);
   $('backup-fields').hidden = !backup.enabled;
@@ -884,9 +895,15 @@ $('save-system').onclick = () =>
       image: {
         enabled: $('image-on').checked,
         engine: $('image-engine').value === 'nai' ? 'nai' : 'gpt',
-        model: $('image-model').value.trim(),
-        url: $('image-url').value.trim(),
-        naiSteps: Math.min(28, Math.max(1, Number($('image-nai-steps').value) || 28)),
+        gpt: {
+          model: $('image-gpt-model').value.trim(),
+          url: $('image-gpt-url').value.trim(),
+        },
+        nai: {
+          model: $('image-nai-model').value.trim(),
+          url: $('image-nai-url').value.trim(),
+          steps: Math.min(28, Math.max(1, Number($('image-nai-steps').value) || 28)),
+        },
       },
       execution: {
         enabled: $('execution-on').checked,
@@ -901,7 +918,8 @@ $('save-system').onclick = () =>
     };
     if ($('web-key').value.trim()) patch.web.key = $('web-key').value.trim();
     if ($('embedding-key').value.trim()) patch.embedding.key = $('embedding-key').value.trim();
-    if ($('image-key').value.trim()) patch.image.key = $('image-key').value.trim();
+    if ($('image-gpt-key').value.trim()) patch.image.gpt.key = $('image-gpt-key').value.trim();
+    if ($('image-nai-key').value.trim()) patch.image.nai.key = $('image-nai-key').value.trim();
     if ($('backup-password').value.trim()) patch.backup.password = $('backup-password').value.trim();
     await api('/api/config', { method: 'POST', body: { patch } });
     configCache = null;

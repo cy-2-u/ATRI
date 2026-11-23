@@ -39,7 +39,7 @@ export interface Config {
     maxToolSteps: number;
   };
   web: { key: string; enabled: boolean };
-  image: { url: string; key: string; model: string; enabled: boolean; engine: 'gpt' | 'nai'; naiSteps: number };
+  image: { enabled: boolean; engine: 'gpt' | 'nai'; gpt: { url: string; key: string; model: string }; nai: { url: string; key: string; model: string; steps: number } };
   execution: { enabled: boolean; image: string; timeoutMs: number; network: boolean };
   backup: { enabled: boolean; url: string; user: string; password: string; intervalHours: number };
   persona: string;
@@ -59,13 +59,13 @@ export const defaults = (persona = ''): Config => ({
     timezone: 'Asia/Shanghai', enabled: true, beatMinutes: 90, diaryHour: 23,
     sleepStart: 60, sleepEnd: 480, turnTimeoutMs: 300000, debounceMs: 700, maxToolSteps: 24,
   },
-  web: { key: '', enabled: false }, image: { url: '', key: '', model: '', enabled: false, engine: 'gpt', naiSteps: 28 },
+  web: { key: '', enabled: false }, image: { enabled: false, engine: 'gpt', gpt: { url: '', key: '', model: '' }, nai: { url: '', key: '', model: 'nai-diffusion-4-5-full', steps: 28 } },
   execution: { enabled: false, image: 'python:3.13-alpine', timeoutMs: 120000, network: false },
   backup: { enabled: false, url: '', user: '', password: '', intervalHours: 24 },
   persona,
 });
 
-const secretPaths = new Set(['primary.key', 'fallback.key', 'embedding.key', 'qq.secret', 'web.key', 'image.key', 'backup.password']);
+const secretPaths = new Set(['primary.key', 'fallback.key', 'embedding.key', 'qq.secret', 'web.key', 'image.gpt.key', 'image.nai.key', 'backup.password']);
 
 export function mergeConfig(current: Config, patch: unknown): Config {
   const input = object(patch);
@@ -109,9 +109,9 @@ export function validateConfig(c: Config): Config {
     if (e.cacheRetention === '24h' && e.cache !== 'openai') throw new TypeError('24h 缓存必须由渠道明确支持 OpenAI 缓存字段');
     if (e.cacheRetention === '1h' && e.cache !== 'anthropic') throw new TypeError('1h 缓存需要显式 Anthropic 缓存');
   }
-  for (const s of [c.embedding, c.image]) { url(s.url); if (typeof s.key !== 'string' || typeof s.model !== 'string') throw new TypeError('工具渠道配置无效'); }
+  for (const s of [c.embedding, c.image.gpt, c.image.nai]) { url(s.url); if (typeof s.key !== 'string' || typeof s.model !== 'string') throw new TypeError('工具渠道配置无效'); }
   if (!['gpt', 'nai'].includes(c.image.engine)) throw new TypeError('画笔引擎无效');
-  num(c.image.naiSteps, 'NAI 步数', 1, 28); // 免费额度：28 步封顶，超出按全价计费
+  num(c.image.nai.steps, 'NAI 步数', 1, 28); // 免费额度：28 步封顶，超出按全价计费
   if (typeof c.qq.appId !== 'string' || typeof c.qq.secret !== 'string') throw new TypeError('QQ 凭证无效');
   for (const v of [c.qq.enabled, c.qq.sandbox, c.qq.certified, c.life.enabled, c.web.enabled, c.image.enabled, c.execution.enabled, c.execution.network, c.backup.enabled]) bool(v);
   num(c.qq.passiveMinutes, 'QQ 被动回复有效期', 1, 60);
@@ -135,10 +135,10 @@ export function validateConfig(c: Config): Config {
 export function publicConfig(c: Config): Record<string, unknown> {
   const out = structuredClone(c) as unknown as Record<string, unknown>;
   for (const path of secretPaths) {
-    const [section, key] = path.split('.') as [string, string];
-    const target = object(out[section]);
-    target[`${key}Configured`] = Boolean(target[key]);
-    target[key] = '';
+    const parts = path.split('.') as [string, ...string[]];
+    const leaf = parts.at(-1)!, target = parts.slice(0, -1).reduce<Record<string, unknown>>((node, key) => object(node[key]), out);
+    target[`${leaf}Configured`] = Boolean(target[leaf]);
+    target[leaf] = '';
   }
   return out;
 }

@@ -26,7 +26,14 @@ let config = store.get<Config>('config', defaults(await readFile(join(root, 'pro
 config.primary.cacheWritePrice ??= 0; config.fallback.cacheWritePrice ??= 0;
 config.primary.temperature ??= 1; config.fallback.temperature ??= 1; // 存量配置无此键：mergeConfig 的 hasOwn 检查要求键必须存在
 config.image.enabled ??= false; // 旧存量配置无此键：默认关——她没有画笔，直到你打开开关
-config.image.engine ??= 'gpt'; config.image.naiSteps ??= 28; // 旧存量配置无此键：GPT 引擎 + NAI 免费档步数
+config.image.engine ??= 'gpt';
+if (!config.image.gpt) {
+  // 一次性迁移：旧扁平 image {url,key,model,naiSteps} → image.gpt 承接（双份配置各存一套）
+  const old = config.image as unknown as Record<string, unknown>;
+  config.image.gpt = { url: String(old.url ?? ''), key: String(old.key ?? ''), model: String(old.model ?? '') };
+  config.image.nai = { url: '', key: '', model: 'nai-diffusion-4-5-full', steps: Number(old.naiSteps ?? 28) };
+}
+config.image.nai.steps ??= 28;
 const patch: Record<string, unknown> = {};
 if (!config.qq.appId && process.env.QQ_APP_ID) patch.qq = { appId: process.env.QQ_APP_ID, secret: process.env.QQ_APP_SECRET ?? '' };
 if (!config.primary.url && process.env.LLM_BASE_URL) patch.primary = { url: process.env.LLM_BASE_URL, key: process.env.LLM_API_KEY ?? '', model: process.env.LLM_MODEL ?? '' };
@@ -47,7 +54,7 @@ if (backupKey.length !== 32) throw new Error('备份密钥格式无效');
 const getConfig = (): Config => config;
 const logError = (error: unknown): void => {
   let text = errorText(error);
-  for (const secret of [config.primary.key, config.fallback.key, config.qq.secret, config.embedding.key, config.web.key, config.image.key, config.backup.password]) if (secret) text = text.replaceAll(secret, '[已隐藏]');
+  for (const secret of [config.primary.key, config.fallback.key, config.qq.secret, config.embedding.key, config.web.key, config.image.gpt.key, config.image.nai.key, config.backup.password]) if (secret) text = text.replaceAll(secret, '[已隐藏]');
   console.error(text);
 };
 const files = new Files(join(data, 'works'), getConfig); await files.init();

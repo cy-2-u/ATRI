@@ -30,13 +30,22 @@ const fakeImage = async (): Promise<{ server: Server; port: number }> => {
 const drawCall = async (store: Store, port: number, engine: 'gpt' | 'nai', naiSteps?: number, root?: string): Promise<Record<string, unknown>> => {
   const config = validateConfig({
     ...defaults('人格'),
-    image: { url: `http://127.0.0.1:${port}`, key: 'k', model: 'img-model', enabled: true, engine, naiSteps: naiSteps ?? 28 },
+    image: {
+      enabled: true, engine,
+      gpt: { url: engine === 'gpt' ? `http://127.0.0.1:${port}` : '', key: 'k', model: 'img-model' },
+      nai: { url: engine === 'nai' ? `http://127.0.0.1:${port}` : '', key: 'k', model: 'nai-diffusion-4-5-full', steps: naiSteps ?? 28 },
+    },
   });
   const files = new Files(join(root ?? tmpRoot('atri-draw-'), 'works'), () => config); await files.init();
   const peer = store.ensurePeer({ kind: 'c2c', id: 'drawtest' });
   store.savePeer({ ...store.peer(peer.id)!, enabled: true });
   const turn: Turn = { id: 't', episode: 'ep-1234', peer: peer.id, snapshot: store.highwater(peer.id), jobs: [], allowed: new Set() };
-  const draw = tools(store, () => config, files, new Recall(store, () => config)).find(t => t.definition.name === 'draw')!;
+  const registered = tools(store, () => config, files, new Recall(store, () => config));
+  const draw = registered.find(t => t.definition.name === 'draw')!;
+  // 引擎感知提示词：工具描述按当前引擎切换（NAI=英文 tag 串，GPT=自然语言）
+  const description = draw.definition.description;
+  if (engine === 'nai') { assert.match(description, /danbooru/); assert.match(description, /禁止中文/); }
+  else assert.match(description, /自然语言/);
   return await draw.run({ prompt: '一只小猫' }, { turn, signal: new AbortController().signal }) as Record<string, unknown>;
 };
 
@@ -49,13 +58,14 @@ test('draw NAI 分支：OpenAI 兼容端点 + parameters(steps/cfg/sampler) 免�
     assert.match(result.path, /^pictures\/ep-1234-\d+\.png$/, 'NAI 画图落作品目录');
     assert.equal(result.bytes, PNG.length);
     assert.match(last!.url, /\/v1\/images\/generations$/, 'NAI 走 rinko 的 OpenAI 兼容路径');
-    assert.equal(last!.body.model, 'img-model');
+    assert.equal(last!.body.model, 'nai-diffusion-4-5-full', 'NAI 用 nai endpoint 的模型');
     assert.equal(last!.body.n, 1);
     assert.equal(last!.body.response_format, 'b64_json');
     const parameters = last!.body.parameters as Record<string, unknown>;
     assert.equal(parameters.steps, 28, '默认步数=28（免费上限）');
     assert.equal(parameters.cfg_scale, 6);
     assert.equal(parameters.sampler, 'k_dpmpp_2m_sde');
+    assert.equal(last!.body.model, 'nai-diffusion-4-5-full', 'NAI 默认模型');
     // 步数兜底：config 校验限 1–28，draw 内部再收口一次（双保险，防绕过校验的调用路径）
     last = undefined;
     await new Promise(r => setTimeout(r, 5)); // 文件名含毫秒时间戳，隔开避免同名覆盖
