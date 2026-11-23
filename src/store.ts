@@ -557,7 +557,7 @@ export class Store {
       // jobs 表没有 at 列——用 turns 的完成时间不行（job 可独立失败）；
       // 干脆给终态行按 id 前缀判断：chat/beat/intent 行在重新调度时会被 replace 或自愈，残留的终态行 30 天后已无引用价值。
       // 由于无时间列，改为定期全表收缩：终态行超过 400 条时删最旧的（id 排序 ≈ 时间序，SQLite rowid 递增）。
-      const stale = this.sql("SELECT COUNT(*) n FROM jobs WHERE state IN ('done','cancelled')").get()!.n;
+      const stale = Number(this.sql("SELECT COUNT(*) n FROM jobs WHERE state IN ('done','cancelled')").get()!.n);
       if (stale > 400) this.sql("DELETE FROM jobs WHERE rowid IN (SELECT rowid FROM jobs WHERE state IN ('done','cancelled') ORDER BY rowid LIMIT ?)").run(Math.max(0, stale - 200));
       // kv 里带时间戳的计量键自清（被动回复计数/搜索缓存）；无时间戳的旧数字键保守跳过。
       for (const row of this.sql("SELECT key,value FROM kv WHERE key LIKE 'reply-seq:%' OR key LIKE 'search:%'").all() as { key: string; value: string }[]) {
