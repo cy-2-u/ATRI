@@ -170,7 +170,7 @@ export class AdminServer {
       } else if (path === '/api/peer') {
         const id = string(body.id, '会话ID'), old = store.peer(id); if (!old) throw new RequestError(404, '会话不存在');
         const patch = object(body.patch); if (Object.keys(patch).some(k => !['name', 'enabled', 'autonomous', 'activeAllowed'].includes(k))) throw new RequestError(400, '不允许修改此会话字段');
-        if (patch.name !== undefined) patch.name = string(patch.name, '会话名称', 100);
+        if (patch.name !== undefined && patch.name !== '') patch.name = string(patch.name, '会话名称', 100); // 空串=恢复默认（材料里不再显示备注名）
         for (const key of ['enabled', 'autonomous']) if (patch[key] !== undefined && typeof patch[key] !== 'boolean') throw new RequestError(400, '开关必须是布尔值');
         if (patch.activeAllowed !== undefined && patch.activeAllowed !== null && typeof patch.activeAllowed !== 'boolean') throw new RequestError(400, '主动权限无效');
         const peer = { ...old, ...patch }; store.savePeer(peer); o.runtime.reconfigure(); this.json(res, peer);
