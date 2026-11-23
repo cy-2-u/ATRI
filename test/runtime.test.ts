@@ -239,7 +239,8 @@ test('并发交错：思考中到达新消息 → 当前轮作废并合并续答
   const files = new Files(join(tmpRoot('atri-test-'), 'works'), getConfig); await files.init();
   const before = JSON.stringify({ url: config.primary.url, key: config.primary.key, model: config.primary.model });
   config.primary.url = 'http://127.0.0.1:9'; config.primary.key = 'k'; config.primary.model = 'm'; // ready() 为真才进思考
-  const mind = { think: async (_turn: unknown, signal: AbortSignal) => { await new Promise((_r, rej) => signal.addEventListener('abort', () => rej(new Error('中止')))); throw new Error('不该走到这'); } };
+  const mind = { think: async (_turn: unknown, signal: AbortSignal) => { signal.throwIfAborted(); // 对齐真实渠道：signal 已 abort 时立即失败，而不是挂上永不触发的 abort 监听
+    await new Promise((_r, rej) => signal.addEventListener('abort', () => rej(new Error('中止')))); throw new Error('不该走到这'); } };
   const runtime = new Runtime(store, getConfig, mind as never, {} as never, files, () => undefined);
   const target = { kind: 'c2c' as const, id: 'user11' };
   const p = store.ensurePeer(target); p.enabled = true; store.savePeer(p);

@@ -128,7 +128,7 @@ export class Runtime {
         const envelope = peers.filter(p => p.id !== 'c2c:preview').map(p => this.store.nextEnvelope(p.id)).filter((e): e is Envelope => !!e).sort((a, b) => a.createdAt - b.createdAt || a.ordinal - b.ordinal)[0];
         if (envelope) { await this.deliver(envelope); continue; }
       }
-      if (!this.ready()) return;
+      if (!this.ready() || this.lifetime.signal.aborted) return;
       const enabled = new Set(peers.map(p => p.id));
       const job = this.store.jobs().find(j => enabled.has(j.peer) && j.dueAt <= this.store.now());
       if (!job) return;
@@ -138,6 +138,7 @@ export class Runtime {
       this.active = { peer: turn.peer, controller };
       const signal = AbortSignal.any([controller.signal, this.lifetime.signal, AbortSignal.timeout(this.config().life.turnTimeoutMs)]);
       try {
+        signal.throwIfAborted(); // stop 与认领交错时 signal 可能已死：对已 abort 的 signal 等待 abort 事件将永远等不到
         await this.prepareImages(turn, signal);
         const thought = await this.mind.think(turn, signal);
         signal.throwIfAborted();

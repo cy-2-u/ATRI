@@ -29,19 +29,18 @@
 ```sh
 npm install
 npm run check        # typecheck + 全部测试 + 构建
-npm run dev          # 管理界面 http://127.0.0.1:3010
-node scripts/seed-stickers.ts   # 可选：灌入自带表情库
+npm run dev          # 管理界面 http://127.0.0.1:3010（自带表情库在首次启动时自动灌入）
 npm run restore -- <备份.atri> <目标新目录>   # 从加密备份恢复（只写新目录）
 ```
 
-配置：管理界面 → 系统页填模型渠道 → QQ 连接抽屉填 AppID/Secret 并启用 → 打开绑定会话的"自主"。
+配置：管理界面 → 系统页填模型渠道 → QQ 连接抽屉填 AppID/Secret 并启用。收到第一条私聊她就是活的：
+默认处理消息+自主心智，开关降级为「想关时才碰」，不需要手动点燃仪式。
 管理密码未设置时写在数据目录 `admin-secret.txt`。
 
 服务器部署：`mkdir -p /srv/atri/data && chown -R 1000:1000 /srv/atri/data`，然后
 `docker compose up -d --build`；密码在 /srv/atri/data/admin-secret.txt。
 沙箱是常驻容器 `atri-sandbox`——她的窝：可写环境跨轮保留、崩溃自动拉起，作品文件始终在
-/srv/atri/data/works；重置她的窝 `docker rm -f atrisandbox`，文件不受影响。
-需要 Docker 才有沙箱执行（`execute` 工具）；其余功能（读/写/搜索/画图/表情）无需 Docker。
+/srv/atri/data/works；重置她的窝 `docker rm -f atri-sandbox`，文件不受影响。需要 Docker 才有沙箱执行（`execute` 工具）；其余功能（读/写/搜索/画图/表情）无需 Docker。
 
 ## 设计公理
 
