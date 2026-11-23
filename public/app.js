@@ -1189,7 +1189,8 @@ async function refreshDrawers() {
       const dot = el('span', undefined, 'contact-dot' + (peer.autonomous ? ' ok' : ''));
       const named = Boolean(peer.name && peer.name !== peer.id);
       // 没起备注就别甩平台 ID（c2c:32位openid）在脸上——她的界面里这就是「她」。
-      head.append(dot, el('span', named ? peer.name : '她'), el('span', peer.autonomous ? '自主' : '托管', 'tag'));
+      // 自主/托管不另设 tag：绿点变色 + 下面那句 note 已经把状态说完。
+      head.append(dot, el('span', named ? peer.name : '她'));
       // 备注入口：/api/peer 一直支持 name，界面上却一直没有入口。
       const edit = el('button', named ? '改备注' : '加备注', 'btn ghost small');
       edit.type = 'button';
@@ -1233,17 +1234,16 @@ async function refreshDrawers() {
           'contact-note',
         ),
       );
+      // 开关只剩两个。「主动开口」是 QQ 平台授权：你在 QQ 里点接收/拒收，
+      // 她这边自动跟随（拒收即停），不需要也不应该有手动开关。
       const actions = el('div', undefined, 'actions');
       for (const [field, label] of [
         ['enabled', '启用'],
         ['autonomous', '自主'],
-        ['activeAllowed', '主动'],
       ]) {
         const check = el('input');
         check.type = 'checkbox';
-        // activeAllowed 是三态：null 表示跟随 QQ 授权（默认能开口），只有
-        // false 才是「对方拒收、禁止主动」——按布尔渲染会把默认态画成禁用。
-        check.checked = field === 'activeAllowed' ? peer[field] !== false : Boolean(peer[field]);
+        check.checked = Boolean(peer[field]);
         const wrap = el('label', undefined, 'field-check');
         wrap.style.margin = '0';
         wrap.append(check, el('span', label));
@@ -1259,13 +1259,6 @@ async function refreshDrawers() {
         actions.append(wrap);
       }
       card.append(actions);
-      card.append(
-        el(
-          'p',
-          '「主动」是她的开口授权：QQ 里你点接收会自动开、点拒收会自动关；这里手动勾选是强制放行。',
-          'contact-note',
-        ),
-      );
       list.append(card);
     }
   }
