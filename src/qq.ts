@@ -277,9 +277,10 @@ export class QQ {
     const prepared = await this.api(`${root}/upload_prepare`, 'POST', { file_type: type, file_size: String(bytes.length), file_name: filename, md5: digest('md5', bytes), sha1: digest('sha1', bytes), md5_10m: digest('md5', bytes.subarray(0, 10002432)) }, signal);
     if (typeof prepared.upload_id !== 'string' || !Array.isArray(prepared.parts)) throw new QQError('QQ 预上传结果无效');
     // QQ 的分片计划是权威：每个 part 自带 block_size 与 presigned_url，不必也不该假设均匀切分。
+    // 实测：index 从 1 开始（官方文档说 0，以实测为准）；单片场景 block_size 等于整文件大小。
     const parts = prepared.parts.map(object).sort((a, b) => Number(a.index) - Number(b.index));
     const total = parts.reduce((n, p) => n + Number(p.block_size), 0);
-    parts.forEach((p, i) => { if (Number(p.index) !== i || typeof p.presigned_url !== 'string' || !Number.isSafeInteger(Number(p.block_size)) || Number(p.block_size) <= 0) throw new QQError('QQ 分片计划无效'); });
+    parts.forEach((p, i) => { if (Number(p.index) !== Number(parts[0]!.index) + i || typeof p.presigned_url !== 'string' || !Number.isSafeInteger(Number(p.block_size)) || Number(p.block_size) <= 0) throw new QQError('QQ 分片计划无效'); });
     if (total !== bytes.length) throw new QQError(`QQ 分片计划总长 ${total} 与文件 ${bytes.length} 不符`);
     let offset = 0;
     for (const part of parts) {
