@@ -276,17 +276,20 @@ export class QQ {
     const digest = (alg: string, data: Buffer): string => createHash(alg).update(data).digest('hex');
     const prepared = await this.api(`${root}/upload_prepare`, 'POST', { file_type: type, file_size: String(bytes.length), file_name: filename, md5: digest('md5', bytes), sha1: digest('sha1', bytes), md5_10m: digest('md5', bytes.subarray(0, 10002432)) }, signal);
     if (typeof prepared.upload_id !== 'string' || !Array.isArray(prepared.parts)) throw new QQError('QQ 预上传结果无效');
-    const blockSize = Number(prepared.block_size), count = Math.ceil(bytes.length / blockSize);
-    if (!Number.isSafeInteger(blockSize) || blockSize <= 0 || prepared.parts.length !== count) throw new QQError('QQ 分片数量或大小无效');
+    // QQ 的分片计划是权威：每个 part 自带 block_size 与 presigned_url，不必也不该假设均匀切分。
     const parts = prepared.parts.map(object).sort((a, b) => Number(a.index) - Number(b.index));
-    parts.forEach((p, i) => { if (Number(p.index) !== i || typeof p.presigned_url !== 'string' || Number(p.block_size) !== Math.min(blockSize, bytes.length - i * blockSize)) throw new QQError('QQ 分片不完整或重复'); });
+    const total = parts.reduce((n, p) => n + Number(p.block_size), 0);
+    parts.forEach((p, i) => { if (Number(p.index) !== i || typeof p.presigned_url !== 'string' || !Number.isSafeInteger(Number(p.block_size)) || Number(p.block_size) <= 0) throw new QQError('QQ 分片计划无效'); });
+    if (total !== bytes.length) throw new QQError(`QQ 分片计划总长 ${total} 与文件 ${bytes.length} 不符`);
+    let offset = 0;
     for (const part of parts) {
-      const index = Number(part.index), chunk = bytes.subarray(index * blockSize, Math.min(bytes.length, (index + 1) * blockSize));
+      const size = Number(part.block_size), chunk = bytes.subarray(offset, offset + size);
+      offset += size;
       for (let attempt = 0; ; attempt++) {
         try { await this.uploader(String(part.presigned_url), chunk, signal); break; }
         catch (error) { signal.throwIfAborted(); if (attempt === 2 || error instanceof HttpError && error.status < 500 && error.status !== 429) throw error; await sleep(1000 * 2 ** attempt, signal); }
       }
-      await this.api(`${root}/upload_part_finish`, 'POST', { upload_id: prepared.upload_id, part_index: index, block_size: String(chunk.length), md5: digest('md5', chunk) }, signal);
+      await this.api(`${root}/upload_part_finish`, 'POST', { upload_id: prepared.upload_id, part_index: Number(part.index), block_size: String(chunk.length), md5: digest('md5', chunk) }, signal);
     }
     const data = await this.api(`${root}/files`, 'POST', { file_type: type, file_name: filename, upload_id: prepared.upload_id, srv_send_msg: false }, signal);
     const ttl = Number(data.ttl);

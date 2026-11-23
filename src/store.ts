@@ -539,6 +539,7 @@ export class Store {
     return r ? parse(r.info) : undefined;
   }
   cacheMedia(key: string, info: Record<string, unknown>, ttl: number): void { this.sql('INSERT INTO media_cache(key,info,expires) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET info=excluded.info,expires=excluded.expires').run(key, JSON.stringify(info), ttl === 0 ? 0 : this.now() + ttl * 1000); }
+  forgetMedia(key: string): void { this.sql('DELETE FROM media_cache WHERE key=?').run(key); }
 
   post(peer: string, author: string, text: string, path?: string): string {
     const id = randomUUID();

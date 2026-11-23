@@ -255,7 +255,14 @@ export class Runtime {
         let type = envelope.part.type === 'voice' ? 3 : envelope.part.type === 'file' ? 4 : 1;
         if (type === 1 && !mime.startsWith('image/') || type === 3 && !mime.startsWith('audio/')) throw new Error('媒体内容不符合类型');
         if (bytes.length > (type === 1 || type === 3 ? 20 : type === 2 ? 30 : 200) * 1024 * 1024) type = 4;
-        request.media = { file_info: await this.transport.upload(peer.target, bytes, basename(path), type, signal) };
+        // 上传有偶发性（QQ 分片会话、file_info 缓存污染）：失败清缓存重试一次，再失败才走终态。
+        try {
+          request.media = { file_info: await this.transport.upload(peer.target, bytes, basename(path), type, signal) };
+        } catch (error) {
+          if (signal.aborted) throw error;
+          this.store.forgetMedia(`${peer.target.kind}:${peer.target.id}:${type}:${createHash('sha256').update(bytes).digest('hex')}`);
+          request.media = { file_info: await this.transport.upload(peer.target, bytes, basename(path), type, signal) };
+        }
       }
       // 预上传期间可能有新入站取消此草稿。发送与序号分配同事务提交。
       const ready = this.store.startSend(envelope.id, () => {
