@@ -130,7 +130,11 @@ function hmTime(at) {
     hourCycle: 'h23',
   }).format(new Date(at));
 }
-const peerName = (id) => peers.find((p) => p.id === id)?.name || id;
+// 有备注显示备注，否则一律叫「她」——平台 openid 不该出现在她的界面里。
+const peerName = (id) => {
+  const peer = peers.find((p) => p.id === id);
+  return peer?.name && peer.name !== peer.id ? peer.name : '她';
+};
 // 入睡/醒来从纯分钟改成 HH:MM：人读的是钟点不是分钟数。
 const minutesToHM = (minutes) =>
   `${String(Math.floor(minutes / 60) % 24).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
@@ -725,12 +729,14 @@ function createDropdown(id, options) {
   const label = host.querySelector('.dropdown-label');
   const menu = host.querySelector('.dropdown-menu');
   let value = options[0].value;
+  let change = null;
   const set = (v) => {
     value = v;
     const opt = options.find((o) => o.value === v);
     label.textContent = opt.label;
     host.dataset.value = v;
     for (const btn of menu.children) btn.classList.toggle('selected', btn.dataset.value === v);
+    if (change) change(v);
   };
   for (const opt of options) {
     const btn = el('button', opt.label, 'dropdown-option');
@@ -761,6 +767,10 @@ function createDropdown(id, options) {
     set value(v) {
       set(v);
     },
+    // 值变化通知（含程序化赋值）；初次渲染时为 null 不触发。
+    set onchange(fn) {
+      change = fn;
+    },
   };
 }
 const FORMAT_OPTIONS = [
@@ -769,6 +779,11 @@ const FORMAT_OPTIONS = [
 ];
 const primaryFormat = createDropdown('primary-format', FORMAT_OPTIONS);
 const fallbackFormat = createDropdown('fallback-format', FORMAT_OPTIONS);
+const IMAGE_ENGINE_OPTIONS = [
+  { value: 'gpt', label: 'GPT（通用生图）' },
+  { value: 'nai', label: 'NAI（NovelAI 4.5）' },
+];
+const imageEngine = createDropdown('image-engine', IMAGE_ENGINE_OPTIONS);
 
 function fillSystemForm(config) {
   // 轮询每 4 秒到系统页就会走到这里：无守卫的重填会把正在输入的密钥
@@ -817,7 +832,7 @@ function fillSystemForm(config) {
   $('embedding-key').placeholder = embedding.keyConfigured ? '••••••••' : '';
   const image = config.image ?? {};
   $('image-on').checked = Boolean(image.enabled);
-  $('image-engine').value = image.engine === 'nai' ? 'nai' : 'gpt';
+  imageEngine.value = image.engine === 'nai' ? 'nai' : 'gpt';
   $('image-gpt-model').value = image.gpt?.model ?? '';
   $('image-gpt-url').value = image.gpt?.url ?? '';
   $('image-gpt-key').value = '';
@@ -830,10 +845,10 @@ function fillSystemForm(config) {
   $('image-nai-key-state').textContent = image.nai?.keyConfigured ? '（已保存）' : '（未设置）';
   $('image-nai-key').placeholder = image.nai?.keyConfigured ? '••••••••' : '';
   const syncImageFields = () => {
-    $('image-gpt-fields').hidden = $('image-engine').value !== 'gpt';
-    $('image-nai-fields').hidden = $('image-engine').value !== 'nai';
+    $('image-gpt-fields').hidden = imageEngine.value !== 'gpt';
+    $('image-nai-fields').hidden = imageEngine.value !== 'nai';
   };
-  $('image-engine').onchange = syncImageFields;
+  imageEngine.onchange = syncImageFields;
   syncImageFields();
   const backup = config.backup ?? {};
   $('backup-on').checked = Boolean(backup.enabled);
@@ -894,7 +909,7 @@ $('save-system').onclick = () =>
       },
       image: {
         enabled: $('image-on').checked,
-        engine: $('image-engine').value === 'nai' ? 'nai' : 'gpt',
+        engine: imageEngine.value === 'nai' ? 'nai' : 'gpt',
         gpt: {
           model: $('image-gpt-model').value.trim(),
           url: $('image-gpt-url').value.trim(),
@@ -1172,7 +1187,44 @@ async function refreshDrawers() {
       const card = el('div', undefined, 'row contact-card' + (peer.autonomous ? ' contact-bound' : ''));
       const head = el('div', undefined, 'row-title');
       const dot = el('span', undefined, 'contact-dot' + (peer.autonomous ? ' ok' : ''));
-      head.append(dot, el('span', peer.name || peer.id), el('span', peer.autonomous ? '自主' : '托管', 'tag'));
+      const named = Boolean(peer.name && peer.name !== peer.id);
+      // 没起备注就别甩平台 ID（c2c:32位openid）在脸上——她的界面里这就是「她」。
+      head.append(dot, el('span', named ? peer.name : '她'), el('span', peer.autonomous ? '自主' : '托管', 'tag'));
+      // 备注入口：/api/peer 一直支持 name，界面上却一直没有入口。
+      const edit = el('button', named ? '改备注' : '加备注', 'btn ghost small');
+      edit.type = 'button';
+      edit.onclick = () => {
+        const editor = el('div', undefined, 'row-title peer-rename');
+        const input = el('input');
+        input.type = 'text';
+        input.value = named ? peer.name : '';
+        input.placeholder = '备注名，留空恢复默认';
+        input.maxLength = 100;
+        const save = () =>
+          perform(async () => {
+            await api('/api/peer', {
+              method: 'POST',
+              body: { id: peer.id, patch: { name: input.value.trim() } },
+            });
+            await refreshDrawers();
+            show('已更新');
+          });
+        const saveBtn = el('button', '保存', 'btn small');
+        saveBtn.type = 'button';
+        saveBtn.onclick = save;
+        const cancel = el('button', '取消', 'btn ghost small');
+        cancel.type = 'button';
+        // head 还活着：换回去就行，不用整卡重渲染。
+        cancel.onclick = () => editor.replaceWith(head);
+        input.onkeydown = (e) => {
+          if (e.key === 'Enter') save();
+          else if (e.key === 'Escape') cancel.click();
+        };
+        editor.append(input, saveBtn, cancel);
+        head.replaceWith(editor);
+        input.focus();
+      };
+      head.append(edit);
       card.append(head);
       card.append(
         el(
@@ -1189,7 +1241,9 @@ async function refreshDrawers() {
       ]) {
         const check = el('input');
         check.type = 'checkbox';
-        check.checked = Boolean(peer[field]);
+        // activeAllowed 是三态：null 表示跟随 QQ 授权（默认能开口），只有
+        // false 才是「对方拒收、禁止主动」——按布尔渲染会把默认态画成禁用。
+        check.checked = field === 'activeAllowed' ? peer[field] !== false : Boolean(peer[field]);
         const wrap = el('label', undefined, 'field-check');
         wrap.style.margin = '0';
         wrap.append(check, el('span', label));
@@ -1205,6 +1259,13 @@ async function refreshDrawers() {
         actions.append(wrap);
       }
       card.append(actions);
+      card.append(
+        el(
+          'p',
+          '「主动」是她的开口授权：QQ 里你点接收会自动开、点拒收会自动关；这里手动勾选是强制放行。',
+          'contact-note',
+        ),
+      );
       list.append(card);
     }
   }

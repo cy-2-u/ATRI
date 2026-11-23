@@ -680,6 +680,32 @@ a.nav-item {
   line-height: 1.55;
 }
 
+/* 备注行内编辑：借用 row-title 的 flex 骨架，输入框吃剩余宽度，按钮贴右。
+   等高四件套同 field-with-action（9px 上下边距、继承行高、border-box）。 */
+.peer-rename input {
+  flex: 1;
+  min-width: 0;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  padding: 9px 12px;
+  font: inherit;
+  font-size: 14px;
+}
+
+.peer-rename input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.peer-rename > .btn {
+  flex: none;
+  padding-top: 9px;
+  padding-bottom: 9px;
+  line-height: inherit;
+}
+
 .field input,
 .field textarea,
 .dropdown-host .dropdown-toggle {
@@ -732,6 +758,36 @@ a.nav-item {
   font-size: 13px;
   color: var(--text-dim);
   cursor: pointer;
+}
+
+/* 开关行：勾选在左吃剩余宽度，引擎下拉在右定宽——两个开关同排，
+   字段区从第二行起才铺开。.field-check 自带的 16px 下外边距会把
+   行内的勾选坠低，行内归零（外边距只该出现在行与行之间）。 */
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.check-row .field-check {
+  flex: 1;
+  margin-bottom: 0;
+}
+
+.check-row-side {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+/* 引擎只有两项，全宽下拉浪费一行；定宽对齐标签文案即可，
+   展开菜单随宿主同宽不截字。 */
+.check-row-side .dropdown-host {
+  width: 190px;
 }
 
 /* 断线横幅：顶部悬浮——它是 .app 网格外来客，塞进网格会被自动布局挤成
@@ -1497,6 +1553,22 @@ input.check,
   .grid-2,
   .grid-4 {
     grid-template-columns: 1fr;
+  }
+
+  /* 窄屏勾选行纵排：标签一行字多，横排会把 190px 的引擎下拉挤没。 */
+  .check-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+  }
+
+  .check-row-side {
+    width: 100%;
+  }
+
+  .check-row-side .dropdown-host {
+    flex: 1;
+    width: auto;
   }
 
   /* iOS zooms any input under 16px on focus, blowing out the whole layout.

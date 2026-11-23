@@ -430,19 +430,16 @@
               </div>
               <div class="card">
                 <h2>她的画笔：图片生成</h2>
-                <label class="field field-check"
-                  ><input id="image-on" type="checkbox" class="check" /><span
-                    >启用画笔（关着她就收不到画图工具）</span
-                  ></label
-                >
-                <div class="grid-2">
-                  <label class="field"
-                    ><span>画图引擎</span
-                    ><select id="image-engine" class="select">
-                      <option value="gpt">GPT（通用 OpenAI 生图）</option>
-                      <option value="nai">NAI（NovelAI 4.5）</option>
-                    </select></label
+                <div class="check-row">
+                  <label class="field-check"
+                    ><input id="image-on" type="checkbox" class="check" /><span
+                      >启用画笔（关着她就收不到画图工具）</span
+                    ></label
                   >
+                  <div class="check-row-side">
+                    <span>画图引擎</span>
+                    <div class="dropdown-host" id="image-engine"></div>
+                  </div>
                 </div>
                 <div id="image-gpt-fields">
                   <div class="grid-2">

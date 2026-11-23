@@ -11,7 +11,7 @@ import { Runtime } from './runtime.ts';
 import { QQ } from './qq.ts';
 import { Models } from './model.ts';
 import { Backups } from './backup.ts';
-import { object, string, errorText } from './types.ts';
+import { object, string, errorText, PREVIEW_PEER } from './types.ts';
 
 interface Session { csrf: string; until: number }
 export interface ServerOptions {
@@ -124,7 +124,7 @@ export class AdminServer {
       if (method !== 'GET' && req.headers['x-csrf-token'] !== session.csrf) throw new RequestError(403, '请求校验失败，请重新登录');
       if (method === 'GET') {
         if (path === '/api/session') this.json(res, { csrf: session.csrf });
-        else if (path === '/api/status') this.json(res, { qq: o.qq.status(), runtime: o.runtime.status(), backup: o.backups.status(), peers: store.peers().length });
+        else if (path === '/api/status') this.json(res, { qq: o.qq.status(), runtime: o.runtime.status(), backup: o.backups.status(), peers: store.peers().filter(p => p.id !== PREVIEW_PEER).length });
         else if (path === '/api/config') this.json(res, publicConfig(o.config()));
         else if (path === '/api/peers') this.json(res, store.peers());
         else if (path === '/api/inner') {

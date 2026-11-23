@@ -1,5 +1,7 @@
 export type Target = { kind: 'c2c'; id: string };
 export const peerKey = (target: Target): string => `${target.kind}:${target.id}`;
+// 本地预演会话（e2e 驱动器全真链路，不出 QQ）：真实联系人计数与展示都要排除它。
+export const PREVIEW_PEER = 'c2c:preview';
 
 export interface Attachment {
   id: string;
