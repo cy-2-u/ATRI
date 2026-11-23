@@ -58,16 +58,16 @@ const event = async (payload: QQEvent): Promise<void> => {
   if (input) { runtime.receive(input); return; }
   const d = payload.d && typeof payload.d === 'object' ? object(payload.d) : {};
   const type = payload.t ?? '';
-  const group = type.startsWith('GROUP_'), id = String(group ? d.group_openid ?? '' : d.user_openid ?? (d.author ? object(d.author).user_openid : '') ?? '');
-  if (!id || group) return;
-  // 她只属于一个人：群事件与陌生私聊的关系事件不进她的世界（与 runtime.receive 同一条绑定规则）。
-  const bound = store.peers().find(p => p.target.kind === 'c2c' && p.id !== 'c2c:preview');
+  const id = String(d.user_openid ?? (d.author ? object(d.author).user_openid : '') ?? '');
+  if (!id) return;
+  // 她只属于一个人：陌生私聊的关系事件不进她的世界（与 runtime.receive 同一条绑定规则）。
+  const bound = store.peers().find(p => p.id !== 'c2c:preview');
   if (bound && bound.id !== `c2c:${id}`) return;
   store.transaction(() => {
-    const peer = store.ensurePeer({ kind: group ? 'group' : 'c2c', id });
-    if (['C2C_MSG_REJECT', 'GROUP_MSG_REJECT'].includes(type)) store.savePeer({ ...peer, activeAllowed: false });
-    else if (['C2C_MSG_RECEIVE', 'GROUP_MSG_RECEIVE'].includes(type)) store.savePeer({ ...peer, activeAllowed: true });
-    else if (['FRIEND_DEL', 'GROUP_DEL_ROBOT'].includes(type)) { store.savePeer({ ...peer, enabled: false, autonomous: false, activeAllowed: false }); store.dropJobs(peer.id); }
+    const peer = store.ensurePeer({ kind: 'c2c', id });
+    if (type === 'C2C_MSG_REJECT') store.savePeer({ ...peer, activeAllowed: false });
+    else if (type === 'C2C_MSG_RECEIVE') store.savePeer({ ...peer, activeAllowed: true });
+    else if (type === 'FRIEND_DEL') { store.savePeer({ ...peer, enabled: false, autonomous: false, activeAllowed: false }); store.dropJobs(peer.id); }
     store.append(peer.id, 'action', { platformEvent: type, succeeded: true, text: `平台关系状态：${type}` }, undefined, payload.id ? `qq-event:${payload.id}` : payload.s !== undefined ? `qq-event:${type}:${payload.s}` : undefined);
   });
   runtime.reconfigure();

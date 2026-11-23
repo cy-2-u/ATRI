@@ -9,17 +9,14 @@ import { validateConfig, defaults, type Config } from '../src/config.ts';
 const config: Config = validateConfig({ ...defaults('人格'), life: { ...defaults().life, timezone: 'Asia/Shanghai', enabled: true, beatMinutes: 90, diaryHour: 23 } });
 const getConfig = (): Config => config;
 
-test('绑定：她只属于一个人（第一个私聊即绑定，群与陌生私聊不进她的世界）', () => {
+test('绑定：她只属于一个人（第一个私聊即绑定，陌生私聊不进她的世界）', () => {
   const store = tmpStore('atri-test-');
   const runtime = new Runtime(store, getConfig, { think: async () => { throw new Error('不该被调用'); } } as never, {} as never, {} as never, () => undefined);
   const at = store.now();
   // 第一条私聊即绑定
   assert.equal(runtime.receive({ key: 'k1', target: { kind: 'c2c', id: 'userA' }, messageId: 'm1', author: 'a', text: '在吗', at, attachments: [] }), true);
-  const bound = store.peers().find(p => p.target.kind === 'c2c' && p.id !== 'c2c:preview');
+  const bound = store.peers().find(p => p.id !== 'c2c:preview');
   assert.equal(bound?.id, 'c2c:userA');
-  // 群消息不进她的世界
-  assert.equal(runtime.receive({ key: 'k2', target: { kind: 'group', id: 'g1' }, messageId: 'm2', author: 'b', text: '有人吗', at, attachments: [] }), false);
-  assert.equal(store.peer('c2c:g1'), undefined);
   // 陌生私聊不再接收
   assert.equal(runtime.receive({ key: 'k3', target: { kind: 'c2c', id: 'userB' }, messageId: 'm3', author: 'c', text: '你好', at, attachments: [] }), false);
   assert.equal(store.peer('c2c:userB'), undefined);
@@ -106,24 +103,18 @@ test('夜间拍：日记与印象落账、parts 空校验在 mind 层', () => {
   store.close();
 });
 
-test('ensureLife：自主会话有心跳与夜间拍，非自主/群聊无夜间', () => {
+test('ensureLife：自主会话有心跳与夜间拍，非自主无夜间', () => {
   const store = tmpStore('atri-test-');
   const runtime = new Runtime(store, getConfig, { think: async () => { throw new Error('x'); } } as never, {} as never, {} as never, () => undefined);
   const c2c = store.ensurePeer({ kind: 'c2c', id: 'user3' });
   c2c.enabled = true; c2c.autonomous = true;
   store.savePeer(c2c);
-  const group = store.ensurePeer({ kind: 'group', id: 'g1' });
-  group.enabled = true; group.autonomous = true;
-  store.savePeer(group);
   runtime.reconfigure();
   const c2cJobs = store.jobs(c2c.id);
   assert.ok(c2cJobs.some(j => j.kind === 'beat'));
   assert.ok(c2cJobs.some(j => j.kind === 'night'));
-  const groupJobs = store.jobs(group.id);
-  assert.ok(groupJobs.some(j => j.kind === 'beat'));
-  assert.ok(!groupJobs.some(j => j.kind === 'night')); // 群不写日记
   // 拍都在未来且不早于现在
-  for (const job of [...c2cJobs, ...groupJobs]) assert.ok(job.dueAt >= store.now() - 1000, `job ${job.kind} 应在未来`);
+  for (const job of c2cJobs) assert.ok(job.dueAt >= store.now() - 1000, `job ${job.kind} 应在未来`);
   // 关闭自主 → 拍被清空
   c2c.autonomous = false;
   store.savePeer(c2c);

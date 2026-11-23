@@ -62,8 +62,7 @@ export class Runtime {
   }
 
   receive(input: Incoming): boolean {
-    // 她只属于一个人：群消息不进她的世界；第一个私聊即绑定，其余陌生私聊不再接收（预演不受限）。
-    if (input.target.kind === 'group') return false;
+    // 她只属于一个人：第一个私聊即绑定，其余陌生私聊不再接收（预演不受限）。
     const id = peerKey(input.target);
     if (id !== 'c2c:preview') {
       const bound = this.store.peers().find(p => p.target.kind === 'c2c' && p.id !== 'c2c:preview');
@@ -97,7 +96,7 @@ export class Runtime {
       // replace=true：只会在无 pending 拍时走到这里，顺带清掉 failed/done 旧行——心跳绝不静默死亡。
       this.store.schedule(`beat:${peer.id}`, peer.id, 'beat', '独处的心跳：可以自由安排，也可以什么都不做', this.throughSleep(peer.id, raw), { planned: raw }, true);
     }
-    if (peer.target.kind === 'c2c' && !this.store.jobs(peer.id).some(j => j.kind === 'night')) {
+    if (!this.store.jobs(peer.id).some(j => j.kind === 'night')) {
       const day = dayKey(now, tz), seed = createHash('sha256').update(`${peer.id}:${day}`).digest();
       const jitter = (seed[0]! % 41) - 20;
       let candidate = dayStart(now, tz) + (c.life.diaryHour * 60 + jitter) * 60000;

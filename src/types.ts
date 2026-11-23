@@ -1,4 +1,4 @@
-export type Target = { kind: 'c2c' | 'group'; id: string };
+export type Target = { kind: 'c2c'; id: string };
 export const peerKey = (target: Target): string => `${target.kind}:${target.id}`;
 
 export interface Attachment {

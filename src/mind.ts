@@ -167,7 +167,7 @@ export class Mind {
     for (const m of thought.memories) {
       const events = evidence(m.sources);
       if (m.kind === 'fact' && !events.some(e => e.kind === 'received')) throw new TypeError('事实记忆需要对方明确输入');
-      if (m.kind === 'identity' && (new Set(m.sources).size < 2 || turn.peer.startsWith('group:'))) throw new TypeError('长期自我认识需要两处私聊真实经历');
+      if (m.kind === 'identity' && new Set(m.sources).size < 2) throw new TypeError('长期自我认识需要两处私聊真实经历');
       if (m.supersedes?.some(id => !active.some(old => old.id === id && old.peer === turn.peer))) throw new TypeError('修订目标不属于当前会话');
     }
     for (const c of thought.commitments) {

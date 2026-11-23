@@ -251,20 +251,20 @@ export function renderMood(mood: Feeling, now: number, baseline = 0): string {
   if (hasPulse) {
     const hours = (now - mood.at) / 3600000;
     const since = hours >= 1 ? `（这是 ${Math.floor(hours)} 小时前的状态，可能已经变了）` : '';
-    if (mood.valence >= 0.3) parts.push(pick(['心情还不错，会更想分享', '状态挺好，话也会多一些'], mood.at));
+    if (mood.valence >= 0.3) parts.push(pick(['心情还不错，会更想分享', '状态挺好，话也会多一些', '心里挺敞亮的，想找人说说', '今天状态在线，聊兴不错'], mood.at));
     else if (mood.valence <= -0.3) {
       const because = mood.reason ? `（因为${mood.reason}）` : '';
-      parts.push(pick([`心情还有些低落${because}`, `还有些低落，没缓过来${because}`], mood.at));
-    } else if (mood.valence <= -0.12) parts.push(pick(['情绪平平，略有点提不起劲', '兴致不太高，有点蔫'], mood.at));
-    if (mood.arousal >= 0.4) parts.push(pick(['有点兴奋，心里不太平静'], mood.at));
+      parts.push(pick([`心情还有些低落${because}`, `还有些低落，没缓过来${because}`, `情绪沉了些，还压着${because}`, `心里有点空落落的${because}`], mood.at));
+    } else if (mood.valence <= -0.12) parts.push(pick(['情绪平平，略有点提不起劲', '兴致不太高，有点蔫', '淡淡的，没什么起伏', '有点没劲，懒懒的'], mood.at));
+    if (mood.arousal >= 0.4) parts.push(pick(['有点兴奋，心里不太平静', '有点坐不住，静不下来', '心里有点雀跃', '情绪有点上头，想动起来'], mood.at));
     if (mood.patience <= -0.3)
-      parts.push(pick(['有点不想应酬了：回得短、少追问，不是生气，只是没力气维持客套；对方真有难处时仍然要好好接住', '有点聊不动了：话少一点、不追问，不是生气；对方真有难处时仍然要好好接住'], mood.at));
-    else if (mood.patience >= 0.3) parts.push(pick(['这会儿挺想聊，愿意多问一句', '现在聊兴不错，可以多关心一句'], mood.at));
+      parts.push(pick(['有点不想应酬了：回得短、少追问，不是生气，只是没力气维持客套；对方真有难处时仍然要好好接住', '有点聊不动了：话少一点、不追问，不是生气；对方真有难处时仍然要好好接住', '这会儿社交电量告急：回复从简，别硬撑客套；对方真有难处时仍然要好好接住', '有点累了，想安静待着：话点到为止；对方真有难处时仍然要好好接住'], mood.at));
+    else if (mood.patience >= 0.3) parts.push(pick(['这会儿挺想聊，愿意多问一句', '现在聊兴不错，可以多关心一句', '有耐心听他讲，接得住话', '状态松弛，可以多陪聊几句'], mood.at));
     if (parts.length) parts[parts.length - 1] += since;
   }
   if (hasBaseline && (!hasPulse || Math.abs(mood.valence) < 0.3)) {
-    if (baseline < 0) parts.push(pick(['心里有种淡淡的闷，说不上具体原因，不用主动解释它', '莫名有点闷，说不上具体原因，让它待着就好'], mood.at));
-    else parts.push(pick(['莫名有点好心情，像是想起了什么开心的事', '说不清为什么，心里有点亮堂'], mood.at));
+    if (baseline < 0) parts.push(pick(['心里有种淡淡的闷，说不上具体原因，不用主动解释它', '莫名有点闷，说不上具体原因，让它待着就好', '有种说不出来源的平静的低气压，带着就好', '心情像蒙了层薄云，不重，但在那儿'], mood.at));
+    else parts.push(pick(['莫名有点好心情，像是想起了什么开心的事', '说不清为什么，心里有点亮堂', '有种轻飘飘的愉快，来路不明但挺好', '心里像有风穿过，通透明快'], mood.at));
   }
   return parts.length ? `你当前的状态：${parts.join('；')}。这影响语气，但不要主动报数值。` : '';
 }

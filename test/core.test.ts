@@ -49,7 +49,7 @@ test('入站去重与轮次认领：连发合并、过期任务取消', () => {
   store.close();
 });
 
-test('记忆：同内容合并、slot 竞争与 supersedes、identity 群禁', () => {
+test('记忆：同内容合并、slot 竞争与 supersedes', () => {
   const store = newStore();
   const peer = 'c2c:user1';
   const event = store.append(peer, 'received', { text: '我只喝美式' })!;

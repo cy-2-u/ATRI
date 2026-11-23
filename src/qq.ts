@@ -20,21 +20,20 @@ export class QQError extends Error {
 export interface QQEvent { op: number; s?: number; t?: string; id?: string; d?: unknown }
 
 export function normalizeEvent(event: QQEvent, now = Date.now()): Incoming | undefined {
-  if (!['C2C_MESSAGE_CREATE', 'GROUP_AT_MESSAGE_CREATE', 'GROUP_MESSAGE_CREATE'].includes(event.t ?? '')) return undefined;
+  // 她只属于一个人：只收私聊消息，群聊事件一律不进她的世界。
+  if (event.t !== 'C2C_MESSAGE_CREATE') return undefined;
   const d = object(event.d), author = object(d.author);
   if (author.bot === true || !d.id) return undefined;
-  const group = event.t !== 'C2C_MESSAGE_CREATE';
-  const authorId = String(author.user_openid ?? author.member_openid ?? author.id ?? '');
-  const id = group ? String(d.group_openid ?? '') : authorId;
-  if (!id || !authorId) return undefined;
-  const target: Target = { kind: group ? 'group' : 'c2c', id };
+  const authorId = String(author.user_openid ?? author.id ?? '');
+  if (!authorId) return undefined;
+  const target: Target = { kind: 'c2c', id: authorId };
   const scene = d.message_scene ? object(d.message_scene) : {};
   const ext = Array.isArray(scene.ext) ? scene.ext.filter((v): v is string => typeof v === 'string') : [];
   const field = (name: string): string | undefined => ext.find(v => v.startsWith(`${name}=`))?.slice(name.length + 1);
   const messageId = String(d.id), messageIndex = field('msg_idx');
   const attachments: Attachment[] = Array.isArray(d.attachments) ? d.attachments.map((value, i) => {
     const a = object(value);
-    return { id: createHash('sha256').update(`${target.kind}:${id}:${messageId}:${i}`).digest('hex').slice(0, 32), name: String(a.filename ?? `attachment-${i}`), mime: String(a.content_type ?? 'application/octet-stream'), url: typeof a.url === 'string' ? (/^https?:\/\//.test(a.url) ? a.url : `https://${a.url}`) : undefined, size: typeof a.size === 'number' ? a.size : undefined, transcript: typeof a.asr_refer_text === 'string' ? a.asr_refer_text : undefined };
+    return { id: createHash('sha256').update(`${target.kind}:${authorId}:${messageId}:${i}`).digest('hex').slice(0, 32), name: String(a.filename ?? `attachment-${i}`), mime: String(a.content_type ?? 'application/octet-stream'), url: typeof a.url === 'string' ? (/^https?:\/\//.test(a.url) ? a.url : `https://${a.url}`) : undefined, size: typeof a.size === 'number' ? a.size : undefined, transcript: typeof a.asr_refer_text === 'string' ? a.asr_refer_text : undefined };
   }) : [];
   const referenceId = field('ref_msg_idx');
   const findReference = (elements: unknown[], depth = 0): Record<string, unknown> | undefined => {
@@ -244,25 +243,25 @@ export class QQ {
   allowedAt(peer: Peer, active: boolean): number {
     const now = this.store.now();
     if (!active) return now;
-    const c = this.config().qq, kind = peer.target.kind;
+    const c = this.config().qq;
     const windowAt = (key: string, length: number, limit: number): number => {
       const history = this.store.get<number[]>(key, []).filter(t => now - t < length);
       return history.length >= limit ? history[history.length - limit]! + length : now;
     };
     const day = dayStart(now, 'Asia/Shanghai');
     const count = this.store.get<{ day: number; count: number }>(`qq-day:${peer.id}`, { day, count: 0 });
-    return Math.max(windowAt(`qq-active:${peer.id}`, 60000, 20), windowAt(`qq-active:bot:${kind}`, kind === 'group' ? 60000 : 1000, kind === 'group' ? c.certified ? 60 : 30 : c.certified ? 10 : 5), kind === 'c2c' && !c.certified ? windowAt('qq-active:bot:c2c', 60000, 30) : now, count.day === day && count.count >= 1000 ? day + 86400000 : now);
+    return Math.max(windowAt(`qq-active:${peer.id}`, 60000, 20), windowAt('qq-active:bot:c2c', 1000, c.certified ? 10 : 5), !c.certified ? windowAt('qq-active:bot:c2c', 60000, 30) : now, count.day === day && count.count >= 1000 ? day + 86400000 : now);
   }
 
   recordActive(peer: Peer): void {
     const now = this.store.now(), day = dayStart(now, 'Asia/Shanghai');
-    for (const key of [`qq-active:${peer.id}`, `qq-active:bot:${peer.target.kind}`]) this.store.set(key, [...this.store.get<number[]>(key, []).filter(t => now - t < 60000), now]);
+    for (const key of [`qq-active:${peer.id}`, 'qq-active:bot:c2c']) this.store.set(key, [...this.store.get<number[]>(key, []).filter(t => now - t < 60000), now]);
     const count = this.store.get<{ day: number; count: number }>(`qq-day:${peer.id}`, { day, count: 0 });
     this.store.set(`qq-day:${peer.id}`, { day, count: (count.day === day ? count.count : 0) + 1 });
   }
 
   async send(target: Target, request: Record<string, unknown>, signal: AbortSignal): Promise<string> {
-    const path = target.kind === 'c2c' ? `/v2/users/${encodeURIComponent(target.id)}/messages` : `/v2/groups/${encodeURIComponent(target.id)}/messages`;
+    const path = `/v2/users/${encodeURIComponent(target.id)}/messages`;
     const data = await this.api(path, 'POST', request, signal, true);
     if (typeof data.id !== 'string' || !data.id) throw new QQError('QQ 未返回消息 ID，接收结果未知', 0, 200, true);
     return data.id;
@@ -273,7 +272,7 @@ export class QQ {
     const key = `${target.kind}:${target.id}:${type}:${createHash('sha256').update(bytes).digest('hex')}`;
     const cached = this.store.cachedMedia(key);
     if (typeof cached?.file_info === 'string') return cached.file_info;
-    const root = target.kind === 'c2c' ? `/v2/users/${encodeURIComponent(target.id)}` : `/v2/groups/${encodeURIComponent(target.id)}`;
+    const root = `/v2/users/${encodeURIComponent(target.id)}`;
     const digest = (alg: string, data: Buffer): string => createHash(alg).update(data).digest('hex');
     const prepared = await this.api(`${root}/upload_prepare`, 'POST', { file_type: type, file_size: String(bytes.length), file_name: filename, md5: digest('md5', bytes), sha1: digest('sha1', bytes), md5_10m: digest('md5', bytes.subarray(0, 10002432)) }, signal);
     if (typeof prepared.upload_id !== 'string' || !Array.isArray(prepared.parts)) throw new QQError('QQ 预上传结果无效');

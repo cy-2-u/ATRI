@@ -11,17 +11,13 @@ const store = tmpStore('atri-mind-');
 const mind = new Mind(store, () => config, { complete: async () => { throw new Error('不该调用'); } } as never, { build: async () => { throw new Error('不该调用'); } } as never, []);
 
 const peer = store.ensurePeer({ kind: 'c2c', id: 'u1' }).id;
-const gpeer = store.ensurePeer({ kind: 'group', id: 'g1' }).id;
 const received = store.append(peer, 'received', { text: '我下周去北京' })!;
 const received2 = store.append(peer, 'received', { text: '记得给我带特产' })!;
 const accepted = store.append(peer, 'accepted', { type: 'text', text: '好' })!;
 const due = store.append(peer, 'due', { commitment: 'x', content: '提醒', dueAt: store.now() })!;
-const greceived = store.append(gpeer, 'received', { text: '大家好' })!;
-const greceived2 = store.append(gpeer, 'received', { text: '我是新来的' })!;
 
 const makeTurn = (p: string, allowed: string[]): Turn => ({ id: 't', episode: 'e', peer: p, snapshot: store.highwater(p), jobs: [{ id: 'j', peer: p, kind: 'chat', reason: 'r', dueAt: store.now(), data: {}, attempts: 0 }], allowed: new Set(allowed) });
 const all = [received.id, received2.id, accepted.id, due.id];
-const gall = [greceived.id, greceived2.id];
 
 const throws = (fn: () => unknown, why: string) => assert.throws(fn, TypeError, why);
 
@@ -30,10 +26,9 @@ test('诚实红线：fact 记忆必须有对方明确输入', () => {
   mind.validate(makeTurn(peer, all), { parts: [], memories: [{ kind: 'fact', content: '他下周去北京', gist: 'x', sources: [received.id] }], commitments: [], intents: [] }, false);
 });
 
-test('诚实红线：identity 需要两处真实经历且群聊禁写', () => {
+test('诚实红线：identity 需要两处真实经历', () => {
   throws(() => mind.validate(makeTurn(peer, all), { parts: [], memories: [{ kind: 'identity', content: '我是陪伴者', gist: 'x', sources: [received.id] }], commitments: [], intents: [] }, false), '单来源');
   mind.validate(makeTurn(peer, all), { parts: [], memories: [{ kind: 'identity', content: '我是陪伴者', gist: 'x', sources: [received.id, received2.id] }], commitments: [], intents: [] }, false);
-  throws(() => mind.validate(makeTurn(gpeer, gall), { parts: [], memories: [{ kind: 'identity', content: '群里的我是活跃的', gist: 'x', sources: [greceived.id, greceived2.id] }], commitments: [], intents: [] }, false), '群聊');
 });
 
 test('诚实红线：supersedes 必须指向本会话活跃记忆', () => {

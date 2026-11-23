@@ -547,12 +547,18 @@ export class Store {
   }
   wall(peer?: string, limit = 50): Record<string, unknown>[] { return peer ? this.sql('SELECT * FROM wall WHERE peer=? ORDER BY at DESC LIMIT ?').all(peer, limit) : this.sql('SELECT * FROM wall ORDER BY at DESC LIMIT ?').all(limit); }
 
-  /** 计量与缓存不是经历：usage/tool_runs/media_cache 到期即清；账本本体（events/outbox/memories）永不修剪。 */
+  /** 计量与缓存不是经历：usage/tool_runs/media_cache 到期即清；终态 jobs 与 reply-seq 计数同理；账本本体（events/outbox/memories）永不修剪。 */
   prune(now = this.now()): void {
     this.transaction(() => {
       this.sql('DELETE FROM usage WHERE at<?').run(now - 90 * 86400000);
       this.sql('DELETE FROM tool_runs WHERE at<?').run(now - 7 * 86400000);
       this.sql('DELETE FROM media_cache WHERE expires>0 AND expires<?').run(now);
+      // done/cancelled 的任务行没有时间列，靠 id 里的日期（night）或父账本推断太脆：保守只清终态且过期的，pending/running 永不动。
+      // jobs 表没有 at 列——用 turns 的完成时间不行（job 可独立失败）；
+      // 干脆给终态行按 id 前缀判断：chat/beat/intent 行在重新调度时会被 replace 或自愈，残留的终态行 30 天后已无引用价值。
+      // 由于无时间列，改为定期全表收缩：终态行超过 400 条时删最旧的（id 排序 ≈ 时间序，SQLite rowid 递增）。
+      const stale = this.sql("SELECT COUNT(*) n FROM jobs WHERE state IN ('done','cancelled')").get()!.n;
+      if (stale > 400) this.sql("DELETE FROM jobs WHERE rowid IN (SELECT rowid FROM jobs WHERE state IN ('done','cancelled') ORDER BY rowid LIMIT ?)").run(Math.max(0, stale - 200));
       // kv 里带时间戳的计量键自清（被动回复计数/搜索缓存）；无时间戳的旧数字键保守跳过。
       for (const row of this.sql("SELECT key,value FROM kv WHERE key LIKE 'reply-seq:%' OR key LIKE 'search:%'").all() as { key: string; value: string }[]) {
         const value = parse<{ at?: number } | number>(row.value);
