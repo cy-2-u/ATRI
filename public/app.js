@@ -159,7 +159,9 @@ function bubbleText(event) {
     if (data.path) return '[图片]';
     return '[一条消息]';
   }
-  const prefix = data.author && data.author !== '本地管理员' ? `【${data.author}】` : '';
+  // 单聊里 author 就是对方的 openid：32 位匿名 ID 是平台噪音，不进对话视图（身份由会话名表达）。
+  const target = peerId.slice(peerId.indexOf(':') + 1);
+  const prefix = data.author && data.author !== '本地管理员' && data.author !== target ? `【${data.author}】` : '';
   return prefix + (typeof data.text === 'string' ? data.text : '[图片]');
 }
 
