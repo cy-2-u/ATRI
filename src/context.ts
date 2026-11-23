@@ -223,8 +223,17 @@ export class Context {
       ...(selfHourLine ? { selfHour: selfHourLine } : {}),
       capabilities: { search: c.web.enabled && !!c.web.key, image: c.image.enabled && configured(c.image), execute: c.execution.enabled, files: true },
       stickers: this.store.get<Record<string, unknown>[]>('stickers', []).map(s => ({ slug: s.slug, description: s.description })),
+      ...(c.image.enabled && configured(c.image) ? { gallery: await this.gallery(turn.peer) } : {}),
     };
     return { material, recalled, feeling, commitmentSources: commitments.flatMap(item => item.sources), thoughtSources: idleThoughts.flatMap(t => t.sources) };
+  }
+
+  /** 她画过的图：作品目录 pictures/ 清单。想再发同一张时用 path 直接发送，不必重画。 */
+  private async gallery(peerId: string): Promise<{ note: string; files: { path: string; at: string }[] }> {
+    const workspace = await this.files.scope(peerId);
+    const entries = await workspace.list('pictures').catch(() => []);
+    const files = entries.filter(e => !e.directory).slice(-40).map(e => ({ path: `pictures/${e.name}`, at: '' }));
+    return { note: '你画过的图（作品目录，想再发同一张时用 image+path 直接发送，不必重画；画布上没有的才调 draw）', files };
   }
 
   /** 今晚身体推迟入睡的分钟数：熬夜的夜，深夜材料不能硬说"人很困"。 */

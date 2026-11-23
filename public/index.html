@@ -437,10 +437,23 @@
                 >
                 <div class="grid-2">
                   <label class="field"
+                    ><span>画图引擎</span
+                    ><select id="image-engine" class="select">
+                      <option value="gpt">GPT（通用 OpenAI 生图）</option>
+                      <option value="nai">NAI（NovelAI 4.5）</option>
+                    </select></label
+                  >
+                  <label class="field"
                     ><span>画图模型</span><input id="image-model" type="text"
                   /></label>
+                </div>
+                <div class="grid-2">
                   <label class="field"
                     ><span>画图地址（留空复用主渠道）</span><input id="image-url" type="text"
+                  /></label>
+                  <label class="field"
+                    ><span>NAI 步数（免费上限 28）</span
+                    ><input id="image-nai-steps" type="number" min="1" max="28" value="28"
                   /></label>
                 </div>
                 <label class="field">

@@ -100,13 +100,13 @@ test('工具按配置注入：没配画笔/搜索/沙箱，她收到的工具定
   assert.ok(!bare.includes('execute'), '未配置沙箱却注入了 execute');
   assert.ok(bare.includes('files'), '作品目录读写是基础能力，始终可用');
   // 三要素齐全但开关关闭：她依然收不到画图工具——可选 = 填了配置也可以不用
-  const filled = validateConfig({ ...defaults('人格'), image: { url: 'https://api.example.com', key: 'k', model: 'img', enabled: false } });
+  const filled = validateConfig({ ...defaults('人格'), image: { url: 'https://api.example.com', key: 'k', model: 'img', enabled: false, engine: 'gpt', naiSteps: 28 } });
   await assert.rejects(new Mind(store, () => filled, capture as never, build as never, tools(store, () => filled, files, recall)).think(makeTurn(peer, all), new AbortController().signal));
   assert.ok(!captured[1]!.includes('draw'), '画笔开关关闭时不应注入 draw');
   // 开关打开 + 配置齐全：画笔出现在她的工具集里
   const full = validateConfig({
     ...defaults('人格'),
-    image: { url: 'https://api.example.com', key: 'k', model: 'img', enabled: true },
+    image: { url: 'https://api.example.com', key: 'k', model: 'img', enabled: true, engine: 'gpt', naiSteps: 28 },
     web: { key: 'k', enabled: true },
     execution: { ...defaults().execution, enabled: true },
   });

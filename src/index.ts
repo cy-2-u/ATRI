@@ -26,6 +26,7 @@ let config = store.get<Config>('config', defaults(await readFile(join(root, 'pro
 config.primary.cacheWritePrice ??= 0; config.fallback.cacheWritePrice ??= 0;
 config.primary.temperature ??= 1; config.fallback.temperature ??= 1; // 存量配置无此键：mergeConfig 的 hasOwn 检查要求键必须存在
 config.image.enabled ??= false; // 旧存量配置无此键：默认关——她没有画笔，直到你打开开关
+config.image.engine ??= 'gpt'; config.image.naiSteps ??= 28; // 旧存量配置无此键：GPT 引擎 + NAI 免费档步数
 const patch: Record<string, unknown> = {};
 if (!config.qq.appId && process.env.QQ_APP_ID) patch.qq = { appId: process.env.QQ_APP_ID, secret: process.env.QQ_APP_SECRET ?? '' };
 if (!config.primary.url && process.env.LLM_BASE_URL) patch.primary = { url: process.env.LLM_BASE_URL, key: process.env.LLM_API_KEY ?? '', model: process.env.LLM_MODEL ?? '' };

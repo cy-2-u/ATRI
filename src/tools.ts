@@ -92,13 +92,18 @@ export function tools(store: Store, config: () => Config, files: Files, recall: 
         const offset = page(args.offset, 0);
         return { url: result.url, text: body.slice(offset, offset + 10000), next: offset + 10000 < body.length ? offset + 10000 : null };
       } },
-    { definition: { name: 'draw', description: '调用画图渠道生成真实作品并保存。未配置不伪造，描述清楚再画。', parameters: schema({ prompt: text }, ['prompt']) }, mutates: true,
+    { definition: { name: 'draw', description: '调用画图渠道生成真实作品并保存。未配置不伪造，描述清楚再画。作品目录里已有的图不必重画：path 直接发送即可。', parameters: schema({ prompt: text }, ['prompt']) }, mutates: true,
       async run(args, ctx) {
         const c = config().image;
         if (!configured(c)) throw new Error('画图渠道未配置');
         const prompt = string(args.prompt, 'prompt', 8000), started = store.now();
         try {
-          const { data } = await jsonRequest(`${apiBase(c.url)}/images/generations`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${c.key}` }, body: JSON.stringify({ model: c.model, prompt, n: 1, response_format: 'b64_json' }), signal: AbortSignal.any([ctx.signal, AbortSignal.timeout(180000)]) }, 32 * 1024 * 1024);
+          // NAI 免费额度：纯文生图、单张、28 步内、固定尺寸白名单；超出按全价计费，所以这里硬性收口。
+          const nai = c.engine === 'nai';
+          const body: Record<string, unknown> = nai
+            ? { model: c.model || 'nai-diffusion-4-5-full', prompt, n: 1, response_format: 'b64_json', parameters: { steps: Math.min(28, Math.max(1, Math.round(c.naiSteps || 28))), cfg_scale: 6, sampler: 'k_dpmpp_2m_sde', noise_schedule: 'karras' } }
+            : { model: c.model, prompt, n: 1, response_format: 'b64_json' };
+          const { data } = await jsonRequest(`${apiBase(c.url)}/images/generations`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${c.key}` }, body: JSON.stringify(body), signal: AbortSignal.any([ctx.signal, AbortSignal.timeout(180000)]) }, 32 * 1024 * 1024);
           const image = Array.isArray(data.data) ? object(data.data[0]) : {};
           const bytes = typeof image.b64_json === 'string' ? Buffer.from(image.b64_json, 'base64') : typeof image.url === 'string' ? (await publicDownload(image.url, ctx.signal)).bytes : undefined;
           const mime = bytes ? mimeOf(bytes) : '';

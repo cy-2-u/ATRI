@@ -817,8 +817,10 @@ function fillSystemForm(config) {
   $('embedding-key').placeholder = embedding.keyConfigured ? '••••••••' : '';
   const image = config.image ?? {};
   $('image-on').checked = Boolean(image.enabled);
+  $('image-engine').value = image.engine === 'nai' ? 'nai' : 'gpt';
   $('image-model').value = image.model ?? '';
   $('image-url').value = image.url ?? '';
+  $('image-nai-steps').value = image.naiSteps ?? 28;
   $('image-key').value = '';
   $('image-key-state').textContent = image.keyConfigured ? '（已保存）' : '（未设置）';
   $('image-key').placeholder = image.keyConfigured ? '••••••••' : '';
@@ -881,8 +883,10 @@ $('save-system').onclick = () =>
       },
       image: {
         enabled: $('image-on').checked,
+        engine: $('image-engine').value === 'nai' ? 'nai' : 'gpt',
         model: $('image-model').value.trim(),
         url: $('image-url').value.trim(),
+        naiSteps: Math.min(28, Math.max(1, Number($('image-nai-steps').value) || 28)),
       },
       execution: {
         enabled: $('execution-on').checked,

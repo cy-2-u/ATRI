@@ -39,7 +39,7 @@ export interface Config {
     maxToolSteps: number;
   };
   web: { key: string; enabled: boolean };
-  image: { url: string; key: string; model: string; enabled: boolean };
+  image: { url: string; key: string; model: string; enabled: boolean; engine: 'gpt' | 'nai'; naiSteps: number };
   execution: { enabled: boolean; image: string; timeoutMs: number; network: boolean };
   backup: { enabled: boolean; url: string; user: string; password: string; intervalHours: number };
   persona: string;
@@ -59,7 +59,7 @@ export const defaults = (persona = ''): Config => ({
     timezone: 'Asia/Shanghai', enabled: true, beatMinutes: 90, diaryHour: 23,
     sleepStart: 60, sleepEnd: 480, turnTimeoutMs: 300000, debounceMs: 700, maxToolSteps: 24,
   },
-  web: { key: '', enabled: false }, image: { url: '', key: '', model: '', enabled: false },
+  web: { key: '', enabled: false }, image: { url: '', key: '', model: '', enabled: false, engine: 'gpt', naiSteps: 28 },
   execution: { enabled: false, image: 'python:3.13-alpine', timeoutMs: 120000, network: false },
   backup: { enabled: false, url: '', user: '', password: '', intervalHours: 24 },
   persona,
@@ -110,6 +110,8 @@ export function validateConfig(c: Config): Config {
     if (e.cacheRetention === '1h' && e.cache !== 'anthropic') throw new TypeError('1h 缓存需要显式 Anthropic 缓存');
   }
   for (const s of [c.embedding, c.image]) { url(s.url); if (typeof s.key !== 'string' || typeof s.model !== 'string') throw new TypeError('工具渠道配置无效'); }
+  if (!['gpt', 'nai'].includes(c.image.engine)) throw new TypeError('画笔引擎无效');
+  num(c.image.naiSteps, 'NAI 步数', 1, 28); // 免费额度：28 步封顶，超出按全价计费
   if (typeof c.qq.appId !== 'string' || typeof c.qq.secret !== 'string') throw new TypeError('QQ 凭证无效');
   for (const v of [c.qq.enabled, c.qq.sandbox, c.qq.certified, c.life.enabled, c.web.enabled, c.image.enabled, c.execution.enabled, c.execution.network, c.backup.enabled]) bool(v);
   num(c.qq.passiveMinutes, 'QQ 被动回复有效期', 1, 60);
