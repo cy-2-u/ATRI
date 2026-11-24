@@ -14,6 +14,8 @@ export interface Endpoint {
   cache: 'automatic' | 'openai' | 'anthropic';
   cacheRetention: 'default' | '24h' | '1h';
   temperature?: number;
+  /** 强制 SSE 的渠道（如 openference 免费档）必须开：传输层聚合，对思考循环透明。 */
+  stream: boolean;
   inputPrice: number;
   cachedPrice: number;
   cacheWritePrice: number;
@@ -48,7 +50,7 @@ export interface Config {
 const endpoint = (): Endpoint => ({
   url: '', key: '', model: '', format: 'openai', contextTokens: 32768,
   outputTokens: 4096, timeoutMs: 120000, vision: true, json: false,
-  completionTokens: false, cache: 'automatic', cacheRetention: 'default',
+  completionTokens: false, cache: 'automatic', cacheRetention: 'default', stream: false,
   temperature: 1, inputPrice: 0, cachedPrice: 0, cacheWritePrice: 0, outputPrice: 0,
 });
 
@@ -102,7 +104,7 @@ export function validateConfig(c: Config): Config {
     num(e.outputTokens, '最大输出', 256, 131072);
     if (e.outputTokens >= e.contextTokens) throw new TypeError('输出容量必须小于上下文容量');
     num(e.timeoutMs, '请求超时', 1000, 3600000);
-    for (const v of [e.vision, e.json, e.completionTokens]) bool(v);
+    for (const v of [e.vision, e.json, e.completionTokens, e.stream]) bool(v);
     for (const v of [e.inputPrice, e.cachedPrice, e.cacheWritePrice, e.outputPrice]) num(v, '价格', 0, 100000);
     if (e.temperature !== undefined) num(e.temperature, 'temperature', 0, 2);
     if (e.cache === 'anthropic' && e.format !== 'anthropic') throw new TypeError('显式 Anthropic 缓存需要 Anthropic 协议');

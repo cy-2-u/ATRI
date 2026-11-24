@@ -25,6 +25,7 @@ const store = new Store(join(data, 'atri.db'));
 let config = store.get<Config>('config', defaults(await readFile(join(root, 'prompts', 'persona.md'), 'utf8')));
 config.primary.cacheWritePrice ??= 0; config.fallback.cacheWritePrice ??= 0;
 config.primary.temperature ??= 1; config.fallback.temperature ??= 1; // 存量配置无此键：mergeConfig 的 hasOwn 检查要求键必须存在
+config.primary.stream ??= false; config.fallback.stream ??= false; // 同上：流式开关，旧配置默认非流式
 config.image.enabled ??= false; // 旧存量配置无此键：默认关——她没有画笔，直到你打开开关
 config.image.engine ??= 'gpt';
 if (!config.image.gpt) {

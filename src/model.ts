@@ -4,7 +4,7 @@ import { apiBase, configured } from './config.ts';
 import type { Completion, Message, ToolDefinition, Usage } from './types.ts';
 import { object, errorText } from './types.ts';
 import { estimate } from './state.ts';
-import { HttpError, jsonRequest, sleep } from './net.ts';
+import { HttpError, jsonRequest, readBounded, sleep } from './net.ts';
 import type { Store } from './store.ts';
 
 export interface CallOptions { signal: AbortSignal; purpose: string; cacheKey: string; final?: boolean; only?: Endpoint }
@@ -66,8 +66,45 @@ export function encode(endpoint: Endpoint, messages: Message[], tools: ToolDefin
   };
 }
 
-export function decode(endpoint: Endpoint, data: Record<string, unknown>): Completion {
-  let message: Message, finish: string;
+/** 强制流式渠道的 SSE 聚合：delta 增量拼回与非流式同构的回包，decode 照常解析。
+ *  只做传输层——校验与投递节奏不变，第一条气泡仍等完整决定过审才出门。 */
+export function sseAggregate(raw: string): Record<string, unknown> {
+  let content = '', reasoning: string | undefined, finish = '';
+  const calls = new Map<number, { id: string; name: string; args: string }>();
+  let usage: Record<string, unknown> | undefined;
+  for (const line of raw.split('\n')) {
+    const m = /^data:\s*(.+?)\s*$/.exec(line);
+    if (!m) continue;
+    if (m[1] === '[DONE]') break;
+    let frame: Record<string, unknown>;
+    try { frame = object(JSON.parse(m[1]!)); } catch { continue; }
+    const choice = Array.isArray(frame.choices) && frame.choices.length ? object(frame.choices[0]) : undefined;
+    if (choice) {
+      const delta = choice.delta ? object(choice.delta) : {};
+      if (typeof delta.content === 'string') content += delta.content;
+      if (typeof delta.reasoning_content === 'string') reasoning = (reasoning ?? '') + delta.reasoning_content;
+      if (Array.isArray(delta.tool_calls)) for (const value of delta.tool_calls) {
+        const tc = object(value), acc = calls.get(Number(tc.index ?? 0)) ?? { id: '', name: '', args: '' };
+        if (typeof tc.id === 'string' && tc.id) acc.id = tc.id;
+        const fn = tc.function ? object(tc.function) : {};
+        if (typeof fn.name === 'string' && fn.name && !acc.name) acc.name = fn.name; // 名字只在首帧，后续帧是增量 arguments
+        if (typeof fn.arguments === 'string') acc.args += fn.arguments;
+        calls.set(Number(tc.index ?? 0), acc);
+      }
+      if (typeof choice.finish_reason === 'string' && choice.finish_reason) finish = choice.finish_reason;
+    }
+    if (frame.usage && typeof frame.usage === 'object') usage = object(frame.usage);
+  }
+  const message: Record<string, unknown> = { role: 'assistant', content };
+  if (reasoning !== undefined) message.reasoning_content = reasoning;
+  const toolCalls = [...calls.entries()].sort((a, b) => a[0] - b[0]).map(([, c]) => ({ id: c.id, type: 'function', function: { name: c.name, arguments: c.args } }));
+  if (toolCalls.length) message.tool_calls = toolCalls;
+  const data: Record<string, unknown> = { choices: [{ message, finish_reason: finish }] };
+  if (usage) data.usage = usage;
+  return data;
+}
+
+export function decode(endpoint: Endpoint, data: Record<string, unknown>): Completion {  let message: Message, finish: string;
   let usage: Usage;
   if (endpoint.format === 'anthropic') {
     if (!Array.isArray(data.content)) throw new ModelError('Anthropic 回包缺少 content');
@@ -132,7 +169,18 @@ export class Models {
         const request = encode(endpoint, messages, tools, options);
         let data: Record<string, unknown> | undefined;
         try {
-          ({ data } = await jsonRequest(request.url, { method: 'POST', headers: { 'content-type': 'application/json', ...request.headers }, body: JSON.stringify(request.body), signal: AbortSignal.any([options.signal, AbortSignal.timeout(endpoint.timeoutMs)]) }));
+          if (endpoint.stream) {
+            const response = await fetch(request.url, { method: 'POST', headers: { 'content-type': 'application/json', ...request.headers }, body: JSON.stringify({ ...request.body, stream: true, stream_options: { include_usage: true } }), signal: AbortSignal.any([options.signal, AbortSignal.timeout(endpoint.timeoutMs)]) });
+            const bytes = await readBounded(response, 8 * 1024 * 1024);
+            if (!response.ok) {
+              let errData: Record<string, unknown> | undefined;
+              try { errData = object(JSON.parse(Buffer.from(bytes).toString('utf8'))); } catch { /* 错误体不是 JSON 就只报状态码 */ }
+              throw new HttpError(response.status, `HTTP ${response.status}`, Number(response.headers.get('retry-after') ?? 0) * 1000, errData);
+            }
+            data = sseAggregate(Buffer.from(bytes).toString('utf8'));
+          } else {
+            ({ data } = await jsonRequest(request.url, { method: 'POST', headers: { 'content-type': 'application/json', ...request.headers }, body: JSON.stringify(request.body), signal: AbortSignal.any([options.signal, AbortSignal.timeout(endpoint.timeoutMs)]) }));
+          }
           const completion = decode(endpoint, data);
           const u = completion.usage;
           const cost = usageCost(endpoint, u);
