@@ -799,7 +799,6 @@ function fillSystemForm(config) {
   // 已存的密钥不回填明文，但也不能是空白——占位点告诉用户"这里有钥匙"。
   $('primary-key').placeholder = primary.keyConfigured ? '••••••••' : '';
   $('primary-vision').checked = Boolean(primary.vision);
-  $('primary-stream').checked = Boolean(primary.stream);
   $('primary-temp').value = primary.temperature ?? '';
   $('primary-timeout').value = primary.timeoutMs ?? 120000;
   $('primary-output').value = primary.outputTokens ?? 4096;
@@ -816,7 +815,6 @@ function fillSystemForm(config) {
     $('fallback-key-state').textContent = config.fallback.keyConfigured ? '（已保存）' : '（未设置）';
     $('fallback-key').placeholder = config.fallback.keyConfigured ? '••••••••' : '';
     $('fallback-vision').checked = Boolean(config.fallback.vision);
-    $('fallback-stream').checked = Boolean(config.fallback.stream);
     $('fallback-temp').value = config.fallback.temperature ?? '';
     $('fallback-timeout').value = config.fallback.timeoutMs ?? 120000;
     $('fallback-output').value = config.fallback.outputTokens ?? 4096;
@@ -879,7 +877,6 @@ $('save-system').onclick = () =>
       model: $('primary-model').value.trim(),
       url: $('primary-url').value.trim(),
       vision: $('primary-vision').checked,
-      stream: $('primary-stream').checked,
       timeoutMs: Number($('primary-timeout').value),
       outputTokens: Number($('primary-output').value),
       contextTokens: Number($('primary-context').value),
@@ -893,7 +890,6 @@ $('save-system').onclick = () =>
           model: $('fallback-model').value.trim(),
           url: $('fallback-url').value.trim(),
           vision: $('fallback-vision').checked,
-          stream: $('fallback-stream').checked,
           timeoutMs: Number($('fallback-timeout').value),
           outputTokens: Number($('fallback-output').value),
           contextTokens: Number($('fallback-context').value),
@@ -951,23 +947,30 @@ $('save-system').onclick = () =>
 
 $('test-llm').onclick = () =>
   perform(async () => {
-    const result = await api('/api/model/probe', { method: 'POST', body: { mode: 'system' } });
-    show(
-      result.follows
-        ? '渠道连通正常，角色生效'
-        : '渠道连通正常，但角色不生效：渠道丢弃了 system 提示，人设无法工作，建议更换渠道',
-      !result.follows,
-    );
+    // 一键三测：system 哨兵 + 识图探测（流式探测在后台跑，渠道属性系统内部记账，不显示）
+    const result = await api('/api/model/probe', { method: 'POST', body: {} });
+    const lines = [
+      result.system.follows
+        ? '角色生效'
+        : '角色不生效：渠道丢弃了 system 提示，人设无法工作，建议更换渠道',
+      result.vision
+        ? result.vision.ok ? '识图正常' : '识图不支持：她看不了图（勾选已自动取消）'
+        : '识图探测未完成（渠道可能不支持图片输入）',
+    ];
+    show(`渠道连通正常：${lines.join('；')}`, !result.system.follows);
   }, $('test-llm'));
 $('test-fallback').onclick = () =>
   perform(async () => {
-    const result = await api('/api/model/probe', { method: 'POST', body: { channel: 'fallback', mode: 'system' } });
-    show(
-      result.follows
-        ? '备用渠道连通正常，角色生效'
-        : '备用渠道连通正常，但角色不生效：渠道丢弃了 system 提示，人设无法工作，建议更换渠道',
-      !result.follows,
-    );
+    const result = await api('/api/model/probe', { method: 'POST', body: { channel: 'fallback' } });
+    const lines = [
+      result.system.follows
+        ? '角色生效'
+        : '角色不生效：渠道丢弃了 system 提示，人设无法工作，建议更换渠道',
+      result.vision
+        ? result.vision.ok ? '识图正常' : '识图不支持：她看不了图（勾选已自动取消）'
+        : '识图探测未完成（渠道可能不支持图片输入）',
+    ];
+    show(`备用渠道连通正常：${lines.join('；')}`, !result.system.follows);
   }, $('test-fallback'));
 $('qq-probe').onclick = () =>
   perform(async () => {

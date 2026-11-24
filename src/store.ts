@@ -148,6 +148,10 @@ export class Store {
   evidence(peer: string, ids: string[]): Event[] {
     return [...new Set(ids)].flatMap(id => { const row = this.sql('SELECT * FROM events WHERE id=? AND peer=?').get(id, peer); return row ? [this.eventRow(row)] : []; });
   }
+  eventByDedupe(dedupe: string): Event | undefined {
+    const row = this.sql('SELECT * FROM events WHERE dedupe=?').get(dedupe);
+    return row ? this.eventRow(row) : undefined;
+  }
   searchHistory(peer: string, query: string, limit = 12): Event[] {
     const terms = grams(query).slice(0, 40);
     if (!terms.length) return [];
@@ -219,18 +223,54 @@ export class Store {
       this.sql("UPDATE jobs SET state='pending' WHERE state='running'").run();
       this.sql("UPDATE turns SET state='interrupted',error='进程中断' WHERE state='running'").run();
       this.sql("UPDATE tool_runs SET status='unknown',result=? WHERE status='running'").run(JSON.stringify({ error: '执行中断，不能假定未产生副作用' }));
+      // 渐进投递的崩溃缺口：气泡已被平台接收、承诺还挂 pending 未回填，而思考已中断——
+      // 「用户看到了承诺、账本零记录」。绝不静默：落 failure 让管理员看得见缺口。
+      const rows = this.sql("SELECT o.id, o.peer, o.effects FROM outbox o JOIN turns t ON t.id=o.turn WHERE o.status='accepted' AND t.state!='done'").all() as { id: string; peer: string; effects: string }[];
+      for (const row of rows) {
+        const commitments = (parse<Record<string, unknown>>(row.effects).commitments ?? []) as { pending?: boolean; applied?: boolean; id?: string; content?: string }[];
+        if (commitments.some(c => c.pending && !c.applied)) this.append(row.peer, 'failure', { delivery: row.id, text: '气泡已被平台接收，但约定效果未落账（思考中断）；需依据当前约定重新确认' });
+      }
     });
   }
 
   draft(turn: Turn, parts: Part[], effects: Record<string, unknown>[], due: number[]): void {
-    for (let i = 0; i < parts.length; i++) {
-      const effect = { ...effects[i] };
+    for (let i = 0; i < parts.length; i++) this.draftOne(turn, i, parts[i]!, effects[i] ?? {}, due[i] ?? this.now());
+  }
+
+  /** 单气泡入账。progressive=true 是流式闭合瞬间的捕获（不等思考结束）：承诺带
+   *  pending 标记+捕获时快照——未过全量校验的模型原始材料，平台接收时不立即立约，
+   *  由思考落账以接收事件为来源回填。false 是全量校验后的正式落账：只挂 expected
+   *  版本快照，平台接收即立约（约定已变化则拒绝并落 failure）。 */
+  draftOne(turn: Turn, ordinal: number, part: Part, effects: Record<string, unknown>, due: number, progressive = false): string {
+    return this.transaction(() => {
+      const effect = { ...effects };
       if (effect.commitments) effect.commitments = (effect.commitments as CommitmentInput[]).map(input => {
         const old = input.id ? this.commitment(turn.peer, input.id) : this.commitments(turn.peer).find(c => c.status === 'open' && c.content === input.content && c.kind === input.kind);
-        return { ...input, expected: old ? { id: old.id, version: old.version, status: old.status } : null };
+        const expected = old ? { id: old.id, version: old.version, status: old.status } : null;
+        return progressive ? { ...input, pending: true, expected } : { ...input, expected };
       });
-      this.sql("INSERT INTO outbox(id,peer,turn,ordinal,part,effects,status,due,created) VALUES(?,?,?,?,?,?,'pending',?,?)").run(randomUUID(), turn.peer, turn.id, i, JSON.stringify(parts[i]), JSON.stringify(effect), due[i] ?? this.now(), this.now());
-    }
+      const id = randomUUID();
+      this.sql("INSERT INTO outbox(id,peer,turn,ordinal,part,effects,status,due,created) VALUES(?,?,?,?,?,?,'pending',?,?)").run(id, turn.peer, turn.id, ordinal, JSON.stringify(part), JSON.stringify(effect), due, this.now());
+      return id;
+    });
+  }
+
+  envelopeAt(turn: string, ordinal: number): Envelope | undefined {
+    const row = this.sql('SELECT * FROM outbox WHERE turn=? AND ordinal=?').get(turn, ordinal);
+    return row ? this.envelope(row) : undefined;
+  }
+
+  /** 工具轮回滚：本轮误入队的渐进气泡整批取消（模型还要继续调工具，最终决定尚未出现）。 */
+  cancelDrafts(ids: string[]): void {
+    if (!ids.length) return;
+    const marks = ids.map(() => '?').join(',');
+    this.sql(`UPDATE outbox SET status='cancelled',error='思考转向工具调用，最终决定尚未出现' WHERE id IN (${marks}) AND status='pending'`).run(...ids);
+  }
+
+  /** 思考落账时回写渐进气泡的正式 effects（承诺从 pending 转正）。只覆盖未终态的行；
+   *  已 accepted 的行保留 acceptedEvent 标记，由 runtime.backfillAccepted 以接收事件为来源补立约。 */
+  updateDraftEffects(id: string, effects: Record<string, unknown>): void {
+    this.sql("UPDATE outbox SET effects=? WHERE id=? AND status IN ('pending','sending')").run(JSON.stringify(effects), id);
   }
 
   private envelope(row: Record<string, unknown>): Envelope {
@@ -280,7 +320,15 @@ export class Store {
         const p = this.peer(envelope.peer);
         if (p) this.savePeer({ ...p, lastAccepted: this.now() });
         this.settleSelf(envelope.peer, 'delivered');
-        for (const effect of (envelope.effects.commitments ?? []) as CommitmentEffect[]) {
+        const commitments = (envelope.effects.commitments ?? []) as (CommitmentEffect & { pending?: boolean; acceptedEvent?: string })[];
+        const hasPending = commitments.some(c => c.pending);
+        if (hasPending) {
+          // 渐进捕获的承诺未过全量校验：只记平台接收事件并标记，立约由思考落账回填——
+          // 否则崩溃窗口里会出现「用户看到了承诺、账本零记录」的诚实缺口。
+          for (const effect of commitments) if (effect.pending && !effect.acceptedEvent) effect.acceptedEvent = event.id;
+          this.sql('UPDATE outbox SET effects=? WHERE id=?').run(JSON.stringify({ ...envelope.effects, commitments }), id);
+        }
+        for (const effect of hasPending ? [] : commitments as CommitmentEffect[]) {
           try {
             const { expected, ...input } = effect;
             const current = expected ? this.commitment(envelope.peer, expected.id) : this.commitments(envelope.peer).find(c => c.content === input.content && c.kind === (input.kind ?? 'concern'));

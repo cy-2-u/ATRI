@@ -20,6 +20,13 @@ export interface Transport {
   upload(target: Peer['target'], bytes: Buffer, filename: string, type: number, signal: AbortSignal): Promise<string>;
 }
 
+/** 渐进投递：思考过程中气泡闭合即入队（流式边生成边发）。due 的节奏归 Runtime
+ *  （打字节奏与反应延迟是身体），校验归 Mind（诚实公理），落账归 Store。
+ *  返回 outbox 行 id（工具轮回滚用）。 */
+export interface BubbleSink {
+  draft(ordinal: number, part: Part, effects: Record<string, unknown>): string;
+}
+
 /** 气泡间隔：长度即打字时间。短气泡接得快，长气泡让人等——节奏是人味的一部分。 */
 function pacingMs(part: Part, random: () => number = Math.random): number {
   const length = part.type === 'text' ? (part.text ?? '').length : 8;
@@ -36,6 +43,8 @@ export class Runtime {
   private onError: (error: unknown) => void;
   private timer?: ReturnType<typeof setTimeout>;
   private work?: Promise<void>;
+  private pump?: Promise<void>;
+  private pokes: (() => void)[] = [];
   private active?: { peer: string; controller: AbortController };
   private lifetime = new AbortController();
   private started = false;
@@ -47,7 +56,16 @@ export class Runtime {
 
   status(): Record<string, unknown> { return { running: this.started, thinking: this.active?.peer ?? null, queued: this.store.jobs().length }; }
 
-  start(): void { if (!this.started) { this.started = true; this.lifetime = new AbortController(); this.reconfigure(); } }
+  start(): void {
+    if (!this.started) {
+      this.started = true;
+      this.lifetime = new AbortController();
+      this.reconfigure();
+      // 投递泵与思考循环并行：思考中的渐进气泡一闭合就能出门，不必等 apply。
+      // 串行安全性由 nextEnvelope 的 sending 原子置位保持（同一时刻每 peer 最多一条在途）。
+      this.pump = this.deliverLoop().catch(this.onError);
+    }
+  }
 
   reconfigure(): void {
     const c = this.config();
@@ -72,6 +90,7 @@ export class Runtime {
     if (!event) return false;
     if (this.active?.peer === event.peer) this.active.controller.abort(new Error('新消息到达'));
     this.wake();
+    this.pokeDelivery();
     return true;
   }
 
@@ -79,8 +98,43 @@ export class Runtime {
     if (!this.started) return;
     if (this.timer) { clearTimeout(this.timer); this.timer = undefined; }
     this.dirty = true;
+    this.pokeDelivery();
     if (this.work) return;
     this.work = this.drain().catch(this.onError).finally(() => { this.work = undefined; if (this.dirty && this.started) this.wake(); else this.arm(); });
+  }
+
+  /** 唤醒投递泵（新草稿入队、额度窗口变化等）。 */
+  private pokeDelivery(): void {
+    const fns = this.pokes; this.pokes = [];
+    for (const fn of fns) fn();
+  }
+
+  private waitDelivery(ms: number): Promise<void> {
+    return new Promise(resolve => {
+      const fire = () => { const i = this.pokes.indexOf(fire); if (i >= 0) this.pokes.splice(i, 1); clearTimeout(timer); resolve(); };
+      this.pokes.push(fire);
+      const timer = setTimeout(fire, Math.max(1, Math.min(2147483647, ms)));
+      timer.unref();
+    });
+  }
+
+  /** 投递泵：与思考循环并行的投递循环。preview 的本地落账仍在 drain（不出 QQ）。 */
+  private async deliverLoop(): Promise<void> {
+    while (this.started && !this.lifetime.signal.aborted) {
+      let worked = false;
+      if (this.config().qq.enabled && this.config().life.enabled) {
+        const peers = this.store.peers().filter(p => p.enabled && p.id !== 'c2c:preview');
+        const envelope = peers.map(p => this.store.nextEnvelope(p.id)).filter((e): e is Envelope => !!e).sort((a, b) => a.createdAt - b.createdAt || a.ordinal - b.ordinal)[0];
+        if (envelope) { await this.deliver(envelope); worked = true; }
+      }
+      if (worked) continue;
+      const times: number[] = [];
+      for (const peer of this.store.peers().filter(p => p.enabled)) {
+        const at = this.store.nextDeliveryAt(peer.id);
+        if (at !== undefined) times.push(at - this.store.now());
+      }
+      await this.waitDelivery(times.length ? Math.max(50, Math.min(...times)) : 2147483647);
+    }
   }
 
   async idle(): Promise<void> { while (this.work) await this.work; }
@@ -124,10 +178,6 @@ export class Runtime {
       const peers = this.store.peers().filter(p => p.enabled);
       const preview = this.store.nextEnvelope('c2c:preview');
       if (preview && peers.some(p => p.id === preview.peer) && this.config().life.enabled) { this.store.startSend(preview.id, {}); this.store.settleSend(preview.id, 'accepted', 'local-preview'); continue; }
-      if (this.config().qq.enabled && this.config().life.enabled) {
-        const envelope = peers.filter(p => p.id !== 'c2c:preview').map(p => this.store.nextEnvelope(p.id)).filter((e): e is Envelope => !!e).sort((a, b) => a.createdAt - b.createdAt || a.ordinal - b.ordinal)[0];
-        if (envelope) { await this.deliver(envelope); continue; }
-      }
       if (!this.ready() || this.lifetime.signal.aborted) return;
       const enabled = new Set(peers.map(p => p.id));
       const job = this.store.jobs().find(j => enabled.has(j.peer) && j.dueAt <= this.store.now());
@@ -137,13 +187,15 @@ export class Runtime {
       const controller = new AbortController();
       this.active = { peer: turn.peer, controller };
       const signal = AbortSignal.any([controller.signal, this.lifetime.signal, AbortSignal.timeout(this.config().life.turnTimeoutMs)]);
+      let progressiveCount = 0;
       try {
         signal.throwIfAborted(); // stop 与认领交错时 signal 可能已死：对已 abort 的 signal 等待 abort 事件将永远等不到
         await this.prepareImages(turn, signal);
-        const thought = await this.mind.think(turn, signal);
+        const thought = await this.mind.think(turn, signal, this.bubbleSink(turn, n => { progressiveCount = n; }));
         signal.throwIfAborted();
         if (this.store.stale(turn)) { this.store.finish(turn, 'superseded'); continue; }
         this.apply(turn, thought);
+        if (progressiveCount) this.pokeDelivery();
       } catch (error) {
         const stale = this.store.stale(turn);
         this.store.finish(turn, stale ? 'superseded' : 'failed', errorText(error), !stale && !this.lifetime.signal.aborted && !(error instanceof ModelError && error.terminal));
@@ -154,6 +206,25 @@ export class Runtime {
         if (peer?.enabled && peer.autonomous && this.config().life.enabled) this.ensureLife(peer);
       }
     }
+  }
+
+  /** 渐进投递的落账 sink：Mind 只管校验通过后调用，节奏（首气泡反应延迟抽签+
+   *  打字停顿）与入队在这里。首气泡 dueAt = now + max(pacing, 反应延迟 1-4s)，
+   *  「她想了一下」与生成重叠，不串行等待。 */
+  private bubbleSink(turn: Turn, count: (n: number) => void): BubbleSink {
+    let lastDue = 0, drafted = 0;
+    return {
+      draft: (ordinal, part, effects) => {
+        const now = this.store.now();
+        const reaction = 1000 + Math.floor(Math.random() * 3000);
+        lastDue = drafted ? lastDue + pacingMs(part) : now + Math.max(pacingMs(part), reaction);
+        drafted++;
+        count(drafted);
+        const id = this.store.draftOne(turn, ordinal, part, effects, lastDue, true);
+        this.pokeDelivery();
+        return id;
+      },
+    };
   }
 
   private async prepareImages(turn: Turn, signal: AbortSignal): Promise<void> {
@@ -215,11 +286,37 @@ export class Runtime {
       kept.forEach((x, k) => {
         effects[k]!.notified = (x.part.notified ?? []).map(id => { const c = this.store.commitment(turn.peer, id); if (!c) throw new Error('提醒约定不存在'); return { id, version: c.version, due: c.dueAt }; });
       });
-      // 气泡节奏：第 2 条起按长度停顿，像在打字。
+      // 气泡节奏：第 2 条起按长度停顿，像在打字。渐进已落账的气泡复用行、续接节奏。
+      let lastDue = now;
       const dues: number[] = [];
       let due = now;
       kept.forEach((x, k) => { if (k > 0) due += pacingMs(x.part); dues.push(due); });
-      this.store.draft(turn, kept.map(x => x.part), effects, dues);
+      kept.forEach((x, k) => {
+        const effect = effects[k]!;
+        const existing = this.store.envelopeAt(turn.id, x.i);
+        if (existing && ['pending', 'sending'].includes(existing.status)) {
+          // 渐进闭合时已入队：把 pending 承诺转成正式效果（此刻全量校验已过），节奏续接。
+          this.store.updateDraftEffects(existing.id, effect);
+          lastDue = Math.max(lastDue, existing.dueAt);
+          return;
+        }
+        if (existing && existing.status === 'accepted') {
+          // 气泡已被平台接收（settle 先于 apply 的窗口）：以接收事件为来源补立约——
+          // 接收发生了，立约最终一致，崩溃窗口闭合。
+          lastDue = Math.max(lastDue, existing.dueAt);
+          for (const input of (effect.commitments ?? []) as CommitmentInput[]) this.backfillAccepted(turn.peer, existing, input);
+          return;
+        }
+        if (existing) {
+          // cancelled/failed/unknown 行不再投递：挂着承诺的话账本有缺口，落 failure 不静默。
+          if (((effect.commitments as unknown[] | undefined) ?? []).length) this.store.append(turn.peer, 'failure', { delivery: existing.id, text: '气泡投递未成功，绑定承诺未立约；需依据当前约定重新确认' }, turn.id);
+          lastDue = Math.max(lastDue, existing.dueAt);
+          return;
+        }
+        const due = Math.max(dues[k]!, lastDue + (k > 0 ? pacingMs(x.part) : 0));
+        lastDue = due;
+        this.store.draftOne(turn, x.i, x.part, effect, k === 0 ? Math.max(now, due) : due);
+      });
       for (const intent of thought.intents) {
         const at = instant(intent.at);
         if (at <= this.store.now()) throw new TypeError('未来意图已过期');
@@ -228,6 +325,19 @@ export class Runtime {
       }
       this.store.finish(turn, 'done');
     });
+  }
+
+  /** 渐进气泡已 accepted 的承诺回填：以平台接收事件为来源（它就是本轮真实事件）。 */
+  private backfillAccepted(peerId: string, env: Envelope, input: CommitmentInput): void {
+    try {
+      const old = input.id ? this.store.commitment(peerId, input.id) : this.store.commitments(peerId).find(c => c.status === 'open' && c.content === input.content && c.kind === input.kind);
+      const expected = old ? { id: old.id, version: old.version, status: old.status } : null;
+      const event = this.store.eventByDedupe(`accepted:${env.id}`);
+      if (!event) throw new Error('接收事件缺失');
+      this.store.changeCommitment(peerId, { ...input, ...(expected ? { id: expected.id } : {}), sources: [...new Set([...input.sources, event.id])] });
+    } catch (error) {
+      this.store.append(peerId, 'failure', { delivery: env.id, commitment: input.id ?? input.content, text: '气泡已被平台接收，但约定效果未应用；需依据当前约定重新确认', error: errorText(error) }, env.turn);
+    }
   }
 
   private async deliver(envelope: Envelope): Promise<void> {
@@ -297,8 +407,8 @@ export class Runtime {
   private arm(): void {
     if (!this.started || this.work) return;
     const peers = this.store.peers().filter(p => p.enabled), enabled = new Set(peers.map(p => p.id));
+    // 投递的定时归投递泵（deliverLoop）；这里只管思考任务的心跳。
     const times = this.ready() ? this.store.jobs().filter(j => enabled.has(j.peer)).map(j => j.dueAt) : [];
-    if (this.config().qq.enabled && this.config().life.enabled) for (const peer of peers) { const at = this.store.nextDeliveryAt(peer.id); if (at !== undefined) times.push(at); }
     if (!times.length) return;
     this.timer = setTimeout(() => { this.timer = undefined; this.wake(); }, Math.max(1, Math.min(2147483647, Math.min(...times) - this.store.now())));
     this.timer.unref();
@@ -307,7 +417,9 @@ export class Runtime {
   async stop(): Promise<void> {
     this.started = false; this.dirty = false;
     if (this.timer) clearTimeout(this.timer);
+    this.pokeDelivery(); // 唤醒投递泵看到 started=false 退出
     this.lifetime.abort(new Error('停止运行')); this.active?.controller.abort(new Error('停止运行'));
     await this.work;
+    await this.pump;
   }
 }

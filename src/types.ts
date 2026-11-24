@@ -198,6 +198,8 @@ export interface ImpressionsInput {
 
 export interface Thought {
   parts: Part[];
+  /** 渐进投递时被轻校验丢弃的模型下标（apply 跳过这些气泡，不 draft 不投递）。 */
+  dropped?: number[];
   feeling?: Omit<Feeling, 'at'>;
   reflection?: string;
   activity?: string;

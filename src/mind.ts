@@ -7,6 +7,8 @@ import { object, string, strings, axis, errorText } from './types.ts';
 import { instant } from './state.ts';
 import { Models, requestTokens } from './model.ts';
 import { Context } from './context.ts';
+import { JsonStreamParser } from './stream.ts';
+import type { BubbleSink } from './runtime.ts';
 import type { Tool } from './tools.ts';
 
 const array = (value: unknown, name: string): unknown[] => { if (!Array.isArray(value)) throw new TypeError(`${name} 必须是数组`); return value; };
@@ -17,13 +19,16 @@ const canonical = (value: unknown): string => {
   return JSON.stringify(value);
 };
 
+/** 单个气泡元素的解析与结构校验（渐进轻校验与全量 parseThought 共用同一套规则）。 */
+function parsePart(value: unknown): Part {
+  const part = object(value);
+  if (!['text', 'image', 'sticker', 'file', 'voice'].includes(String(part.type))) throw new TypeError('气泡类型无效');
+  return { type: part.type as Part['type'], ...(part.type === 'text' ? { text: string(part.text, '气泡文字', 20000) } : part.type === 'sticker' ? { slug: string(part.slug, '表情 slug', 100) } : { path: string(part.path, '文件路径', 1000) }), ...(part.reply === undefined ? {} : { reply: string(part.reply, 'reply', 200) }), ...(part.notified === undefined ? {} : { notified: strings(part.notified) }) };
+}
+
 export function parseThought(raw: string): Thought {
   const value = object(JSON.parse(raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')));
-  const parts: Part[] = array(value.parts ?? [], 'parts').map(p => {
-    const part = object(p);
-    if (!['text', 'image', 'sticker', 'file', 'voice'].includes(String(part.type))) throw new TypeError('气泡类型无效');
-    return { type: part.type as Part['type'], ...(part.type === 'text' ? { text: string(part.text, '气泡文字', 20000) } : part.type === 'sticker' ? { slug: string(part.slug, '表情 slug', 100) } : { path: string(part.path, '文件路径', 1000) }), ...(part.reply === undefined ? {} : { reply: string(part.reply, 'reply', 200) }), ...(part.notified === undefined ? {} : { notified: strings(part.notified) }) };
-  });
+  const parts: Part[] = array(value.parts ?? [], 'parts').map(parsePart);
   const memories: MemoryInput[] = array(value.memories ?? [], 'memories').map(v => {
     const m = object(v);
     if (!['fact', 'interpretation', 'identity'].includes(String(m.kind))) throw new TypeError('记忆类型无效');
@@ -73,6 +78,9 @@ export function parseThought(raw: string): Thought {
   };
 }
 
+/** 纯读工具白名单：全部调用都落在这里时才并行执行（recall 带副作用不入列）。 */
+const PARALLEL_OK = new Set(['history', 'fetch', 'search', 'files']);
+
 export class Mind {
   private store: Store;
   private config: () => Config;
@@ -90,19 +98,93 @@ export class Mind {
       .filter(t => t.definition.name !== 'search' || c.web.enabled && !!c.web.key);
   }
 
-  async think(turn: Turn, signal: AbortSignal): Promise<Thought> {
+  async think(turn: Turn, signal: AbortSignal, sink?: BubbleSink): Promise<Thought> {
     const available = this.available(), definitions = available.map(t => t.definition), allowedTools = new Set(definitions.map(t => t.name));
     const { messages, cacheKey } = await this.context.build(turn, available, signal);
-    const night = turn.jobs.some(j => j.kind === 'night');
+    const isNight = turn.jobs.some(j => j.kind === 'night') && turn.jobs.every(j => j.kind === 'night');
     let steps = 0, repaired = false, finalize = false;
+    // 渐进状态：气泡闭合即校验入队；修复/补账轮不再渐进（已发的气泡不重投）。
+    // progressiveCount 是渐进生命周期的闭合总数（通过+丢弃），补账轮据此剪掉新增气泡。
+    let progressiveCount = 0;
+    let progressive: { parts: (Part | undefined)[]; dropped: Set<number>; droppedCount: number; sealed: boolean } | undefined;
+    let dropped: Set<number> | undefined;
+    let draftedIds: string[] = [];
+    const slugs = new Set(this.store.get<{ slug: string }[]>('stickers', []).map(s => s.slug));
+    let index = 0; // 模型 JSON 的 parts 下标计数（闭包共享）
+    const captured: Record<number, CommitmentInput[]> = {};
+    let parser: JsonStreamParser | undefined;
+    // 围栏剥离状态：模型被要求不加代码围栏，但偶尔违规——剥掉再喂解析器，否则渐进全灭。
+    let fed = false, prefixBuf = '';
+    // 每轮重置：工具轮回滚、修复轮停渐进（repaired=true）
+    const resetProgressive = (): void => {
+      index = 0;
+      for (const key of Object.keys(captured)) delete captured[Number(key)];
+      fed = false; prefixBuf = '';
+      if (sink && !repaired) progressive = { parts: [], dropped: new Set(), droppedCount: 0, sealed: false };
+      else progressive = undefined;
+      parser = progressive ? new JsonStreamParser({
+        onPart: element => {
+          if (!progressive || progressive.sealed) return;
+          const i = index++;
+          try {
+            const part = parsePart(element);
+            // 轻校验 = parts 全部终检项前移：reply/notified/sticker/长度。做到 parts 相关
+            // 检查全部在此完成，记账期失败只可能来自记账字段——补账模式才逻辑自洽。
+            if (part.reply && (!turn.allowed.has(part.reply) || !this.store.evidence(turn.peer, [part.reply]).some(e => e.kind === 'received'))) throw new TypeError('reply 必须引用看见的入站事件');
+            if (part.notified?.some(id => !this.store.commitment(turn.peer, id))) throw new TypeError('提醒引用无效约定');
+            if (part.type === 'sticker' && !slugs.has(part.slug ?? '')) throw new TypeError('表情不在目录中');
+            const effects: Record<string, unknown> = {};
+            if (part.notified) effects.notified = part.notified.map(id => { const c = this.store.commitment(turn.peer, id)!; return { id, version: c.version, due: c.dueAt }; });
+            if (captured[i]?.length) effects.commitments = captured[i]!.map(e => ({ ...(e as CommitmentInput), pending: true }));
+            draftedIds.push(sink!.draft(i, part, effects));
+            progressive.parts[i] = part;
+            progressiveCount++;
+          } catch (error) {
+            progressive!.dropped.add(i);
+            progressive!.droppedCount++;
+            progressiveCount++;
+            this.store.append(turn.peer, 'failure', { text: `气泡未通过渐进校验，已丢弃：${errorText(error)}`, raw: JSON.stringify(element).slice(0, 500) }, turn.id);
+            if (progressive!.droppedCount >= 2) progressive!.sealed = true; // 连续胡编：停止渐进，等全量修复
+          }
+        },
+        onCommitment: element => {
+          if (!progressive || progressive.sealed) return;
+          const afterPart = (element as { afterPart?: unknown }).afterPart;
+          if (Number.isInteger(afterPart) && Number(afterPart) >= 0) (captured[Number(afterPart)] ??= []).push(element as CommitmentInput);
+        },
+      }) : undefined;
+    };
+    const feed = (delta: string): void => {
+      if (!parser) return;
+      if (fed) { parser.write(delta); return; }
+      prefixBuf += delta;
+      const stripped = prefixBuf.replace(/^(?:\uFEFF)?\s*```(?:json)?[ \t]*\r?\n?/, '');
+      if (stripped !== prefixBuf || (prefixBuf.trimStart() && !prefixBuf.trimStart().startsWith('`'))) {
+        fed = true;
+        parser.write(stripped);
+      }
+    };
+
     for (;;) {
       signal.throwIfAborted();
-      const completion = await this.models.complete(messages, definitions, { signal, purpose: turn.jobs.some(j => j.kind === 'chat') ? 'chat' : 'life', cacheKey, final: finalize });
+      resetProgressive();
+      const completion = await this.models.complete(messages, definitions, { signal, purpose: turn.jobs.some(j => j.kind === 'chat') ? 'chat' : 'life', cacheKey, final: finalize, onDelta: feed });
       signal.throwIfAborted(); messages.push(completion.message);
       if (completion.message.calls?.length) {
         if (finalize) throw new Error('模型忽略了禁止继续调用工具的收尾要求');
+        // 本轮不是最终轮：已渐进 draft 的气泡全部回滚（工具轮回滚成本为零）
+        if (draftedIds.length) { this.store.cancelDrafts(draftedIds); draftedIds = []; }
+        progressive = undefined; parser = undefined;
         const visuals: Message[] = [];
-        for (const call of completion.message.calls) {
+        // 全部调用都是纯读白名单时才并行（recall 带副作用不入列；混合场景退化为串行）。
+        const calls = completion.message.calls;
+        const readOnly = calls.every(c => {
+          const tool = this.tools.get(c.name);
+          const mutates = tool && (typeof tool.mutates === 'function' ? tool.mutates(c.args) : tool.mutates);
+          return !!tool && !mutates && PARALLEL_OK.has(c.name);
+        });
+        const receipts: { call: typeof calls[number]; payload: string; visual?: string }[] = [];
+        const executeOne = async (call: typeof calls[number]): Promise<{ payload: string; visual?: string }> => {
           signal.throwIfAborted();
           const tool = this.tools.get(call.name);
           const mutates = tool && (typeof tool.mutates === 'function' ? tool.mutates(call.args) : tool.mutates);
@@ -131,8 +213,20 @@ export class Mind {
           if (result && typeof result === 'object' && 'visual' in result) { visual = String((result as { visual: unknown }).visual); result = this.receiptResult(result); }
           let payload = JSON.stringify({ receipt, succeeded, status, result });
           if (payload.length > 16000) payload = JSON.stringify({ receipt, succeeded, status, truncated: true, result: payload.slice(0, 14000), note: '完整回执可用 history 核实，文件可分页读取' });
+          return { payload, visual };
+        };
+        if (readOnly && calls.length > 1) {
+          const settled = await Promise.allSettled(calls.map(executeOne));
+          calls.forEach((call, i) => {
+            const outcome = settled[i]!;
+            receipts.push(outcome.status === 'fulfilled' ? { call, ...outcome.value } : { call, payload: JSON.stringify({ receipt: undefined, succeeded: false, status: 'failed', result: { error: errorText(outcome.reason) } }) });
+          });
+        } else {
+          for (const call of calls) receipts.push({ call, ...(await executeOne(call)) });
+        }
+        for (const { call, payload, visual } of receipts) {
           messages.push({ role: 'tool', callId: call.id, content: payload });
-          if (visual) visuals.push({ role: 'user', content: `工具打开的实际图片；来源回执 ${receipt}`, images: [visual] });
+          if (visual) visuals.push({ role: 'user', content: `工具打开的实际图片；来源回执 ${(JSON.parse(payload) as { receipt?: string }).receipt}`, images: [visual] });
         }
         messages.push(...visuals);
         const c = this.config(), endpoint = configured(c.primary) ? c.primary : c.fallback;
@@ -142,11 +236,31 @@ export class Mind {
         }
         continue;
       }
-      try { const thought = parseThought(completion.message.content); this.validate(turn, thought, night); return thought; }
-      catch (error) {
+      // 最终轮：渐进气泡已发出的，draftedIds 转正（不再回滚）
+      try {
+        const thought = parseThought(completion.message.content);
+        if (repaired && progressiveCount) {
+          // 修复/补账轮：模型改动 parts 数量 = 下标语义全变，回滚全部渐进走纯全量路径；
+          // 数量一致则剪掉补账新增的气泡（已发气泡不可增），丢弃下标继续生效。
+          if (thought.parts.length !== progressiveCount) {
+            if (draftedIds.length) this.store.cancelDrafts(draftedIds);
+            draftedIds = []; dropped = undefined;
+          } else {
+            thought.parts = thought.parts.slice(0, progressiveCount);
+            if (dropped?.size) thought.dropped = [...dropped];
+          }
+        } else if (progressive?.dropped.size) {
+          thought.dropped = [...progressive.dropped];
+        }
+        this.validate(turn, thought, isNight);
+        return thought;
+      } catch (error) {
         if (repaired) throw error;
         repaired = true; finalize = true;
-        messages.push({ role: 'user', content: `输出校验失败：${errorText(error)}。只修复结构或不成立的来源，不新造经历，不调用工具。返回最终 JSON。` });
+        dropped = progressive?.dropped;
+        messages.push({ role: 'user', content: progressiveCount
+          ? `输出校验失败：${errorText(error)}。你的气泡已（部分）发出：parts 原样保留（数量与内容都不变），只修复记账字段的结构或不成立的来源，不新造经历，不调用工具。返回最终 JSON。`
+          : `输出校验失败：${errorText(error)}。只修复结构或不成立的来源，不新造经历，不调用工具。返回最终 JSON。` });
       }
     }
   }

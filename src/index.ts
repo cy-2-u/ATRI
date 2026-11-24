@@ -2,9 +2,9 @@ import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
-import { defaults, mergeConfig, validateConfig, type Config } from './config.ts';
+import { defaults, mergeConfig, validateConfig, type Config, type Endpoint } from './config.ts';
 import { Store } from './store.ts';
-import { Models } from './model.ts';
+import { Models, Probes, streamProbeKey } from './model.ts';
 import { Recall } from './memory.ts';
 import { Files } from './files.ts';
 import { tools } from './tools.ts';
@@ -25,7 +25,12 @@ const store = new Store(join(data, 'atri.db'));
 let config = store.get<Config>('config', defaults(await readFile(join(root, 'prompts', 'persona.md'), 'utf8')));
 config.primary.cacheWritePrice ??= 0; config.fallback.cacheWritePrice ??= 0;
 config.primary.temperature ??= 1; config.fallback.temperature ??= 1; // 存量配置无此键：mergeConfig 的 hasOwn 检查要求键必须存在
-config.primary.stream ??= false; config.fallback.stream ??= false; // 同上：流式开关，旧配置默认非流式
+// 流式是渠道属性不是用户偏好：旧布尔键迁移进探测账（true=用户确认过强制流式），键本体移除
+for (const endpoint of [config.primary, config.fallback] as (Endpoint & { stream?: unknown })[]) {
+  if (endpoint.stream === true) store.set(streamProbeKey(endpoint), 'required');
+  delete endpoint.stream;
+}
+if (config.life.debounceMs === 700) config.life.debounceMs = 300; // 旧默认升级：合并窗收窄，思考与等待重叠（首气泡的拟真延迟在投递侧抽签）
 config.image.enabled ??= false; // 旧存量配置无此键：默认关——她没有画笔，直到你打开开关
 config.image.engine ??= 'gpt';
 if (!config.image.gpt) {
@@ -62,6 +67,7 @@ const files = new Files(join(data, 'works'), getConfig); await files.init();
 const seeded = await seedStickers(data, root, (key, fallback) => store.get(key, fallback), (key, value) => store.set(key, value));
 if (seeded) console.log(`表情库入库：新增 ${seeded} 个（assets/stickers → 数据目录）`);
 const models = new Models(getConfig, store), recall = new Recall(store, getConfig);
+const probes = new Probes();
 const context = new Context(store, getConfig, models, files, recall);
 const mind = new Mind(store, getConfig, models, context, tools(store, getConfig, files, recall));
 let runtime: Runtime;
@@ -89,7 +95,7 @@ runtime = new Runtime(store, getConfig, mind, qq, files, logError);
 const backups = new Backups(store, getConfig, data, backupKey);
 const host = process.env.ATRI_HOST || '127.0.0.1', port = Number(process.env.ATRI_PORT || 3010);
 if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('端口无效');
-const server = new AdminServer({ host, port, password, publicDir: join(root, 'public'), store, files, runtime, qq, models, backups, config: getConfig, update: next => {
+const server = new AdminServer({ host, port, password, publicDir: join(root, 'public'), store, files, runtime, qq, models, probes, backups, config: getConfig, update: next => {
   const changedQQ = JSON.stringify(next.qq) !== JSON.stringify(config.qq);
   config = next; store.set('config', config); runtime.reconfigure(); if (changedQQ) qq.reconfigure(); backups.reconfigure();
 } });

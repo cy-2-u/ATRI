@@ -6,7 +6,7 @@ import type { Endpoint } from '../src/config.ts';
 const openaiEndpoint = (overrides: Partial<Endpoint> = {}): Endpoint => ({
   url: 'https://x.example/v1', key: 'k', model: 'm', format: 'openai', contextTokens: 32768,
   outputTokens: 4096, timeoutMs: 120000, vision: true, json: false, completionTokens: false,
-  cache: 'automatic', cacheRetention: 'default', stream: false, inputPrice: 0, cachedPrice: 0,
+  cache: 'automatic', cacheRetention: 'default', inputPrice: 0, cachedPrice: 0,
   cacheWritePrice: 0, outputPrice: 0, ...overrides,
 });
 

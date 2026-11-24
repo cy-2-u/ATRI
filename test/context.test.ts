@@ -36,11 +36,16 @@ test('聊天轮：系统前缀 + 事件历史 + 材料尾部，allowed 覆盖全
   assert.ok(messages[0]!.content.includes('只返回 JSON'), '协议必须在前缀里');
   assert.ok(messages.at(-1)!.role === 'user');
   const material = JSON.parse(messages.at(-1)!.content) as Record<string, unknown>;
-  assert.ok(material.scene && material.reasons && material.self && material.capabilities);
+  assert.ok(material.scene && material.reasons && material.self);
+  // L2 缓存带：常备资料（capabilities/stickers）进第二个 system 段，不进每轮现场包
+  const l2 = messages.find(m => m.role === 'system' && m.content.includes('低频记忆'));
+  assert.ok(l2, 'L2 缓存带段必须存在');
+  const stable = JSON.parse(l2!.content.slice(l2!.content.indexOf('{'))) as Record<string, unknown>;
+  assert.ok(stable.capabilities);
   assert.ok(cacheKey.length > 0);
   for (const id of [r1.id, a1.id, a2.id]) assert.ok(t.allowed.has(id), `allowed 缺 ${id}`);
-  // 摘要尚未生成
-  assert.ok(!messages.some(m => m.role === 'system' && m.content.includes('低频记忆')));
+  // 摘要尚未生成（past 只在有分段后出现在 L2 段）
+  assert.ok(!messages.some(m => m.role === 'system' && m.content.includes('"past"')));
 });
 
 test('盲区钉死：聊天轮必须看见自己的失败记录（诚实材料）', async () => {

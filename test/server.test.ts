@@ -9,7 +9,7 @@ import { Store } from '../src/store.ts';
 import { AdminServer } from '../src/server.ts';
 import { Runtime } from '../src/runtime.ts';
 import { QQ } from '../src/qq.ts';
-import { Models } from '../src/model.ts';
+import { Models, Probes } from '../src/model.ts';
 import { Backups } from '../src/backup.ts';
 import { Files } from '../src/files.ts';
 import { validateConfig, defaults, type Config } from '../src/config.ts';
@@ -28,7 +28,7 @@ async function withServer(run: (base: string, store: Store) => Promise<void>): P
   const qq = new QQ(getConfig, store, async () => undefined, () => undefined);
   const models = new Models(getConfig, store);
   const backups = new Backups(store, getConfig, dir, Buffer.alloc(32, 1));
-  const server = new AdminServer({ host: '127.0.0.1', port: 0, password: '管理密码至少12字符', publicDir, store, files, runtime, qq, models, backups, config: getConfig, update: () => undefined });
+  const server = new AdminServer({ host: '127.0.0.1', port: 0, password: '管理密码至少12字符', publicDir, store, files, runtime, qq, models, probes: new Probes(), backups, config: getConfig, update: () => undefined });
   const port = await server.listen();
   try { await run(`http://127.0.0.1:${port}`, store); }
   finally { await server.close(); store.close(); rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); }
@@ -154,7 +154,7 @@ test('管理端：通配监听放行 IP/localhost Host、拒绝域名（容器�
   const qq = new QQ(getConfig, store, async () => undefined, () => undefined);
   const models = new Models(getConfig, store);
   const backups = new Backups(store, getConfig, dir, Buffer.alloc(32, 1));
-  const server = new AdminServer({ host: '0.0.0.0', port: 0, password: '管理密码至少12字符', publicDir, store, files, runtime, qq, models, backups, config: getConfig, update: () => undefined });
+  const server = new AdminServer({ host: '0.0.0.0', port: 0, password: '管理密码至少12字符', publicDir, store, files, runtime, qq, models, probes: new Probes(), backups, config: getConfig, update: () => undefined });
   const port = await server.listen();
   try {
     // IP 形式 Host（宿主端口 ≠ 监听端口也不限）→ 放行

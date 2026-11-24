@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { deflateSync } from 'node:zlib';
 import type { Endpoint, Config } from './config.ts';
 import { apiBase, configured } from './config.ts';
 import type { Completion, Message, ToolDefinition, Usage } from './types.ts';
@@ -7,7 +8,12 @@ import { estimate } from './state.ts';
 import { HttpError, jsonRequest, readBounded, sleep } from './net.ts';
 import type { Store } from './store.ts';
 
-export interface CallOptions { signal: AbortSignal; purpose: string; cacheKey: string; final?: boolean; only?: Endpoint }
+export interface CallOptions {
+  signal: AbortSignal; purpose: string; cacheKey: string; final?: boolean; only?: Endpoint;
+  /** 流式传输时的正文增量回调（渐进投递：调用方喂给 JsonStreamParser 找气泡边界）。
+   *  只有渠道探测为强制流式时才会被调用；非流式请求整包返回，不触发。 */
+  onDelta?: (delta: string) => void;
+}
 export class ModelError extends Error {
   retryable: boolean;
   terminal: boolean;
@@ -146,6 +152,60 @@ export function usageCost(endpoint: Endpoint, usage: Partial<Usage>): number | u
   return (fresh * endpoint.inputPrice + cached * endpoint.cachedPrice + write * endpoint.cacheWritePrice + usage.output * endpoint.outputPrice) / 1000000;
 }
 
+/** 渠道能力探测结果存 kv（key 含 url+model）：流式是渠道属性不是用户偏好，
+ *  测试按钮或运行时自愈写入后永久生效。'optional'=非流式可用；'required'=强制流式。 */
+export const streamProbeKey = (endpoint: Endpoint): string => `probe:stream:${endpoint.url}:${endpoint.model}`;
+
+// ---------- 渠道探测（测试按钮三合一；独立裸 HTTP，不走 complete——不碰 finish=length 语义、不污染熔断表） ----------
+
+/** 纯色 PNG 生成（1×1）：识图探测用真实图片，渠道忽略图片照样 200 回文字是假 vision。 */
+function solidPng(r: number, g: number, b: number): Buffer {
+  const crcTable = [...Array(256)].map((_, n) => { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; return c >>> 0; });
+  const crc32 = (chunk: Buffer): number => { let c = 0xffffffff; for (const byte of chunk) c = crcTable[(c ^ byte) & 0xff]! ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; };
+  const chunkOf = (type: string, data: Buffer): Buffer => {
+    const head = Buffer.alloc(4); head.writeUInt32BE(data.length);
+    const body = Buffer.concat([Buffer.from(type), data]);
+    const crc = Buffer.alloc(4); crc.writeUInt32BE(crc32(body));
+    return Buffer.concat([head, body, crc]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(1, 0); ihdr.writeUInt32BE(1, 4); ihdr[8] = 8; ihdr[9] = 2; // 1x1 8bit RGB
+  const idat = deflateSync(Buffer.from([0, r, g, b])); // 每行 1 filter 字节 + RGB
+  return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunkOf('IHDR', ihdr), chunkOf('IDAT', idat), chunkOf('IEND', Buffer.alloc(0))]);
+}
+
+const COLOR_WORDS = ['红', '赤', '朱', '红红', 'red', '红色'];
+
+export class Probes {
+  /** 流式探测：max_tokens=1 的非流式探针。200=非流式可用；400 且错误体提到流式=强制流式。 */
+  async stream(endpoint: Endpoint, signal: AbortSignal): Promise<'required' | 'optional'> {
+    const request = encode(endpoint, [{ role: 'user', content: '仅回复OK' }], [], { signal, purpose: 'probe', cacheKey: 'probe' });
+    const body: Record<string, unknown> = { ...request.body, stream: false };
+    if (endpoint.format === 'anthropic') body.max_tokens = 1;
+    else body[endpoint.completionTokens ? 'max_completion_tokens' : 'max_tokens'] = 1;
+    try {
+      await jsonRequest(request.url, { method: 'POST', headers: { 'content-type': 'application/json', ...request.headers }, body: JSON.stringify(body), signal: AbortSignal.any([signal, AbortSignal.timeout(30000)]) });
+      return 'optional';
+    } catch (error) {
+      if (error instanceof HttpError && error.status === 400 && JSON.stringify(error.data ?? '').toLowerCase().includes('stream')) return 'required';
+      throw error;
+    }
+  }
+
+  /** 识图探测：1×1 纯红图问颜色，回复含红色词才算支持。 */
+  async vision(endpoint: Endpoint, signal: AbortSignal): Promise<{ ok: boolean; reply: string }> {
+    const dataUri = `data:image/png;base64,${solidPng(255, 0, 0).toString('base64')}`;
+    const request = encode(endpoint, [{ role: 'user', content: '这张图片是什么颜色？只回答颜色词。', images: [dataUri] }], [], { signal, purpose: 'probe', cacheKey: 'probe' });
+    const body: Record<string, unknown> = { ...request.body };
+    if (endpoint.format === 'anthropic') body.max_tokens = 16;
+    else body[endpoint.completionTokens ? 'max_completion_tokens' : 'max_tokens'] = 16;
+    const { data } = await jsonRequest(request.url, { method: 'POST', headers: { 'content-type': 'application/json', ...request.headers }, body: JSON.stringify(body), signal: AbortSignal.any([signal, AbortSignal.timeout(30000)]) });
+    const completion = decode(endpoint, data);
+    const reply = completion.message.content.trim();
+    return { ok: COLOR_WORDS.some(w => reply.toLowerCase().includes(w)), reply };
+  }
+}
+
 export class Models {
   private config: () => Config;
   private store: Store;
@@ -163,22 +223,17 @@ export class Models {
       if (failure && failure.until > Date.now() && channels.length > 1) continue;
       if (requestTokens(messages, tools) + endpoint.outputTokens > endpoint.contextTokens) { last = new ModelError('请求与输出预留超过渠道上下文容量'); continue; }
       if (messages.some(m => m.images?.length) && !endpoint.vision) { last = new ModelError('备用渠道不支持本轮图片，不能静默丢弃'); continue; }
+      // 流式是渠道属性：探测为强制 SSE 则走流式（传输层聚合，正文增量喂给渐进投递）；
+      // 未探测过则非流式起步，被 400 streaming 拒绝时本轮切流式并记住，永不再问。
+      let useStream = this.store.get<string | undefined>(streamProbeKey(endpoint), undefined) === 'required';
       for (let attempt = 0; attempt < 2; attempt++) {
         options.signal.throwIfAborted();
         const started = Date.now();
         const request = encode(endpoint, messages, tools, options);
         let data: Record<string, unknown> | undefined;
         try {
-          if (endpoint.stream) {
-            const response = await fetch(request.url, { method: 'POST', headers: { 'content-type': 'application/json', ...request.headers }, body: JSON.stringify({ ...request.body, stream: true, stream_options: { include_usage: true } }), signal: AbortSignal.any([options.signal, AbortSignal.timeout(endpoint.timeoutMs)]) });
-            const bytes = await readBounded(response, 8 * 1024 * 1024);
-            if (!response.ok) {
-              let errData: Record<string, unknown> | undefined;
-              try { errData = object(JSON.parse(Buffer.from(bytes).toString('utf8'))); } catch { /* 错误体不是 JSON 就只报状态码 */ }
-              throw new HttpError(response.status, `HTTP ${response.status}`, Number(response.headers.get('retry-after') ?? 0) * 1000, errData);
-            }
-            data = sseAggregate(Buffer.from(bytes).toString('utf8'));
-          } else {
+          if (useStream) data = await this.streamOnce(endpoint, request, options);
+          else {
             ({ data } = await jsonRequest(request.url, { method: 'POST', headers: { 'content-type': 'application/json', ...request.headers }, body: JSON.stringify(request.body), signal: AbortSignal.any([options.signal, AbortSignal.timeout(endpoint.timeoutMs)]) }));
           }
           const completion = decode(endpoint, data);
@@ -196,6 +251,12 @@ export class Models {
           }
           this.store.recordUsage({ purpose: options.purpose, model: endpoint.model, endpoint: endpoint.url, status: options.signal.aborted ? 'cancelled' : 'failed', ...billed, cost: usageCost(endpoint, billed), latency: Date.now() - started, error: errorText(error) });
           options.signal.throwIfAborted(); last = error;
+          // 探测错误 ≠ 不支持：只有 400+streaming 这种确定性证据才写回探测结果
+          if (!useStream && error instanceof HttpError && error.status === 400 && JSON.stringify(error.data ?? '').toLowerCase().includes('stream')) {
+            this.store.set(streamProbeKey(endpoint), 'required');
+            useStream = true;
+            continue;
+          }
           if (error instanceof ModelError && error.terminal) throw error;
           const retryable = error instanceof HttpError ? [408, 429].includes(error.status) || error.status >= 500 : !(error instanceof ModelError);
           const failures = (this.failures.get(key)?.count ?? 0) + 1;
@@ -206,6 +267,45 @@ export class Models {
       }
     }
     throw new ModelError(errorText(last ?? '所有模型渠道暂不可用'), !(last instanceof ModelError));
+  }
+
+  /** 强制流式渠道的单次请求：SSE 增量解析出正文喂给 onDelta（渐进投递找气泡边界），
+   *  全量 raw 聚合回与非流式同构的回包。失败语义与普通请求一致。 */
+  private async streamOnce(endpoint: Endpoint, request: { url: string; headers: Record<string, string>; body: Record<string, unknown> }, options: CallOptions): Promise<Record<string, unknown>> {
+    const response = await fetch(request.url, { method: 'POST', headers: { 'content-type': 'application/json', ...request.headers }, body: JSON.stringify({ ...request.body, stream: true, stream_options: { include_usage: true } }), signal: AbortSignal.any([options.signal, AbortSignal.timeout(endpoint.timeoutMs)]) });
+    if (!response.ok) {
+      const bytes = await readBounded(response, 1024 * 1024);
+      let errData: Record<string, unknown> | undefined;
+      try { errData = object(JSON.parse(Buffer.from(bytes).toString('utf8'))); } catch { /* 错误体不是 JSON 就只报状态码 */ }
+      throw new HttpError(response.status, `HTTP ${response.status}`, Number(response.headers.get('retry-after') ?? 0) * 1000, errData);
+    }
+    const reader = response.body?.getReader();
+    if (!reader) throw new ModelError('渠道流式响应没有正文');
+    const decoder = new TextDecoder();
+    let raw = '', lineBuf = '';
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const text = decoder.decode(value, { stream: true });
+        raw += text;
+        if (raw.length > 8 * 1024 * 1024) { await reader.cancel(); throw new ModelError('流式响应超过读取上限'); }
+        lineBuf += text;
+        let idx: number;
+        while ((idx = lineBuf.indexOf('\n')) >= 0) {
+          const line = lineBuf.slice(0, idx); lineBuf = lineBuf.slice(idx + 1);
+          const m = /^data:\s*(.+?)\s*$/.exec(line);
+          if (!m || m[1] === '[DONE]') continue;
+          try {
+            const frame = object(JSON.parse(m[1]!));
+            const choice = Array.isArray(frame.choices) && frame.choices.length ? object(frame.choices[0]) : undefined;
+            const delta = choice?.delta ? object(choice.delta) : undefined;
+            if (typeof delta?.content === 'string' && delta.content) options.onDelta?.(delta.content);
+          } catch { /* 坏帧跳过，聚合兜底 */ }
+        }
+      }
+    } finally { reader.releaseLock(); }
+    return sseAggregate(raw);
   }
 
   cacheKey(peer: string, persona: string, tools: ToolDefinition[]): string {

@@ -98,17 +98,14 @@ test('端到端：入站 → 思考 → 校验修复 → 落账 → 预演投递
     // 模型目录拉取（去重后按序）与 system 哨兵探针
     const list = await (await fetch(`${base}/api/model/list`, { method: 'POST', headers: auth, body: JSON.stringify({ url: `http://127.0.0.1:${llmPort}`, key: 'k' }) })).json() as { models: string[] };
     assert.deepEqual(list.models, ['fake', 'fake-pro']);
-    const probe = await (await fetch(`${base}/api/model/probe`, { method: 'POST', headers: auth, body: JSON.stringify({ mode: 'system' }) })).json() as { ok: boolean; follows: boolean; reply: string };
-    assert.equal(probe.ok, true);
-    assert.equal(probe.follows, true, `system 哨兵未生效：${probe.reply}`);
-    // 备用渠道配置后可被独立探测（only 通道，不走 failover）
+    // system 哨兵探针（三合一并行：哨兵+流式+识图；流式结果写内部探测账不外显）
+    const probe = await (await fetch(`${base}/api/model/probe`, { method: 'POST', headers: auth, body: JSON.stringify({}) })).json() as { system: { follows: boolean; reply: string } };
+    assert.equal(probe.system.follows, true, `system 哨兵未生效：${probe.system.reply}`);
+    // 备用渠道配置后可被独立探测（only 通道，不走 failover）；三合一同样覆盖哨兵
     const fb = await fetch(`${base}/api/config`, { method: 'POST', headers: auth, body: JSON.stringify({ patch: { fallback: { url: `http://127.0.0.1:${llmPort}`, key: 'k', model: 'fake' } } }) });
     assert.equal(fb.status, 200, await fb.text());
-    const fbProbe = await (await fetch(`${base}/api/model/probe`, { method: 'POST', headers: auth, body: JSON.stringify({ channel: 'fallback' }) })).json() as { ok: boolean; reply: string };
-    assert.equal(fbProbe.ok, true);
-    // 备用渠道同样可测 system 哨兵
-    const fbSystem = await (await fetch(`${base}/api/model/probe`, { method: 'POST', headers: auth, body: JSON.stringify({ channel: 'fallback', mode: 'system' }) })).json() as { ok: boolean; follows: boolean };
-    assert.equal(fbSystem.follows, true);
+    const fbProbe = await (await fetch(`${base}/api/model/probe`, { method: 'POST', headers: auth, body: JSON.stringify({ channel: 'fallback' }) })).json() as { system: { follows: boolean; reply: string } };
+    assert.equal(fbProbe.system.follows, true, `备用渠道 system 哨兵未生效：${fbProbe.system.reply}`);
   } finally {
     child.kill();
     llm.closeIdleConnections(); // undici keep-alive 不主动断，server.close 会等它到天荒地老

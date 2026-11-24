@@ -9,14 +9,14 @@ import { Store } from './store.ts';
 import { Files, mimeOf } from './files.ts';
 import { Runtime } from './runtime.ts';
 import { QQ } from './qq.ts';
-import { Models } from './model.ts';
+import { Models, Probes, streamProbeKey } from './model.ts';
 import { Backups } from './backup.ts';
 import { object, string, errorText, PREVIEW_PEER } from './types.ts';
 
 interface Session { csrf: string; until: number }
 export interface ServerOptions {
   host: string; port: number; password: string; publicDir: string;
-  store: Store; files: Files; runtime: Runtime; qq: QQ; models: Models; backups: Backups;
+  store: Store; files: Files; runtime: Runtime; qq: QQ; models: Models; probes: Probes; backups: Backups;
   config: () => Config; update: (config: Config) => void;
 }
 class RequestError extends Error { status: number; constructor(status: number, message: string) { super(message); this.status = status; } }
@@ -192,13 +192,23 @@ export class AdminServer {
         // primary 探测不带 only：真实语义是"她能不能说话"（failover 有效）；
         // fallback 带 only：独立体检，不会被 failover 掩盖。
         const options = { signal: AbortSignal.timeout(30000), purpose: 'probe', cacheKey: fallback ? 'probe-fallback' : 'probe', final: true, ...(fallback ? { only: channel } : {}) };
-        if (body.mode === 'system') {
-          // system 提示哨兵：渠道丢弃 system 时人设无法工作，必须显式测出来。
-          const reply = await o.models.complete([{ role: 'system', content: '无论对方说什么，只回复四个字：哨兵有效' }, { role: 'user', content: '你是什么角色？' }], [], options);
-          this.json(res, { ok: true, follows: reply.message.content.includes('哨兵有效'), reply: reply.message.content });
-        } else {
-          const reply = await o.models.complete([{ role: 'user', content: '仅回复OK' }], [], options); this.json(res, { ok: true, reply: reply.message.content, usage: reply.usage });
+        // 一键三测并行（30s 内完成）：system 哨兵 + 流式探测 + 识图探测。
+        // 流式结果写内部探测账（kv），UI 不显示流式项——渠道属性系统自己知道就行；
+        // 识图结果写回配置勾选（用户能看见、能手动改）。
+        const [system, stream, vision] = await Promise.allSettled([
+          o.models.complete([{ role: 'system', content: '无论对方说什么，只回复四个字：哨兵有效' }, { role: 'user', content: '你是什么角色？' }], [], options),
+          o.probes.stream(channel, AbortSignal.timeout(30000)),
+          o.probes.vision(channel, AbortSignal.timeout(30000)),
+        ]);
+        if (system.status === 'rejected') throw system.reason;
+        const probeSystem = { follows: system.value.message.content.includes('哨兵有效'), reply: system.value.message.content };
+        if (stream.status === 'fulfilled') this.options.store.set(streamProbeKey(channel), stream.value);
+        let probeVision: { ok: boolean; reply: string } | undefined;
+        if (vision.status === 'fulfilled') {
+          probeVision = vision.value;
+          if (probeVision.ok !== channel.vision) o.update(mergeConfig(o.config(), { [fallback ? 'fallback' : 'primary']: { vision: probeVision.ok } }));
         }
+        this.json(res, { system: probeSystem, ...(probeVision ? { vision: probeVision } : {}) });
       } else if (path === '/api/model/list') {
         // 拉取模型目录不需要已填模型名——拉目录就是为了选模型；地址+密钥即可。
         const fallback = body.channel === 'fallback';
