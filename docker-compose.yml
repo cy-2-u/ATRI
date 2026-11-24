@@ -6,6 +6,9 @@ services:
     build: .
     restart: unless-stopped
     user: node            # uid 1000，非 root
+    # 沙箱要借宿主 daemon 起兄弟容器：node 用户需借 docker.sock 的组。
+    # GID 因发行版而异，部署命令里 stat 探测注入（见 README），缺省 112。
+    group_add: ["${DOCKER_GID:-112}"]
     cap_drop: [ALL]
     read_only: true       # 项目容器根只读：可写面只剩 /tmp 与挂载的数据
     tmpfs:

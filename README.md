@@ -38,9 +38,11 @@ npm run restore -- <备份.atri> <目标新目录>   # 从加密备份恢复（�
 管理密码未设置时写在数据目录 `admin-secret.txt`。
 
 服务器部署：`mkdir -p /srv/atri/data && chown -R 1000:1000 /srv/atri/data`，然后
-`docker compose up -d --build`；密码在 /srv/atri/data/admin-secret.txt。
+`DOCKER_GID=$(stat -c %g /var/run/docker.sock) docker compose up -d --build`——GID 探测是给沙箱
+借宿主 daemon 用的；密码在 /srv/atri/data/admin-secret.txt。
 沙箱是常驻容器 `atri-sandbox`——她的窝：可写环境跨轮保留、崩溃自动拉起，作品文件始终在
-/srv/atri/data/works；重置她的窝 `docker rm -f atri-sandbox`，文件不受影响。需要 Docker 才有沙箱执行（`execute` 工具）；其余功能（读/写/搜索/画图/表情）无需 Docker。
+/srv/atri/data/works；重置她的窝 `docker rm -f atri-sandbox`，文件不受影响。需要 Docker 才有沙箱执行（`execute` 工具，管理界面开启即可用：沙箱镜像缺失会在她首次执行时自动补拉）；
+其余功能（读/写/搜索/画图/表情）无需 Docker。
 
 ## 设计公理
 

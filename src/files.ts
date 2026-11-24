@@ -133,7 +133,7 @@ export function sandboxArgs(image: string, network: boolean, tz: string, works: 
     '--cap-drop=ALL', '--security-opt=no-new-privileges', '--pids-limit=64', '--memory=512m', '--cpus=1',
     '--network', network ? 'bridge' : 'none',
     '--mount', `type=bind,src=${works},dst=/work`,
-    '--workdir=/work', '--env', `TZ=${tz}`, '--pull=never',
+    '--workdir=/work', '--env', `TZ=${tz}`, '--pull', 'missing',
     image, 'sleep', 'infinity',
   ];
 }
