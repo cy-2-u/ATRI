@@ -6,9 +6,9 @@
  *  （停止回调，等全量 JSON 走修复轮）。记账字段写在 parts 前面是合法降态：
  *  渐进退化为现状速度，正确性无损。
  *
- *  实现：全量缓冲（调用方最终还要整体 JSON.parse）+ 栈式结构状态机只负责找
- *  元素边界；字符串转义态内的一切花括号引号都不算结构。语法坏不在这里判定
- *  ——停止回调即可，全量 JSON.parse 会给出权威错误。 */
+ *  实现：全量缓冲（元素边界用 buf.slice 提取）+ 栈式结构状态机只负责找元素边界；
+ *  字符串转义态内的一切花括号引号都不算结构。语法坏不在这里判定——停止回调即可，
+ *  思考层对聚合全文的 JSON.parse 会给出权威错误。 */
 interface Frame {
   kind: 'object' | 'array';
   /** object：open（刚开括号）| key（等键）| colon 后的 value（等值）| comma（等逗号或闭括号） */
@@ -33,12 +33,8 @@ export class JsonStreamParser {
   private readonly callbacks: { onPart?: (element: unknown) => void; onCommitment?: (element: unknown) => void };
   constructor(callbacks: { onPart?: (element: unknown) => void; onCommitment?: (element: unknown) => void } = {}) { this.callbacks = callbacks; }
 
-  /** 顶层对象是否已完整闭合（之后不会再有元素回调）。 */
-  get complete(): boolean { return this.rootSeen; }
   /** 结构性失败原因（重复 parts、括号不匹配等）；undefined = 一切正常。 */
   get error(): string | undefined { return this.halted; }
-  /** 全量缓冲（调用方最终 JSON.parse 用）。 */
-  get text(): string { return this.buf; }
 
   write(chunk: string): void {
     if (this.halted || this.rootSeen) return;
@@ -159,13 +155,4 @@ export class JsonStreamParser {
   }
 
   private halt(reason: string): boolean { this.halted = reason; return true; }
-
-  /** 流结束：语法完整性最终由 JSON.parse 裁定，这里只报结构性问题。 */
-  end(): { error?: string; complete: boolean } {
-    if (!this.halted) {
-      if (this.inString || this.escaped) this.halt('流在字符串中途结束');
-      else if (this.stack.length > 0) this.halt('流在结构中途结束');
-    }
-    return { error: this.halted, complete: this.rootSeen };
-  }
 }

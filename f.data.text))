@@ -1,0 +1,6 @@
+[31;1m    at makeContextifyScript (node:internal/vm:194:14)[0m
+[31;1m    at compileScript (node:internal/process/execution:388:10)[0m
+[31;1m    at evalTypeScript (node:internal/process/execution:260:22)[0m
+[31;1m    at node:internal/main/eval_string:71:3[0m
+[31;1m[0m
+[31;1mNode.js v24.21.0[0m

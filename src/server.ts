@@ -202,7 +202,7 @@ export class AdminServer {
         ]);
         if (system.status === 'rejected') throw system.reason;
         const probeSystem = { follows: system.value.message.content.includes('哨兵有效'), reply: system.value.message.content };
-        if (stream.status === 'fulfilled') this.options.store.set(streamProbeKey(channel), stream.value);
+        if (stream.status === 'fulfilled') store.set(streamProbeKey(channel), stream.value);
         let probeVision: { ok: boolean; reply: string } | undefined;
         if (vision.status === 'fulfilled') {
           probeVision = vision.value;

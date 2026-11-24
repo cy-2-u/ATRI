@@ -114,7 +114,7 @@ test('outbox 生命周期：draft → 发送 → unknown 可人工裁决；新�
   store.ensurePeer({ kind: 'c2c', id: 'user1' });
   const event = store.append(peer, 'received', { text: '嗨' })!;
   const turn = { id: 't1', episode: 'ep', peer, snapshot: event.seq, jobs: [], allowed: new Set([event.id]) };
-  store.draft(turn, [{ type: 'text', text: '在的' }, { type: 'text', text: '怎么啦' }], [{}, {}], [store.now(), store.now() + 2400]);
+  store.draftOne(turn, 0, { type: 'text', text: '在的' }, {}, store.now()); store.draftOne(turn, 1, { type: 'text', text: '怎么啦' }, {}, store.now() + 2400);
   const all = store.deliveries(peer);
   assert.equal(all.length, 2);
   const byOrdinal = [...all].sort((a, b) => a.ordinal - b.ordinal);
@@ -154,7 +154,7 @@ test('recover：中断状态全部回到可恢复语义', () => {
   store.ensurePeer({ kind: 'c2c', id: 'user1' });
   const event = store.append(peer, 'received', { text: '嗨' })!;
   const turn = { id: 't1', episode: 'ep', peer, snapshot: event.seq, jobs: [], allowed: new Set<string>() };
-  store.draft(turn, [{ type: 'text', text: 'x' }], [{}], [store.now()]);
+  store.draftOne(turn, 0, { type: 'text', text: 'x' }, {}, store.now());
   const envelope = store.deliveries(peer)[0]!;
   store.startSend(envelope.id, {});
   // 模拟进程中断后的 recover（新实例，同一库）

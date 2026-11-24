@@ -128,7 +128,7 @@ export function tools(store: Store, config: () => Config, files: Files, recall: 
         const path = args.path === undefined ? undefined : string(args.path, '作品路径', 1000);
         if (!body && !path) throw new Error('作品不能为空');
         if (path && !mimeOf(await (await files.scope(ctx.turn.peer)).read(path)).startsWith('image/')) throw new Error('墙上只能展示实际图片');
-        return { id: store.post(ctx.turn.peer, 'atri', body, path), public: false, note: '作品已私有保存；公开需要管理员逐件确认' };
+        return { id: store.post(ctx.turn.peer, 'atri', body, path), note: '作品已保存到私有作品墙' };
       } },
   ];
   // draw 的提示词格式随引擎走：定义在注册时静态生成会锁死引擎，改为读取时动态求值。

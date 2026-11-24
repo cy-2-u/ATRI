@@ -114,7 +114,7 @@ export class Context {
     const built = await this.material(turn, peer.id, working, signal, !full);
     const identities = this.store.memories(turn.peer).filter(m => m.kind === 'identity');
     // L2 缓存带：只在记忆/印象/约定/资料变化时前缀失配（一天最多几次），其余轮次命中渠道缓存。
-    // 相对时间与时间戳一律不进 L2——staleness 之类每轮变会把失效频率劣化到每小时。
+    // 每轮必变的相对时间一律不进 L2；低频变化的时间戳（如印象更新时刻）随其宿主进，失配频率不劣化。
     const stableLife: Record<string, unknown> = {
       ...(built.l2 ?? {}),
       ...(segments.length ? { past: segments.map(s => ({ id: s.id, from: s.from, to: s.to, text: s.text })) } : {}),

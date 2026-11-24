@@ -340,12 +340,14 @@ export class Runtime {
           for (const input of (effect.commitments ?? []) as CommitmentInput[]) this.backfillAccepted(turn.peer, existing, input);
           return;
         }
-        if (existing) {
-          // cancelled/failed/unknown 行不再投递：挂着承诺的话账本有缺口，落 failure 不静默。
+        if (existing && ['failed', 'unknown'].includes(existing.status)) {
+          // 投递已走终态的行不复活：挂着承诺的话账本有缺口，落 failure 不静默。
           if (((effect.commitments as unknown[] | undefined) ?? []).length) this.store.append(turn.peer, 'failure', { delivery: existing.id, text: '气泡投递未成功，绑定承诺未立约；需依据当前约定重新确认' }, turn.id);
           lastDue = Math.max(lastDue, existing.dueAt);
           return;
         }
+        // existing 不存在（纯全量路径），或已被工具轮/补账回滚（cancelled：生命已终结，
+        // 最终决定就是权威，重新入账）——draftOne 会物理移除 cancelled 旧行再插入。
         const due = Math.max(dues[k]!, lastDue + (k > 0 ? pacingMs(x.part) : 0));
         lastDue = due;
         this.store.draftOne(turn, x.i, x.part, effect, k === 0 ? Math.max(now, due) : due);

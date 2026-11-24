@@ -170,7 +170,7 @@ test('投递管道：主动发送 → accepted 事件 + 身体记账 + 额度记
   const p = store.peer(peer)!; p.enabled = true; store.savePeer(p);
   const ev = store.append(peer, 'received', { text: 'hi' })!;
   const turn = { id: 't', episode: 'e', peer, snapshot: ev.seq, jobs: [] as never[], allowed: new Set<string>() };
-  store.draft(turn, [{ type: 'text', text: '在的' }], [{}], [store.now()]);
+  store.draftOne(turn, 0, { type: 'text', text: '在的' }, {}, store.now());
   const beforeQQ = config.qq.enabled;
   config.qq.enabled = true;
   try {
@@ -203,7 +203,7 @@ test('投递管道：额度未到 → defer 等待，不重新思考', async () 
   const p = store.peer(peer)!; p.enabled = true; store.savePeer(p);
   const ev = store.append(peer, 'received', { text: 'hi' })!;
   const turn = { id: 't', episode: 'e', peer, snapshot: ev.seq, jobs: [] as never[], allowed: new Set<string>() };
-  store.draft(turn, [{ type: 'text', text: '在的' }], [{}], [store.now()]);
+  store.draftOne(turn, 0, { type: 'text', text: '在的' }, {}, store.now());
   const beforeQQ = config.qq.enabled;
   config.qq.enabled = true;
   try {
@@ -232,7 +232,7 @@ test('投递管道：主动权限关闭 → 确定性失败（不是未知）', 
   const p = store.peer(peer)!; p.enabled = true; p.activeAllowed = false; store.savePeer(p);
   const ev = store.append(peer, 'received', { text: 'hi' })!;
   const turn = { id: 't', episode: 'e', peer, snapshot: ev.seq, jobs: [] as never[], allowed: new Set<string>() };
-  store.draft(turn, [{ type: 'text', text: '在的' }], [{}], [store.now()]);
+  store.draftOne(turn, 0, { type: 'text', text: '在的' }, {}, store.now());
   const beforeQQ = config.qq.enabled;
   config.qq.enabled = true;
   try {

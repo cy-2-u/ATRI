@@ -47,6 +47,7 @@ export class Store {
         due INTEGER NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,error TEXT,platform_id TEXT,created INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS outbox_pending ON outbox(status,due);
+      CREATE INDEX IF NOT EXISTS outbox_peer ON outbox(peer,created,ordinal);
       CREATE TABLE IF NOT EXISTS memories(id TEXT PRIMARY KEY,peer TEXT NOT NULL,slot TEXT NOT NULL,status TEXT NOT NULL,value TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS memories_peer ON memories(peer,status);
       CREATE VIRTUAL TABLE IF NOT EXISTS memory_search USING fts5(id UNINDEXED,peer UNINDEXED,terms);
@@ -59,7 +60,7 @@ export class Store {
       CREATE INDEX IF NOT EXISTS usage_at ON usage(at);
       CREATE TABLE IF NOT EXISTS tool_runs(id TEXT PRIMARY KEY,peer TEXT NOT NULL,turn TEXT NOT NULL,signature TEXT NOT NULL,status TEXT NOT NULL,result TEXT,at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS media_cache(key TEXT PRIMARY KEY,info TEXT NOT NULL,expires INTEGER NOT NULL);
-      CREATE TABLE IF NOT EXISTS wall(id TEXT PRIMARY KEY,peer TEXT NOT NULL,author TEXT NOT NULL,text TEXT NOT NULL,path TEXT,at INTEGER NOT NULL,public INTEGER NOT NULL DEFAULT 0);
+      CREATE TABLE IF NOT EXISTS wall(id TEXT PRIMARY KEY,peer TEXT NOT NULL,author TEXT NOT NULL,text TEXT NOT NULL,path TEXT,at INTEGER NOT NULL);
     `);
     this.recover();
   }
@@ -233,16 +234,15 @@ export class Store {
     });
   }
 
-  draft(turn: Turn, parts: Part[], effects: Record<string, unknown>[], due: number[]): void {
-    for (let i = 0; i < parts.length; i++) this.draftOne(turn, i, parts[i]!, effects[i] ?? {}, due[i] ?? this.now());
-  }
-
   /** 单气泡入账。progressive=true 是流式闭合瞬间的捕获（不等思考结束）：承诺带
    *  pending 标记+捕获时快照——未过全量校验的模型原始材料，平台接收时不立即立约，
    *  由思考落账以接收事件为来源回填。false 是全量校验后的正式落账：只挂 expected
    *  版本快照，平台接收即立约（约定已变化则拒绝并落 failure）。 */
   draftOne(turn: Turn, ordinal: number, part: Part, effects: Record<string, unknown>, due: number, progressive = false): string {
     return this.transaction(() => {
+      // 工具轮回滚后同一下标重新渐进：旧行已 cancelled（生命已终结），物理移除让位转世行——
+      // 否则 envelopeAt 永远看到旧行，复用/节奏续接全部错位，绑定承诺随旧行蒸发。
+      this.sql("DELETE FROM outbox WHERE turn=? AND ordinal=? AND status IN ('cancelled','failed')").run(turn.id, ordinal);
       const effect = { ...effects };
       if (effect.commitments) effect.commitments = (effect.commitments as CommitmentInput[]).map(input => {
         const old = input.id ? this.commitment(turn.peer, input.id) : this.commitments(turn.peer).find(c => c.status === 'open' && c.content === input.content && c.kind === input.kind);
@@ -316,7 +316,8 @@ export class Store {
       const envelope = this.envelope(raw);
       this.sql('UPDATE outbox SET status=?,platform_id=?,error=? WHERE id=?').run(status, platformId ?? null, error ?? null, id);
       if (status === 'accepted') {
-        const event = this.append(envelope.peer, 'accepted', { ...envelope.part, platformId, delivery: id, note: '平台确认接收，不代表用户已读' }, envelope.turn, `accepted:${id}`)!;
+        const event = this.append(envelope.peer, 'accepted', { ...envelope.part, platformId, delivery: id, note: '平台确认接收，不代表用户已读' }, envelope.turn, `accepted:${id}`);
+        if (!event) return true; // 接收事件已存在（dedupe 撞车=重复 settle）：不再重复立约与记账
         const p = this.peer(envelope.peer);
         if (p) this.savePeer({ ...p, lastAccepted: this.now() });
         this.settleSelf(envelope.peer, 'delivered');
@@ -597,21 +598,17 @@ export class Store {
     return id;
   }
   wall(peer?: string, limit = 50): Record<string, unknown>[] { return peer ? this.sql('SELECT * FROM wall WHERE peer=? ORDER BY at DESC LIMIT ?').all(peer, limit) : this.sql('SELECT * FROM wall ORDER BY at DESC LIMIT ?').all(limit); }
-
   /** 计量与缓存不是经历：usage/tool_runs/media_cache 到期即清；终态 jobs 与 reply-seq 计数同理；账本本体（events/outbox/memories）永不修剪。 */
   prune(now = this.now()): void {
     this.transaction(() => {
       this.sql('DELETE FROM usage WHERE at<?').run(now - 90 * 86400000);
       this.sql('DELETE FROM tool_runs WHERE at<?').run(now - 7 * 86400000);
       this.sql('DELETE FROM media_cache WHERE expires>0 AND expires<?').run(now);
-      // done/cancelled 的任务行没有时间列，靠 id 里的日期（night）或父账本推断太脆：保守只清终态且过期的，pending/running 永不动。
-      // jobs 表没有 at 列——用 turns 的完成时间不行（job 可独立失败）；
-      // 干脆给终态行按 id 前缀判断：chat/beat/intent 行在重新调度时会被 replace 或自愈，残留的终态行 30 天后已无引用价值。
-      // 由于无时间列，改为定期全表收缩：终态行超过 400 条时删最旧的（id 排序 ≈ 时间序，SQLite rowid 递增）。
+      // jobs 表无时间列：终态行超 400 条时收缩到 200（rowid 递增 ≈ 时间序）；pending/running 永不动。
       const stale = Number(this.sql("SELECT COUNT(*) n FROM jobs WHERE state IN ('done','cancelled')").get()!.n);
       if (stale > 400) this.sql("DELETE FROM jobs WHERE rowid IN (SELECT rowid FROM jobs WHERE state IN ('done','cancelled') ORDER BY rowid LIMIT ?)").run(Math.max(0, stale - 200));
-      // kv 里带时间戳的计量键自清（被动回复计数/搜索缓存）；无时间戳的旧数字键保守跳过。
-      for (const row of this.sql("SELECT key,value FROM kv WHERE key LIKE 'reply-seq:%' OR key LIKE 'search:%'").all() as { key: string; value: string }[]) {
+      // kv 里带时间戳的计量键自清（被动回复计数/搜索缓存/每日额度计数）；无时间戳的旧数字键保守跳过。
+      for (const row of this.sql("SELECT key,value FROM kv WHERE key LIKE 'reply-seq:%' OR key LIKE 'search:%' OR key LIKE 'qq-day:%'").all() as { key: string; value: string }[]) {
         const value = parse<{ at?: number } | number>(row.value);
         const at = typeof value === 'object' && value ? Number(value.at ?? 0) : 0;
         if (at > 0 && at < now - 86400000) this.sql('DELETE FROM kv WHERE key=?').run(row.key);

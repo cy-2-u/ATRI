@@ -6,7 +6,6 @@ import { JsonStreamParser } from '../src/stream.ts';
 function feed(input: string, size: number, callbacks: { onPart?: (e: unknown) => void; onCommitment?: (e: unknown) => void } = {}): JsonStreamParser {
   const parser = new JsonStreamParser(callbacks);
   for (let i = 0; i < input.length; i += size) parser.write(input.slice(i, i + size));
-  parser.end();
   return parser;
 }
 
@@ -23,22 +22,19 @@ describe('JsonStreamParser', () => {
     const parts: unknown[] = [], commitments: unknown[] = [];
     const parser = feed(full, 7, { onPart: e => parts.push(e), onCommitment: e => commitments.push(e) });
     assert.equal(parser.error, undefined);
-    assert.equal(parser.complete, true);
     assert.deepEqual(parts, expected.parts);
     assert.deepEqual(commitments, expected.commitments);
-    assert.deepEqual(JSON.parse(parser.text), expected);
   });
 
   it('逐字符喂入（最恶劣边界）与一次性喂入结果一致', () => {
     const oneParts: unknown[] = [], oneCommitments: unknown[] = [];
     const byCharParts: unknown[] = [], byCharCommitments: unknown[] = [];
-    const one = feed(full, full.length, { onPart: e => oneParts.push(e), onCommitment: e => oneCommitments.push(e) });
+    feed(full, full.length, { onPart: e => oneParts.push(e), onCommitment: e => oneCommitments.push(e) });
     const byChar = feed(full, 1, { onPart: e => byCharParts.push(e), onCommitment: e => byCharCommitments.push(e) });
     assert.deepEqual(oneParts, JSON.parse(full).parts);
     assert.deepEqual(oneCommitments, JSON.parse(full).commitments);
     assert.deepEqual(byCharParts, JSON.parse(full).parts);
     assert.deepEqual(byCharCommitments, JSON.parse(full).commitments);
-    assert.deepEqual(JSON.parse(byChar.text), JSON.parse(one.text));
     assert.equal(byChar.error, undefined);
   });
 
@@ -66,16 +62,15 @@ describe('JsonStreamParser', () => {
     assert.deepEqual(parts, [{ type: 'text', text: 'a' }]); // 重复出现前的回调仍有效
   });
 
-  it('complete 之前流中断：end 报结构错误', () => {
-    const parser = new JsonStreamParser();
-    parser.write('{"parts":[{"type":"text"');
-    const result = parser.end();
-    assert.ok(result.error);
-    assert.equal(result.complete, false);
+  it('流中途截断：已闭合的元素照常回调（权威语法错误由思考层 JSON.parse 裁定）', () => {
+    const parts: unknown[] = [];
+    const parser = feed('{"parts":[{"type":"text","text":"早"},{"type":"tex', 1, { onPart: e => parts.push(e) });
+    assert.deepEqual(parts, [{ type: 'text', text: '早' }]); // 第一个气泡闭合即回调，不等全文
+    assert.equal(parser.error, undefined); // 截断不是结构错误，等聚合层整体 parse 报错
   });
 
   it('空 parts 与根不是对象都正确处理', () => {
-    assert.equal(feed(JSON.stringify({ parts: [] }), 4).complete, true);
+    assert.equal(feed(JSON.stringify({ parts: [] }), 4).error, undefined);
     assert.match(feed('[1,2]', 4).error ?? '', /根必须是对象/);
   });
 
@@ -89,9 +84,10 @@ describe('JsonStreamParser', () => {
   });
 
   it('根闭合后写入被忽略', () => {
-    const parser = feed('{"parts":[]}', 3);
+    const parts: unknown[] = [];
+    const parser = feed('{"parts":[]}', 3, { onPart: e => parts.push(e) });
     parser.write('"junk"');
     assert.equal(parser.error, undefined);
-    assert.deepEqual(JSON.parse(parser.text), { parts: [] });
+    assert.deepEqual(parts, []);
   });
 });

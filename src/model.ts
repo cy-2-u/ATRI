@@ -73,8 +73,10 @@ export function encode(endpoint: Endpoint, messages: Message[], tools: ToolDefin
 }
 
 /** 强制流式渠道的 SSE 聚合：delta 增量拼回与非流式同构的回包，decode 照常解析。
+ *  OpenAI 与 Anthropic 两种帧格式都认（强制流式的 Claude 系中转同样要能接入）。
  *  只做传输层——校验与投递节奏不变，第一条气泡仍等完整决定过审才出门。 */
-export function sseAggregate(raw: string): Record<string, unknown> {
+export function sseAggregate(raw: string, format: 'openai' | 'anthropic' = 'openai'): Record<string, unknown> {
+  if (format === 'anthropic') return sseAggregateAnthropic(raw);
   let content = '', reasoning: string | undefined, finish = '';
   const calls = new Map<number, { id: string; name: string; args: string }>();
   let usage: Record<string, unknown> | undefined;
@@ -108,6 +110,45 @@ export function sseAggregate(raw: string): Record<string, unknown> {
   const data: Record<string, unknown> = { choices: [{ message, finish_reason: finish }] };
   if (usage) data.usage = usage;
   return data;
+}
+
+/** Anthropic SSE → 与非流式 /messages 回包同构：content blocks 原样重组，
+ *  usage 从 message_start（input）与 message_delta（output）两处合流。 */
+function sseAggregateAnthropic(raw: string): Record<string, unknown> {
+  const blocks: Record<string, unknown>[] = [];      // index → 正在拼装的 block
+  const jsonBuf: string[] = [];                      // tool_use 的 input 增量
+  let stop = '', inputTokens = 0, outputTokens = 0, readTokens = 0, writeTokens = 0;
+  for (const line of raw.split('\n')) {
+    const m = /^data:\s*(.+?)\s*$/.exec(line);
+    if (!m || m[1] === '[DONE]') continue;
+    let frame: Record<string, unknown>;
+    try { frame = object(JSON.parse(m[1]!)); } catch { continue; }
+    const type = String(frame.type ?? '');
+    if (type === 'message_start') {
+      const u = frame.message && typeof frame.message === 'object' ? object(frame.message).usage : undefined;
+      const usage = u ? object(u) : {};
+      inputTokens = count(usage.input_tokens);
+      readTokens = count(usage.cache_read_input_tokens);
+      writeTokens = count(usage.cache_creation_input_tokens);
+    } else if (type === 'content_block_start') {
+      const index = Number(frame.index ?? 0), block = frame.content_block ? object(frame.content_block) : {};
+      blocks[index] = { ...block };
+      jsonBuf[index] = '';
+    } else if (type === 'content_block_delta') {
+      const index = Number(frame.index ?? 0), delta = frame.delta ? object(frame.delta) : {};
+      const block = blocks[index] ??= {};
+      if (delta.type === 'text_delta' && typeof delta.text === 'string') block.text = `${String(block.text ?? '')}${delta.text}`;
+      else if (delta.type === 'input_json_delta' && typeof delta.partial_json === 'string') jsonBuf[index] += delta.partial_json;
+      else if (delta.type === 'thinking_delta' && typeof delta.thinking === 'string') block.thinking = `${String(block.thinking ?? '')}${delta.thinking}`;
+    } else if (type === 'message_delta') {
+      const delta = frame.delta ? object(frame.delta) : {};
+      if (typeof delta.stop_reason === 'string') stop = delta.stop_reason;
+      const usage = frame.usage ? object(frame.usage) : {};
+      if (usage.output_tokens !== undefined) outputTokens = count(usage.output_tokens);
+    }
+  }
+  const content = blocks.map(b => { if (object(b).type === 'tool_use') { try { return { ...b, input: object(JSON.parse(jsonBuf[blocks.indexOf(b)] || '{}')) }; } catch { return b; } } return b; });
+  return { content, stop_reason: stop, usage: { input_tokens: inputTokens, output_tokens: outputTokens, cache_read_input_tokens: readTokens, cache_creation_input_tokens: writeTokens } };
 }
 
 export function decode(endpoint: Endpoint, data: Record<string, unknown>): Completion {  let message: Message, finish: string;
@@ -270,9 +311,11 @@ export class Models {
   }
 
   /** 强制流式渠道的单次请求：SSE 增量解析出正文喂给 onDelta（渐进投递找气泡边界），
-   *  全量 raw 聚合回与非流式同构的回包。失败语义与普通请求一致。 */
+   *  全量 raw 聚合回与非流式同构的回包。失败语义与普通请求一致。
+   *  Anthropic 协议没有 stream_options 键（官方严格校验未知顶层字段），也不发 data: [DONE]。 */
   private async streamOnce(endpoint: Endpoint, request: { url: string; headers: Record<string, string>; body: Record<string, unknown> }, options: CallOptions): Promise<Record<string, unknown>> {
-    const response = await fetch(request.url, { method: 'POST', headers: { 'content-type': 'application/json', ...request.headers }, body: JSON.stringify({ ...request.body, stream: true, stream_options: { include_usage: true } }), signal: AbortSignal.any([options.signal, AbortSignal.timeout(endpoint.timeoutMs)]) });
+    const anthropic = endpoint.format === 'anthropic';
+    const response = await fetch(request.url, { method: 'POST', headers: { 'content-type': 'application/json', ...request.headers }, body: JSON.stringify({ ...request.body, stream: true, ...(anthropic ? {} : { stream_options: { include_usage: true } }) }), signal: AbortSignal.any([options.signal, AbortSignal.timeout(endpoint.timeoutMs)]) });
     if (!response.ok) {
       const bytes = await readBounded(response, 1024 * 1024);
       let errData: Record<string, unknown> | undefined;
@@ -295,17 +338,26 @@ export class Models {
         while ((idx = lineBuf.indexOf('\n')) >= 0) {
           const line = lineBuf.slice(0, idx); lineBuf = lineBuf.slice(idx + 1);
           const m = /^data:\s*(.+?)\s*$/.exec(line);
-          if (!m || m[1] === '[DONE]') continue;
+          if (!m) continue;
+          if (!anthropic && m[1] === '[DONE]') continue;
           try {
             const frame = object(JSON.parse(m[1]!));
-            const choice = Array.isArray(frame.choices) && frame.choices.length ? object(frame.choices[0]) : undefined;
-            const delta = choice?.delta ? object(choice.delta) : undefined;
-            if (typeof delta?.content === 'string' && delta.content) options.onDelta?.(delta.content);
+            if (anthropic) {
+              // Anthropic 帧直接喂回调：text_delta 与 OpenAI delta.content 语义相同
+              if (frame.type === 'content_block_delta') {
+                const delta = frame.delta ? object(frame.delta) : {};
+                if (delta.type === 'text_delta' && typeof delta.text === 'string' && delta.text) options.onDelta?.(delta.text);
+              }
+            } else {
+              const choice = Array.isArray(frame.choices) && frame.choices.length ? object(frame.choices[0]) : undefined;
+              const delta = choice?.delta ? object(choice.delta) : undefined;
+              if (typeof delta?.content === 'string' && delta.content) options.onDelta?.(delta.content);
+            }
           } catch { /* 坏帧跳过，聚合兜底 */ }
         }
       }
     } finally { reader.releaseLock(); }
-    return sseAggregate(raw);
+    return sseAggregate(raw, endpoint.format);
   }
 
   cacheKey(peer: string, persona: string, tools: ToolDefinition[]): string {

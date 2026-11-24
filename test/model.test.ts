@@ -54,3 +54,32 @@ test('sseAggregate：坏帧与非 data 行跳过，无 content 无 calls 时 dec
   const data = sseAggregate(raw);
   assert.throws(() => decode(openaiEndpoint(), data), /没有返回正文或工具/);
 });
+
+const anthropicEndpoint = (): Endpoint => ({ ...openaiEndpoint(), format: 'anthropic' });
+
+test('sseAggregate：anthropic SSE 聚合（text + tool_use 增量 + usage 合流）', () => {
+  const raw = [
+    'event: message_start',
+    'data: {"type":"message_start","message":{"usage":{"input_tokens":30,"cache_read_input_tokens":10,"cache_creation_input_tokens":5}}}',
+    '',
+    'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}',
+    'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"你好"}}',
+    'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"呀"}}',
+    'data: {"type":"content_block_stop","index":0}',
+    'data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"t1","name":"recall"}}',
+    'data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\\"query\\":"}}',
+    'data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"\\"水\\"}"}}',
+    'data: {"type":"content_block_stop","index":1}',
+    'data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":42}}',
+    'data: {"type":"message_stop"}',
+  ].join('\n');
+  const data = sseAggregate(raw, 'anthropic');
+  const completion = decode(anthropicEndpoint(), data);
+  assert.equal(completion.message.content, '你好呀');
+  assert.equal(completion.finish, 'tool_use');
+  assert.deepEqual(completion.message.calls?.map(c => [c.id, c.name, c.args]), [['t1', 'recall', { query: '水' }]]);
+  assert.equal(completion.usage.input, 45); // 30+10+5：anthropic 的 input 不含缓存读写
+  assert.equal(completion.usage.output, 42);
+  assert.equal(completion.usage.cached, 10);
+  assert.equal(completion.usage.cacheWrite, 5);
+});

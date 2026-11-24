@@ -237,7 +237,7 @@ export class QQ {
     const key = reply ? `reply-seq:${peer.id}:${reply.data.messageId}` : '';
     const stored = key ? this.store.get<{ used: number; at: number } | number>(key, 0) : 0;
     const used = typeof stored === 'number' ? stored : stored.used; // 旧版存裸数字，新版存对象——读到旧数据也能对上
-    const usable = reply && this.store.now() - reply.at < this.config().qq.passiveMinutes * 60000 && used < (peer.target.kind === 'c2c' ? 4 : 5);
+    const usable = reply && this.store.now() - reply.at < this.config().qq.passiveMinutes * 60000 && used < 4;
     const request: Record<string, unknown> = part.type === 'text' ? { msg_type: 0, content: part.text } : { msg_type: 7 };
     if (usable) { request.msg_id = reply.data.messageId; request.msg_seq = used + 1; if (reserve) this.store.set(key, { used: used + 1, at: this.store.now() }); }
     return request;
