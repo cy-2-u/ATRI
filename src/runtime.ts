@@ -34,6 +34,34 @@ function pacingMs(part: Part, random: () => number = Math.random): number {
   return Math.round(base * (0.85 + random() * 0.3));
 }
 
+/** 气泡清洗：QQ 私聊把 markdown 原样显示（**加粗**、`代码`、# 标题），模型偶尔
+ *  夹带的排版符号会变成字面噪声；句末句号在即时聊天里是疏离感。只剥表面记号，
+ *  不动内容：成对星号/反引号/井号标题/行首引用符，句末连续句号收一个（省略号保留）。 */
+export function cleanBubbleText(text: string): string {
+  const cleaned = text
+    .replace(/^#{1,6}\s+/gm, '')            // 行首标题
+    .replace(/^>\s?/gm, '')                 // 行首引用
+    .replace(/\*\*([^*]+)\*\*/g, '$1')      // **粗体**
+    .replace(/(^|\s)\*([^*\s][^*]*)\*(?=\s|$|[。，！？、,.!?])/g, '$1$2') // *动作*（成对星号）
+    .replace(/`([^`]+)`/g, '$1')            // `代码`
+    .replace(/~~([^~]+)~~/g, '$1');         // ~~删除线~~
+  return cleaned.replace(/[。]+$/u, m => m.length > 1 ? '。' : '').trimEnd();
+}
+
+/** 反应延迟：刚聊过（2 分钟内有来往）是热对话，0.8-2s 接得上话；
+ *  冷启动/心跳主动开口 1-4s，像想了一下才说。 */
+function reactionMs(peerId: string, store: Store, random: () => number = Math.random): number {
+  const last = Math.max(store.peer(peerId)?.lastReceived ?? 0, store.peer(peerId)?.lastAccepted ?? 0);
+  return store.now() - last < 120000 ? 800 + Math.floor(random() * 1200) : 1000 + Math.floor(random() * 3000);
+}
+
+/** 半句等待：对方的消息明显没说完（逗号/顿号/冒号/连词/省略号收尾）时多等一拍，
+ *  等下文合并进来再一起答，而不是对着半句话抢答。 */
+const TRAILING = /[,，、;：;…]$|然后$|就是$|不过$|但是$|因为$|所以$|而且$|或者$|还是$/;
+function trailingDebounce(text: string): number {
+  return TRAILING.test(text.trimEnd()) ? 2000 : 0;
+}
+
 export class Runtime {
   private store: Store;
   private config: () => Config;
@@ -86,7 +114,9 @@ export class Runtime {
       const bound = this.store.peers().find(p => p.target.kind === 'c2c' && p.id !== 'c2c:preview');
       if (bound && bound.id !== id) return false;
     }
-    const event = this.store.receive(input, this.config().life.debounceMs);
+    // 半句没说完多等一拍再合并：对着「然后」抢答不是人。
+    const extra = input.text ? trailingDebounce(input.text) : 0;
+    const event = this.store.receive(input, this.config().life.debounceMs + extra);
     if (!event) return false;
     if (this.active?.peer === event.peer) this.active.controller.abort(new Error('新消息到达'));
     this.wake();
@@ -216,11 +246,13 @@ export class Runtime {
     return {
       draft: (ordinal, part, effects) => {
         const now = this.store.now();
-        const reaction = 1000 + Math.floor(Math.random() * 3000);
+        const reaction = reactionMs(turn.peer, this.store);
         lastDue = drafted ? lastDue + pacingMs(part) : now + Math.max(pacingMs(part), reaction);
         drafted++;
         count(drafted);
-        const id = this.store.draftOne(turn, ordinal, part, effects, lastDue, true);
+        const text = part.type === 'text' ? cleanBubbleText(part.text ?? '') : undefined;
+        const washed = text !== undefined ? { ...part, text } : part;
+        const id = this.store.draftOne(turn, ordinal, washed, effects, lastDue, true);
         this.pokeDelivery();
         return id;
       },
@@ -267,9 +299,10 @@ export class Runtime {
       }
       if (thought.impressions) this.store.saveImpressions(turn.peer, { beliefs: thought.impressions.beliefs, updatedAt: now });
       for (const op of thought.thoughts ?? []) this.store.changeThought(turn.peer, op);
-      // 目录外的表情不是她的表情：静默剔除，别让幻觉变成死信。
+      // 目录外的表情不是她的表情：静默剔除，别让幻觉变成死信。文本气泡统一清洗
+      // （markdown 记号 QQ 原样显示、句末句号是疏离感）——与渐进路径同一把尺子。
       const slugs = new Set(this.store.get<{ slug: string }[]>('stickers', []).map(s => s.slug));
-      const kept = thought.parts.map((part, i) => ({ part, i })).filter(x => x.part.type !== 'sticker' || slugs.has(x.part.slug ?? ''));
+      const kept = thought.parts.map((part, i) => ({ part: part.type === 'text' ? { ...part, text: cleanBubbleText(part.text ?? '') } : part, i })).filter(x => x.part.type !== 'sticker' || slugs.has(x.part.slug ?? ''));
       if (thought.parts.length && !kept.length) throw new TypeError('表情不在目录中，气泡全部失效');
       const keptIndex = new Map<number, number>();
       kept.forEach((x, k) => keptIndex.set(x.i, k));

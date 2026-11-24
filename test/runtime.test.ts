@@ -2,12 +2,24 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { tmpRoot, tmpStore } from './tmp.ts';
 import { join } from 'node:path';
-import { Runtime } from '../src/runtime.ts';
+import { Runtime, cleanBubbleText } from '../src/runtime.ts';
 import { Files } from '../src/files.ts';
 import { validateConfig, defaults, type Config } from '../src/config.ts';
 
 const config: Config = validateConfig({ ...defaults('人格'), life: { ...defaults().life, timezone: 'Asia/Shanghai', enabled: true, beatMinutes: 90, diaryHour: 23 } });
 const getConfig = (): Config => config;
+
+test('气泡清洗：markdown 记号剥掉，句末句号收掉，省略号与问号保留', () => {
+  assert.equal(cleanBubbleText('**生日快乐**呀'), '生日快乐呀');
+  assert.equal(cleanBubbleText('*摸摸头* 给你的'), '摸摸头 给你的');
+  assert.equal(cleanBubbleText('用 `npm run` 装一下'), '用 npm run 装一下');
+  assert.equal(cleanBubbleText('## 今天的计划\n- 第一件事'), '今天的计划\n- 第一件事');
+  assert.equal(cleanBubbleText('好。'), '好');
+  assert.equal(cleanBubbleText('好。。'), '好。');
+  assert.equal(cleanBubbleText('你去哪…'), '你去哪…');
+  assert.equal(cleanBubbleText('在吗?'), '在吗?');
+  assert.equal(cleanBubbleText('第一行。\n第二行'), '第一行。\n第二行');
+});
 
 test('绑定：她只属于一个人（第一个私聊即绑定，陌生私聊不进她的世界）', () => {
   const store = tmpStore('atri-test-');
