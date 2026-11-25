@@ -7,15 +7,15 @@ import { normalizeEvent } from '../src/qq.ts';
  *  前端 bubbleText 兜底的分类依据就是这里产出的 data 形状。 */
 test('normalizeEvent：无 content 无 attachments 的合法入站产物（bubbleText 兜底依据）', () => {
   // QQ 网关可能投递 content 缺失、attachments 缺失的 C2C 事件（纯表情回执等）
-  const incoming = normalizeEvent({ t: 'C2C_MESSAGE_CREATE', d: { id: 'm1', author: { user_openid: 'openid-x' } } });
+  const incoming = normalizeEvent({ op: 0, t: 'C2C_MESSAGE_CREATE', d: { id: 'm1', author: { user_openid: 'openid-x' } } });
   assert.ok(incoming, '合法 C2C 事件必须被规范化');
   assert.equal(typeof incoming!.text, 'string', 'text 恒为 string（String(d.content ?? "")），空串合法');
   assert.equal(incoming!.text, '');
   assert.ok(Array.isArray(incoming!.attachments) && incoming!.attachments.length === 0, 'attachments 是数组可能为空');
   // 有附件时 MIME 字段名是 mime（不是原始 content_type），content_type 缺省兜底 application/octet-stream
-  const withFile = normalizeEvent({ t: 'C2C_MESSAGE_CREATE', d: { id: 'm2', author: { user_openid: 'openid-x' }, attachments: [{ filename: 'song.mp3' }] } });
+  const withFile = normalizeEvent({ op: 0, t: 'C2C_MESSAGE_CREATE', d: { id: 'm2', author: { user_openid: 'openid-x' }, attachments: [{ filename: 'song.mp3' }] } });
   assert.equal((withFile!.attachments![0] as { mime: string }).mime, 'application/octet-stream', 'content_type 缺省归 octet-stream，前端按非图片处理');
-  const withImage = normalizeEvent({ t: 'C2C_MESSAGE_CREATE', d: { id: 'm3', author: { user_openid: 'openid-x' }, attachments: [{ filename: 'pic.png', content_type: 'image/png' }] } });
+  const withImage = normalizeEvent({ op: 0, t: 'C2C_MESSAGE_CREATE', d: { id: 'm3', author: { user_openid: 'openid-x' }, attachments: [{ filename: 'pic.png', content_type: 'image/png' }] } });
   assert.equal((withImage!.attachments![0] as { mime: string }).mime, 'image/png', 'image/* 前端显示 [图片]');
 });
 
