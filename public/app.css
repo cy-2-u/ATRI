@@ -508,10 +508,6 @@ a.nav-item {
   align-items: center;
 }
 
-.actions.between {
-  justify-content: space-between;
-}
-
 /* 列表行里的徽章（日记情绪、已到时间的约定、联系人的"已绑定"）：app.js
    统一挂 .tag——此前 CSS 只定义过没人用的 .badge，徽章一直裸奔成纯文本。 */
 .tag {
@@ -973,15 +969,6 @@ input.check,
   padding: 0 8px;
 }
 
-/* 可点的工作目录标题：默认折叠她的房间，手势与 hover 说明可展开。 */
-.file-toggle {
-  cursor: pointer;
-  user-select: none;
-}
-.file-toggle:hover {
-  color: var(--text);
-}
-
 /* 抽屉里的行卡：状态行与联系人行吃卡片底。此前容器挂的 .stack 类没有任何
    全局定义，行在抽屉里裸奔成一竖条文字（截图中"已连接"和微信 ID 全无
    着落）。行内长 ID 走 row-title 的 break-all 规则。 */
@@ -1289,11 +1276,6 @@ input.check,
 
 .usage-total .usage-day-label {
   color: var(--accent-ink);
-}
-
-.recent-list {
-  display: grid;
-  gap: 8px;
 }
 
 .model-suggestions {

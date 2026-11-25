@@ -13,6 +13,9 @@ let authenticated = false,
   peerId = '',
   configCache = null,
   statusSeq = 0,
+  pollSeq = 0,
+  authSeq = 0,
+  issuesSeenWriteFailed = false,
   chatSnapshot = '',
   journalSnapshot = '',
   stickersSnapshot = '',
@@ -46,22 +49,39 @@ function empty(node, message) {
   node.replaceChildren(el('p', message, 'empty'));
 }
 async function api(path, options = {}) {
-  const response = await fetch(path, {
-    method: options.method ?? 'GET',
-    headers: {
-      ...(options.body ? { 'content-type': 'application/json' } : {}),
-      ...(csrf ? { 'x-csrf-token': csrf } : {}),
-    },
-    body: options.body ? JSON.stringify(options.body) : undefined,
-  });
-  if (response.status === 401 && authenticated) {
+  const requestAuthSeq = authSeq; // 请求发起时的认证代际：过期请求的 401 只结束自己，不得注销新会话
+  let response;
+  try {
+    response = await fetch(path, {
+      method: options.method ?? 'GET',
+      headers: {
+        ...(options.body ? { 'content-type': 'application/json' } : {}),
+        ...(csrf ? { 'x-csrf-token': csrf } : {}),
+      },
+      body: options.body ? JSON.stringify(options.body) : undefined,
+    });
+  } catch (error) {
+    // fetch 本身失败 = 网络层断线。带 kind 标记，tick 据此分类，不靠浏览器错误文案。
+    throw Object.assign(new Error('连接中断'), { kind: 'network', cause: error });
+  }
+  if (response.status === 401 && authenticated && requestAuthSeq === authSeq) {
     authenticated = false;
+    authSeq++;
     $('dashboard').hidden = true;
     $('login').hidden = false;
-    throw new Error('登录已过期，请重新进入');
+    throw Object.assign(new Error('登录已过期，请重新进入'), { kind: 'auth' });
   }
-  const json = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(json.error || `请求失败（HTTP ${response.status}）`);
+  if (!response.ok) {
+    // 后端错误体的 error 字段是人话（safeError 清过密钥），优先展示。
+    const body = await response.json().catch(() => ({}));
+    throw Object.assign(new Error(body.error || `请求失败（HTTP ${response.status}）`), {
+      kind: response.status >= 500 ? 'server' : 'request',
+      status: response.status,
+    });
+  }
+  const json = await response.json().catch(() => undefined);
+  // 2xx 但体不是合法 JSON：代理/网关异常伪装成功，绝不静默当 {}。
+  if (json === undefined) throw Object.assign(new Error('响应格式异常'), { kind: 'server', status: response.status });
   return json;
 }
 async function perform(action, node) {
@@ -154,20 +174,25 @@ const hmToMinutes = (value) => {
     throw new Error('时间无效（HH:MM 或分钟 0–1439）');
   return minutes;
 };
-// 她的话 = accepted 事件（data 是发送的 part + 平台回执）；对方的话 = received。
-function bubbleText(event) {
-  const data = event.data ?? {};
-  if (event.kind === 'accepted') {
-    if (typeof data.text === 'string' && data.text) return data.text;
-    if (data.slug) return '[表情]';
-    if (data.path) return '[图片]';
-    return '[一条消息]';
+  // 她的话 = accepted 事件（data 是发送的 part + 平台回执）；对方的话 = received。
+  function bubbleText(event) {
+    const data = event.data ?? {};
+    if (event.kind === 'accepted') {
+      if (typeof data.text === 'string' && data.text) return data.text;
+      if (data.slug) return '[表情]';
+      if (data.path) return '[图片]';
+      return '[一条消息]';
+    }
+    // 单聊里 author 就是对方的 openid：32 位匿名 ID 是平台噪音，不进对话视图（身份由会话名表达）。
+    const target = peerId.slice(peerId.indexOf(':') + 1);
+    const prefix = data.author && data.author !== '本地管理员' && data.author !== target ? `【${data.author}】` : '';
+    // received 的 text 恒为 string 可能空串（QQ 入站规范化）：兜底按附件 mime 分类，空文本不是图片。
+    if (typeof data.text === 'string' && data.text) return prefix + data.text;
+    const attachments = Array.isArray(data.attachments) ? data.attachments : [];
+    if (attachments.length)
+      return prefix + (attachments.every((a) => String(a.mime ?? '').toLowerCase().startsWith('image/')) ? '[图片]' : '[附件]');
+    return prefix + '[一条消息]';
   }
-  // 单聊里 author 就是对方的 openid：32 位匿名 ID 是平台噪音，不进对话视图（身份由会话名表达）。
-  const target = peerId.slice(peerId.indexOf(':') + 1);
-  const prefix = data.author && data.author !== '本地管理员' && data.author !== target ? `【${data.author}】` : '';
-  return prefix + (typeof data.text === 'string' ? data.text : '[图片]');
-}
 
 // ---------- 登录 ----------
 
@@ -176,22 +201,26 @@ $('login-form').onsubmit = async (event) => {
   await perform(async () => {
     const data = await api('/api/login', { method: 'POST', body: { password: $('password').value } });
     csrf = data.csrf;
-    await enter();
+    const seq = ++authSeq; // 新会话令牌生效：晚到的 bootstrap 响应不得覆盖
+    await enter(seq);
   }, $('login-form').querySelector('button'));
 };
 $('logout').onclick = async () => {
   await perform(async () => {
     await api('/api/logout', { method: 'POST', body: {} });
+    authSeq++;
     authenticated = false;
     $('dashboard').hidden = true;
     $('login').hidden = false;
   });
 };
 
-/** 登录或会话恢复后的共同入口：拉会话与配置，点亮面板。 */
-async function enter() {
+/** 登录或会话恢复后的共同入口：拉会话与配置，点亮面板。
+ *  seq 是认证代际：登录/登出先到的话，晚到的旧 enter 不得点亮面板或起轮询。 */
+async function enter(seq) {
   authenticated = true;
   peers = await api('/api/peers');
+  if (seq !== undefined && seq !== authSeq) return;
   const real = peers.find((p) => p.id !== 'c2c:preview');
   if (!peerId || !peers.some((p) => p.id === peerId)) peerId = real?.id ?? '';
   $('chat-head-name').textContent = peerId ? peerName(peerId) : '她';
@@ -235,8 +264,6 @@ for (const sub of document.querySelectorAll('#view-journal .subtab')) {
     refreshCurrent();
   };
 }
-$('peer-select')?.remove();
-
 // ---------- 抽屉 ----------
 
 // 非阻塞侧板：点开关在开/合间切换，点面板外任意处收起，Esc 全收。
@@ -273,16 +300,23 @@ document.addEventListener('keydown', (event) => {
 function startPolling() {
   clearInterval(pollTimer);
   const tick = async () => {
+    const seq = ++pollSeq;
     const results = await refreshCurrent();
-    // 断线可见：网络层失败（非登录过期）显示横幅，恢复即撤——
-    // 空白页不解释自己是失职。
-    const offline = results.some(
-      (r) =>
-        r.status === 'rejected' &&
-        !(r.reason instanceof Error && r.reason.message.includes('登录已过期')),
-    );
+    if (seq !== pollSeq) return; // 旧 tick 晚归不覆盖 banner 状态
+    // 断线/异常可见：网络层失败显示「连接中断」，服务端 5xx 显示「服务异常」——
+    // 两者都不是请求错误（4xx 保留旧数据，一次轮询失败不惊扰）。
+    const kinds = results
+      .filter((r) => r.status === 'rejected')
+      .map((r) => r.reason?.kind);
     const banner = $('offline-banner');
-    if (banner) banner.hidden = !offline;
+    if (!banner) return;
+    if (kinds.includes('network')) {
+      banner.textContent = '连接中断，正在重试——她还在，别担心。';
+      banner.hidden = false;
+    } else if (kinds.includes('server')) {
+      banner.textContent = '服务暂时异常，正在重试。';
+      banner.hidden = false;
+    } else banner.hidden = true;
   };
   tick();
   pollTimer = setInterval(tick, 4000);
@@ -305,11 +339,17 @@ async function refreshPersona() {
 }
 async function refreshStatus() {
   const seq = ++statusSeq;
-  const status = await api('/api/status');
+  // status 与 deliveries 无依赖，并行省一次往返（config 有缓存不构成阻塞）。
+  // deliveries 是告警源：失败不吞成空列表，null 冒泡让本轮 rejection 可见（失败≠没有待办）。
+  const [status, deliveries] = await Promise.all([
+    api('/api/status'),
+    api('/api/deliveries'),
+  ]);
   if (seq !== statusSeq) return;
   // 人设全文不该每 4 秒拖一遍：config 走缓存，保存配置时置空重拉。
   const config = configCache ?? (await api('/api/config'));
   configCache = config;
+  if (seq !== statusSeq) return; // config 慢拖后旧轮不得覆盖新轮
   // 连接状态：QQ 官方网关的在线位。
   const qq = status.qq ?? {};
   const connected = Boolean(qq.online);
@@ -319,7 +359,6 @@ async function refreshStatus() {
   pill.classList.toggle('online', connected);
   dot?.classList.toggle('warn', !connected);
   // 待办：unknown/failed 才是需要人工裁决的件。红点只对"没见过的新告警"亮。
-  const deliveries = await api('/api/deliveries').catch(() => []);
   const issues = deliveries.filter((env) => env.status === 'unknown' || env.status === 'failed');
   lastIssues = issues;
   if (drawerIssuesOpen()) markIssuesSeen();
@@ -328,13 +367,13 @@ async function refreshStatus() {
     issuesSnapshot = issuesSig;
     renderIssues(issues);
   }
-  const seen = new Set(issuesSeen());
+  const seen = new Set(issuesSeenWriteFailed ? [] : issuesSeen());
   const unseen = issues.filter((env) => !seen.has(`${env.id}:${env.status}`));
   const count = $('issues-count');
   count.hidden = !unseen.length;
   count.textContent = String(unseen.length);
   // 她此刻（对话页侧栏）
-  if (currentTab === 'chat') await renderSelfChips(status, peerId);
+  if (currentTab === 'chat') await renderSelfChips(status, peerId, seq);
 }
 
 /** 已读指纹读取：损坏/不支持（隐身模式配额）时退化为全未读，红点多亮
@@ -359,21 +398,26 @@ function markIssuesSeen() {
       'issuesSeen',
       JSON.stringify(lastIssues.map((env) => `${env.id}:${env.status}`)),
     );
+    issuesSeenWriteFailed = false; // 写回成功解锁，红点恢复按指纹计算
   } catch {
-    /* 写不进去就让红点常亮：告警比安静安全 */
+    /* 写不进去红点强制常亮：告警比安静安全（C4）——写失败 latch，直到一次成功写入 */
+    issuesSeenWriteFailed = true;
   }
 }
 
-async function renderSelfChips(status, id) {
+async function renderSelfChips(status, id, seq) {
   if (!id) {
     empty($('self-chips'), '等第一个人来找她。');
     return;
   }
-  const inner = await api(`/api/inner?peer=${enc(id)}`).catch(() => null);
+  const [inner, jobs] = await Promise.all([
+    api(`/api/inner?peer=${enc(id)}`).catch(() => null),
+    api('/api/jobs').catch(() => []),
+  ]);
   if (!inner) return;
+  if (seq !== undefined && seq !== statusSeq) return; // 旧轮的 chips 不得覆盖新轮
   const self = inner.self ?? {};
   const feeling = inner.feeling;
-  const jobs = await api('/api/jobs').catch(() => []);
   // 队列的 kind 是内核术语，人读的是"心跳/日记"这样的钟点安排。
   const jobName = { chat: '回复', beat: '心跳', night: '夜间整理', reminder: '提醒' };
   const mood = feeling?.label
@@ -429,8 +473,10 @@ async function refreshChat() {
     empty($('chat-messages'), '还没有对话。');
     return;
   }
+  const scope = peerId; // 捕获请求发起时的会话：慢响应晚到时不覆盖别的会话/旧快照
   // 只拉这一个会话的近 200 条，前端留对话本体：日记、念头、failure 不进聊天视图。
-  const events = await api(`/api/events?peer=${enc(peerId)}`).catch(() => []);
+  const events = await api(`/api/events?peer=${enc(scope)}`);
+  if (scope !== peerId) return;
   const visible = events.filter((e) => e.kind === 'received' || e.kind === 'accepted');
   const sig = JSON.stringify(visible.map((e) => [e.seq, e.kind, e.data]));
   if (sig === chatSnapshot) return;
@@ -471,11 +517,12 @@ function entryDate(at) {
 }
 
 async function refreshJournal() {
+  const scope = peerId, sub = journalSub; // 捕获上下文：切子页/会话后旧响应不得写进新视图
   const load = async () => {
-    if (!peerId) return [];
-    const scope = enc(peerId);
-    if (journalSub === 'diary') {
-      const events = await api(`/api/events?peer=${scope}`);
+    if (!scope) return [];
+    const encoded = enc(scope);
+    if (sub === 'diary') {
+      const events = await api(`/api/events?peer=${encoded}`);
       // 日记从新到旧：夜里的她最先想被读到的是昨天的自己。
       return events
         .filter((e) => e.kind === 'diary')
@@ -493,8 +540,8 @@ async function refreshJournal() {
               : '',
         }));
     }
-    if (journalSub === 'memories') {
-      const memories = await api(`/api/memories?peer=${scope}`);
+    if (sub === 'memories') {
+      const memories = await api(`/api/memories?peer=${encoded}`);
       const kindName = { stated: '他说的', identity: '我是谁', fact: '我的理解' };
       return memories
         .sort((a, b) => b.createdAt - a.createdAt)
@@ -506,8 +553,8 @@ async function refreshJournal() {
           badge: m.detail < 0.5 ? '细节已模糊' : '',
         }));
     }
-    if (journalSub === 'thoughts') {
-      const thoughts = await api(`/api/thoughts?peer=${scope}`);
+    if (sub === 'thoughts') {
+      const thoughts = await api(`/api/thoughts?peer=${encoded}`);
       return thoughts
         .filter((t) => t.state === 'idle')
         .sort((a, b) => b.updatedAt - a.updatedAt)
@@ -519,8 +566,8 @@ async function refreshJournal() {
           badge: t.dueAt ? `期待 ${timeText(t.dueAt)}` : '等一个开口的时机',
         }));
     }
-    if (journalSub === 'impressions') {
-      const inner = await api(`/api/inner?peer=${scope}`);
+    if (sub === 'impressions') {
+      const inner = await api(`/api/inner?peer=${encoded}`);
       const beliefs = inner.impressions?.beliefs ?? [];
       return beliefs.map((b, i) => ({
         id: `imp-${i}`,
@@ -530,15 +577,15 @@ async function refreshJournal() {
         badge: '',
       }));
     }
-    if (journalSub === 'works') {
+    if (sub === 'works') {
       const [wall, files] = await Promise.all([
-        api(`/api/wall?peer=${scope}`).catch(() => []),
-        api(`/api/files?peer=${scope}`).catch(() => []),
+        api(`/api/wall?peer=${encoded}`).catch(() => []),
+        api(`/api/files?peer=${encoded}`).catch(() => []),
       ]);
       const wallItems = wall.map((w) => ({
         id: w.id,
         at: w.at,
-        title: w.author === peerId ? '她的作品' : '剪贴簿',
+        title: w.author === 'atri' ? '她的作品' : '剪贴簿',
         body: w.text || '',
         badge: w.path ? '有附件' : '',
         file: w.path,
@@ -549,7 +596,7 @@ async function refreshJournal() {
         .map((f) => ({ id: `file-${f.name}`, at: 0, title: '文件', body: f.name, badge: '' }));
       return [...wallItems, ...fileItems];
     }
-    const commitments = await api(`/api/commitments?peer=${scope}`);
+    const commitments = await api(`/api/commitments?peer=${encoded}`);
     return commitments
       .map((c) => ({
         id: c.id,
@@ -565,7 +612,8 @@ async function refreshJournal() {
       .sort((a, b) => b.at - a.at);
   };
   const items = await load();
-  const sig2 = journalSub + peerId + ':' + JSON.stringify(items.map((i) => [i.id, i.body]));
+  if (scope !== peerId || sub !== journalSub) return; // 旧子页/旧会话的响应不写新视图
+  const sig2 = sub + scope + ':' + JSON.stringify(items.map((i) => [i.id, i.body]));
   if (sig2 === journalSnapshot) return;
   journalSnapshot = sig2;
   const list = $('journal-list');
@@ -1070,7 +1118,7 @@ async function refreshSystem() {
   renderBackupState(status?.backup);
   const usage = await api('/api/usage?days=7').catch(() => null);
   if (!usage) return;
-  const usageSig = JSON.stringify([usage.calls, usage.input, usage.output, usage.rows?.length]);
+  const usageSig = JSON.stringify([usage.calls, usage.input, usage.output, usage.cached, usage.rows?.length]);
   if (usageSig === usageSnapshot) return;
   usageSnapshot = usageSig;
   const grid = $('usage-grid');
@@ -1289,10 +1337,12 @@ $('save-qq').onclick = () =>
 
 // 会话还活着就直接进面板：刷新/重开页面不该让人重输密码。
 void (async () => {
+  const seq = ++authSeq; // bootstrap 代际：手动登录/登出先到的话，晚到的恢复响应整体丢弃
   try {
     const session = await api('/api/session');
+    if (seq !== authSeq) return;
     csrf = session.csrf;
-    await enter();
+    await enter(seq);
   } catch {
     /* 未登录：停留登录页 */
   }
