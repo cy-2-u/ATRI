@@ -26,7 +26,9 @@ function parsePart(value: unknown): Part {
   return { type: part.type as Part['type'], ...(part.type === 'text' ? { text: string(part.text, '气泡文字', 20000) } : part.type === 'sticker' ? { slug: string(part.slug, '表情 slug', 100) } : { path: string(part.path, '文件路径', 1000) }), ...(part.reply === undefined ? {} : { reply: string(part.reply, 'reply', 200) }), ...(part.notified === undefined ? {} : { notified: strings(part.notified) }) };
 }
 
-export function parseThought(raw: string): Thought {
+/** 时间字段统一在解析层锚定成毫秒：下游（Store/runtime）只见数字。
+ *  tz 是她的配置时区——模型写裸本地时间不再整轮打回。 */
+export function parseThought(raw: string, tz?: string): Thought {
   const value = object(JSON.parse(raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')));
   const parts: Part[] = array(value.parts ?? [], 'parts').map(parsePart);
   const memories: MemoryInput[] = array(value.memories ?? [], 'memories').map(v => {
@@ -34,47 +36,47 @@ export function parseThought(raw: string): Thought {
     if (!['fact', 'interpretation', 'identity'].includes(String(m.kind))) throw new TypeError('记忆类型无效');
     const importance = m.importance === undefined ? 0.5 : m.importance;
     if (typeof importance !== 'number' || !Number.isFinite(importance) || importance < 0 || importance > 1) throw new TypeError('记忆重要性无效');
-    return { kind: m.kind as MemoryInput['kind'], content: string(m.content, '记忆', 3000), gist: string(m.gist, '记忆要旨', 300), slot: optional(m.slot, '事实槽', 100), sources: strings(m.sources), importance, emotion: axis(m.emotion), supersedes: m.supersedes === undefined ? [] : strings(m.supersedes) };
+    return { kind: m.kind as MemoryInput['kind'], content: string(m.content, '记忆', 3000), gist: string(m.gist, '记忆要旨', 300), slot: optional(m.slot, '事实槽', 100), sources: strings(m.sources, 'memories.sources'), importance, emotion: axis(m.emotion), supersedes: m.supersedes === undefined ? [] : strings(m.supersedes, 'memories.supersedes') };
   });
   const commitments: CommitmentInput[] = array(value.commitments ?? [], 'commitments').map(v => {
     const m = object(v);
     if (!['keep', 'complete', 'cancel'].includes(String(m.op))) throw new TypeError('约定操作无效');
     if (m.kind !== undefined && !['reminder', 'concern', 'promise'].includes(String(m.kind))) throw new TypeError('约定类型无效');
-    if (m.due !== undefined) instant(m.due);
+    if (m.due !== undefined) instant(m.due, tz);
     if (m.afterPart !== undefined && (!Number.isInteger(m.afterPart) || Number(m.afterPart) < 0 || Number(m.afterPart) >= parts.length)) throw new TypeError('承诺必须绑定存在的气泡');
     const recurrence = m.recurrence === undefined || m.recurrence === null ? undefined : object(m.recurrence);
     if (recurrence && (!['day', 'week', 'month', 'year'].includes(String(recurrence.unit)) || !Number.isInteger(recurrence.interval) || Number(recurrence.interval) < 1 || Number(recurrence.interval) > 100 || typeof recurrence.timezone !== 'string')) throw new TypeError('重复规则无效');
     if (recurrence) new Intl.DateTimeFormat('en', { timeZone: String(recurrence.timezone) });
-    return { op: m.op as CommitmentInput['op'], id: optional(m.id, '约定 ID'), kind: m.kind as CommitmentInput['kind'], content: optional(m.content, '约定', 2000), due: m.due as string | number | undefined, recurrence: m.recurrence === null ? null : recurrence as unknown as CommitmentInput['recurrence'], sources: strings(m.sources), afterPart: m.afterPart as number | undefined };
+    return { op: m.op as CommitmentInput['op'], id: optional(m.id, '约定 ID'), kind: m.kind as CommitmentInput['kind'], content: optional(m.content, '约定', 2000), due: m.due === undefined ? undefined : instant(m.due, tz), recurrence: m.recurrence === null ? null : recurrence as unknown as CommitmentInput['recurrence'], sources: strings(m.sources, 'commitments.sources'), afterPart: m.afterPart as number | undefined };
   });
   const thoughts: ThoughtOp[] = array(value.thoughts ?? [], 'thoughts').map(v => {
     const m = object(v);
     if (!['keep', 'drop'].includes(String(m.op))) throw new TypeError('念头操作无效');
-    if (m.due !== undefined) instant(m.due);
-    return { op: m.op as ThoughtOp['op'], id: optional(m.id, '念头 ID'), topic: optional(m.topic, '念头主题', 100), meaning: optional(m.meaning, '念头含义', 1000), due: m.due as string | number | undefined, sources: strings(m.sources) };
+    if (m.due !== undefined) instant(m.due, tz);
+    return { op: m.op as ThoughtOp['op'], id: optional(m.id, '念头 ID'), topic: optional(m.topic, '念头主题', 100), meaning: optional(m.meaning, '念头含义', 1000), due: m.due === undefined ? undefined : instant(m.due, tz), sources: strings(m.sources, 'thoughts.sources') };
   });
   let diary: DiaryInput | undefined;
   if (value.diary !== undefined) {
     const d = object(value.diary);
-    diary = { content: string(d.content, '日记', 8000), emotion: axis(d.emotion), sources: strings(d.sources) };
+    diary = { content: string(d.content, '日记', 8000), emotion: axis(d.emotion), sources: strings(d.sources, 'diary.sources') };
   }
   let impressions: Thought['impressions'];
   if (value.impressions !== undefined) {
     const i = object(value.impressions);
-    impressions = { beliefs: array(i.beliefs, 'impressions.beliefs').slice(0, 8).map(v => { const b = object(v); return { text: string(b.text, '认识', 300), basis: strings(b.basis, 16) }; }) };
+    impressions = { beliefs: array(i.beliefs, 'impressions.beliefs').slice(0, 8).map(v => { const b = object(v); return { text: string(b.text, '认识', 300), basis: strings(b.basis, 'impressions.basis', 16) }; }) };
     if (!impressions.beliefs.length) throw new TypeError('impressions.beliefs 不能为空');
   }
   const feeling = value.feeling === undefined ? undefined : object(value.feeling);
   const intents = array(value.intents ?? [], 'intents').map(v => {
-    const i = object(v); instant(i.at);
-    return { reason: string(i.reason, '未来意图', 1000), at: i.at as string | number, commitment: optional(i.commitment, '关联约定') };
+    const i = object(v); instant(i.at, tz);
+    return { reason: string(i.reason, '未来意图', 1000), at: instant(i.at, tz), commitment: optional(i.commitment, '关联约定') };
   });
   return { parts, memories, commitments, thoughts, ...(diary ? { diary } : {}), ...(impressions ? { impressions } : {}), intents,
     ...(feeling ? { feeling: { label: string(feeling.label, '情绪词', 100), valence: axis(feeling.valence), arousal: axis(feeling.arousal), patience: axis(feeling.patience), reason: string(feeling.reason, '情绪原因', 1000), sources: strings(feeling.sources) } } : {}),
     ...(value.reflection !== undefined ? { reflection: string(value.reflection, '心事', 3000) } : {}),
     ...(value.activity !== undefined ? { activity: string(value.activity, 'activity', 1000) } : {}),
     ...(value.pursuit !== undefined ? { pursuit: string(value.pursuit, 'pursuit', 1000) } : {}),
-    ...(value.interests !== undefined ? { interests: strings(value.interests, 20).map(v => string(v, '兴趣', 200)) } : {}),
+    ...(value.interests !== undefined ? { interests: strings(value.interests, 'interests', 20).map(v => string(v, '兴趣', 200)) } : {}),
   };
 }
 
@@ -238,7 +240,7 @@ export class Mind {
       }
       // 最终轮：渐进气泡已发出的，draftedIds 转正（不再回滚）
       try {
-        const thought = parseThought(completion.message.content);
+        const thought = parseThought(completion.message.content, this.config().life.timezone);
         if (repaired && progressiveCount) {
           // 修复/补账轮：模型改动 parts 数量 = 下标语义全变，回滚全部渐进走纯全量路径；
           // 数量一致则剪掉补账新增的气泡（已发气泡不可增），丢弃下标继续生效。

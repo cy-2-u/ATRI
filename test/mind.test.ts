@@ -79,6 +79,23 @@ test('协议解析：afterPart 越界直接拒绝', () => {
   assert.throws(() => parseThought(JSON.stringify({ parts: [{ type: 'text', text: 'x' }], commitments: [{ op: 'keep', kind: 'promise', content: 'x', due: store.now() + 1000, sources: [received.id], afterPart: 5 }] })), /承诺必须绑定存在的气泡/);
 });
 
+test('协议解析：模型写裸本地时间时按她的时区锚定成毫秒（不再整轮打回）', () => {
+  // due 裸时间（今天真实事故：GLM 吐 2026-11-25T20:00:00 被打回三次）
+  const withNaive = parseThought(JSON.stringify({ parts: [], commitments: [{ op: 'keep', kind: 'reminder', content: '提醒下课', due: '2026-11-25T20:00:00', sources: [received.id] }] }), 'Asia/Shanghai');
+  assert.equal(withNaive.commitments[0]!.due, Date.parse('2026-11-25T20:00:00+08:00'));
+  // intents.at 裸时间同样锚定
+  const withIntent = parseThought(JSON.stringify({ parts: [], intents: [{ reason: 'x', at: '2026-11-26T09:30:00' }] }), 'Asia/Shanghai');
+  assert.equal(withIntent.intents[0]!.at, Date.parse('2026-11-26T09:30:00+08:00'));
+  // 带时区 ISO 与毫秒直通不变
+  const withIso = parseThought(JSON.stringify({ parts: [], commitments: [{ op: 'keep', kind: 'reminder', content: 'x', due: '2026-11-25T20:00:00Z', sources: [received.id] }] }), 'Asia/Shanghai');
+  assert.equal(withIso.commitments[0]!.due, Date.parse('2026-11-25T20:00:00Z'));
+  const withMs = parseThought(JSON.stringify({ parts: [], commitments: [{ op: 'keep', kind: 'reminder', content: 'x', due: 1764000000000, sources: [received.id] }] }), 'Asia/Shanghai');
+  assert.equal(withMs.commitments[0]!.due, 1764000000000);
+  // 不存在的日期/乱文本仍然打回（锚定不是放水）
+  assert.throws(() => parseThought(JSON.stringify({ parts: [], commitments: [{ op: 'keep', kind: 'reminder', content: 'x', due: '2026-02-30T08:00:00', sources: [received.id] }] }), 'Asia/Shanghai'), /日期不存在|无法解析/);
+  assert.throws(() => parseThought(JSON.stringify({ parts: [], intents: [{ reason: 'x', at: '明天下午' }] }), 'Asia/Shanghai'), /时间需要/);
+});
+
 test('诚实红线：来源不存在于库中（伪造 id）一律拒绝', () => {
   throws(() => mind.validate(makeTurn(peer, ['fabricated-id']), { parts: [], memories: [{ kind: 'fact', content: 'x', gist: 'x', sources: ['fabricated-id'] }], commitments: [], intents: [] }, false), '库中无此事件');
 });

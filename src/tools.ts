@@ -28,7 +28,7 @@ export function tools(store: Store, config: () => Config, files: Files, recall: 
       } },
     { definition: { name: 'history', description: '查原始事件：ids 精确核实记忆，query 搜索聊天，before_seq 翻更早原文。返回真实来源 ID。', parameters: schema({ ids: { type: 'array', items: text, maxItems: 16 }, query: text, before_seq: { type: 'integer' } }) }, mutates: false,
       async run(args, ctx) {
-        const events = args.ids ? store.evidence(ctx.turn.peer, strings(args.ids, 16)) : args.query ? store.searchHistory(ctx.turn.peer, string(args.query, 'query')) : store.recent(ctx.turn.peer, 20, page(args.before_seq, ctx.turn.snapshot));
+        const events = args.ids ? store.evidence(ctx.turn.peer, strings(args.ids, 'history.ids', 16)) : args.query ? store.searchHistory(ctx.turn.peer, string(args.query, 'query')) : store.recent(ctx.turn.peer, 20, page(args.before_seq, ctx.turn.snapshot));
         const visible = events.filter(e => e.seq <= ctx.turn.snapshot || e.turn === ctx.turn.id);
         visible.forEach(e => ctx.turn.allowed.add(e.id));
         return visible;

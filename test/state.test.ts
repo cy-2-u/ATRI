@@ -119,6 +119,13 @@ test('时间数学：instant 校验、周期约定的下次发生、DST 本地�
   assert.equal(instant('2026-01-01T00:00:00Z'), Date.parse('2026-01-01T00:00:00Z'));
   assert.equal(instant(123456789), 123456789);
   assert.throws(() => instant('2026-02-30T00:00:00Z'));
+  // 裸本地时间 + 时区：模型说墙钟时刻，代码负责时区换算（她的时区是配置项）
+  const naive = instant('2026-01-01T08:00:00', 'Asia/Shanghai');
+  assert.equal(new Date(naive).toISOString(), '2026-01-01T00:00:00.000Z'); // 上海 8 点 = UTC 0 点
+  assert.ok(Number.isFinite(instant('2026-01-01T08:00:00.500', 'Asia/Shanghai'))); // 带秒/毫秒的裸时间
+  assert.throws(() => instant('2026-02-30T08:00:00', 'Asia/Shanghai')); // 不存在的日期照样打回
+  assert.throws(() => instant('明天下午', 'Asia/Shanghai')); // 乱文本照样打回
+  assert.throws(() => instant('2026-01-01T08:00:00')); // 无 tz 裸时间维持严格拒绝（治理锚点在调用方）
   const anchor = Date.parse('2026-01-31T09:00:00+08:00');
   const next = nextOccurrence(anchor, { unit: 'month', interval: 1, timezone: tz }, Date.parse('2026-02-25T00:00:00+08:00'));
   assert.equal(dayKey(next, tz), '2026-02-28'); // 短月收尾

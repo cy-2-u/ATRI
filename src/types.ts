@@ -252,8 +252,10 @@ export const string = (value: unknown, name: string, max = 4000): string => {
   if (typeof value !== 'string' || !value.trim() || value.length > max) throw new TypeError(`${name} 无效`);
   return value.trim();
 };
-export const strings = (value: unknown, max = 32): string[] => {
-  if (!Array.isArray(value) || value.length > max || value.some(v => typeof v !== 'string')) throw new TypeError('需要文本数组');
+/** 字符串数组校验：name 字段定位进报错——修复轮的模型拿到「sources 需要文本数组」
+ *  才知道改哪里，裸「需要文本数组」命中率极低（真实事故：2026-11-25 三连败）。 */
+export const strings = (value: unknown, name = 'sources', max = 32): string[] => {
+  if (!Array.isArray(value) || value.length > max || value.some(v => typeof v !== 'string')) throw new TypeError(`${name} 需要文本数组`);
   return [...new Set(value as string[])];
 };
 export const axis = (value: unknown, fallback = 0): number => {

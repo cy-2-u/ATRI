@@ -43,14 +43,21 @@ export function minutesOfDay(at: number, timezone: string): number {
   return p.hour * 60 + p.minute;
 }
 
-export function instant(value: unknown): number {
+/** 时间字段解析：Unix 毫秒、带 Z/时区偏移的 ISO 直通；
+ *  裸本地时间（无时区标记）+ 调用方提供时区时按该时区锚定——模型说墙钟时刻，
+ *  时区换算是代码的职责，不该整轮打回让模型猜 UTC 偏移。无 tz 时维持严格拒绝。 */
+export function instant(value: unknown, tz?: string): number {
   if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 && value <= 8640000000000000) return value;
-  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:\d{2})$/.test(value)) throw new TypeError('时间需要 Unix 毫秒或带 Z/时区偏移的 ISO 时间，不能使用无时区日期');
-  const at = Date.parse(value);
-  if (!Number.isFinite(at)) throw new TypeError('时间无效');
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2})?$/.test(value)) throw new TypeError('时间需要 Unix 毫秒或带 Z/时区偏移的 ISO 时间，不能使用无时区日期');
   const calendar = value.slice(0, 10);
   const [y, m, d] = calendar.split('-').map(Number) as [number, number, number];
   if (m < 1 || m > 12 || d < 1 || d > new Date(Date.UTC(y, m, 0)).getUTCDate()) throw new TypeError('日期不存在');
+  if (!value.endsWith('Z') && !/[+-]\d{2}:\d{2}$/.test(value)) {
+    if (!tz) throw new TypeError('时间需要 Unix 毫秒或带 Z/时区偏移的 ISO 时间，不能使用无时区日期');
+    return fromLocal({ year: y, month: m, day: d, hour: Number(value.slice(11, 13)), minute: Number(value.slice(14, 16)), second: Number(value.slice(17, 19) || 0) }, tz);
+  }
+  const at = Date.parse(value);
+  if (!Number.isFinite(at)) throw new TypeError('时间无效');
   return at;
 }
 
