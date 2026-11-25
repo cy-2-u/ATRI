@@ -62,6 +62,11 @@ export class Store {
       CREATE TABLE IF NOT EXISTS media_cache(key TEXT PRIMARY KEY,info TEXT NOT NULL,expires INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS wall(id TEXT PRIMARY KEY,peer TEXT NOT NULL,author TEXT NOT NULL,text TEXT NOT NULL,path TEXT,at INTEGER NOT NULL);
     `);
+    // 存量库迁移：wall.public 是已删除的旧功能残留列，代码零引用——启动时幂等清理。
+    // SQLite 的 ALTER TABLE DROP COLUMN 要求 3.35+；列不存在时跳过，重复启动无副作用。
+    if (this.sql("SELECT COUNT(*) n FROM pragma_table_info('wall') WHERE name='public'").get()!.n) {
+      this.db.exec('ALTER TABLE wall DROP COLUMN public');
+    }
     this.recover();
   }
 
@@ -149,8 +154,11 @@ export class Store {
   evidence(peer: string, ids: string[]): Event[] {
     return [...new Set(ids)].flatMap(id => { const row = this.sql('SELECT * FROM events WHERE id=? AND peer=?').get(id, peer); return row ? [this.eventRow(row)] : []; });
   }
-  eventByDedupe(dedupe: string): Event | undefined {
-    const row = this.sql('SELECT * FROM events WHERE dedupe=?').get(dedupe);
+  /** dedupe 查询；传 peer 时限定会话——调用方（补账/回填）只应看见本会话的事件。 */
+  eventByDedupe(dedupe: string, peer?: string): Event | undefined {
+    const row = peer
+      ? this.sql('SELECT * FROM events WHERE dedupe=? AND peer=?').get(dedupe, peer)
+      : this.sql('SELECT * FROM events WHERE dedupe=?').get(dedupe);
     return row ? this.eventRow(row) : undefined;
   }
   searchHistory(peer: string, query: string, limit = 12): Event[] {
@@ -314,7 +322,8 @@ export class Store {
       const raw = this.sql('SELECT * FROM outbox WHERE id=?').get(id);
       if (!raw || !['pending', 'sending', ...(manual ? ['unknown', 'failed'] : [])].includes(String(raw.status))) return false;
       const envelope = this.envelope(raw);
-      this.sql('UPDATE outbox SET status=?,platform_id=?,error=? WHERE id=?').run(status, platformId ?? null, error ?? null, id);
+      // accepted 即终态：request 只服务于 sending 失败重发，落地即释放——账本不留死数据。
+      this.sql('UPDATE outbox SET status=?,platform_id=?,error=?,request=NULL WHERE id=?').run(status, platformId ?? null, error ?? null, id);
       if (status === 'accepted') {
         const event = this.append(envelope.peer, 'accepted', { ...envelope.part, platformId, delivery: id, note: '平台确认接收，不代表用户已读' }, envelope.turn, `accepted:${id}`);
         if (!event) return true; // 接收事件已存在（dedupe 撞车=重复 settle）：不再重复立约与记账
@@ -485,6 +494,8 @@ export class Store {
       }
       if (old!.status !== 'open') return old!;
       this.sql("UPDATE jobs SET state='cancelled' WHERE id=? AND state='pending'").run(`commitment:${old!.id}:${old!.version}`);
+      // 非周期约定的终止即 anchor 生命终点：删键防孤儿（周期约定 complete 后还要续期，保留）。
+      if (!old!.recurrence) this.sql('DELETE FROM kv WHERE key=?').run(`anchor:${old!.id}`);
       let c: Commitment = { ...old!, sources: [...new Set([...old!.sources, ...input.sources])], status: input.op === 'complete' ? 'completed' : 'cancelled' };
       if (input.op === 'complete' && old!.recurrence) {
         const anchor = this.get(`anchor:${old!.id}`, old!.dueAt);
@@ -612,6 +623,11 @@ export class Store {
         const value = parse<{ at?: number } | number>(row.value);
         const at = typeof value === 'object' && value ? Number(value.at ?? 0) : 0;
         if (at > 0 && at < now - 86400000) this.sql('DELETE FROM kv WHERE key=?').run(row.key);
+      }
+      // anchor 孤儿兜底：约定本体已不在（历史版本迁移/旧 bug 残留）的 anchor 键一并清。
+      const known = new Set(this.sql('SELECT id FROM commitments').all().map(r => parse<{ id: string }>(r.value).id));
+      for (const row of this.sql("SELECT key FROM kv WHERE key LIKE 'anchor:%'").all() as { key: string }[]) {
+        if (!known.has(row.key.slice(7))) this.sql('DELETE FROM kv WHERE key=?').run(row.key);
       }
     });
   }

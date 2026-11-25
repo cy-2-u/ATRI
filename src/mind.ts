@@ -202,7 +202,7 @@ export class Mind {
               catch (error) { status = mutates && (signal.aborted || call.name === 'draw') ? 'unknown' : 'failed'; result = { error: errorText(error), ...(status === 'unknown' ? { uncertain: true, note: '不能假定未产生副作用，禁止盲目重做' } : {}) }; }
               this.store.toolFinish(id, status, this.receiptResult(result));
             }
-            const existing = this.store.sql('SELECT id FROM events WHERE peer=? AND dedupe=?').get(turn.peer, `tool:${id}`);
+            const existing = this.store.eventByDedupe(`tool:${id}`, turn.peer);
             const event = existing ? undefined : this.store.append(turn.peer, 'action', { tool: call.name, args: call.args, mutates: !!mutates, succeeded, status, result: this.receiptResult(result) }, turn.id, `tool:${id}`);
             receipt = event?.id ?? (existing ? String(existing.id) : undefined);
             if (receipt) turn.allowed.add(receipt);

@@ -367,7 +367,7 @@ export class Runtime {
     try {
       const old = input.id ? this.store.commitment(peerId, input.id) : this.store.commitments(peerId).find(c => c.status === 'open' && c.content === input.content && c.kind === input.kind);
       const expected = old ? { id: old.id, version: old.version, status: old.status } : null;
-      const event = this.store.eventByDedupe(`accepted:${env.id}`);
+      const event = this.store.eventByDedupe(`accepted:${env.id}`, peerId);
       if (!event) throw new Error('接收事件缺失');
       this.store.changeCommitment(peerId, { ...input, ...(expected ? { id: expected.id } : {}), sources: [...new Set([...input.sources, event.id])] });
     } catch (error) {

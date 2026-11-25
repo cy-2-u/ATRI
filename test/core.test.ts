@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import { tmpOpen, tmpRoot, tmpStore } from './tmp.ts';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { sandboxArgs } from '../src/files.ts';
 
 const newStore = (now = Date.now) => tmpStore('atri-test-', now);
@@ -131,6 +132,49 @@ test('outbox 生命周期：draft → 发送 → unknown 可人工裁决；新�
   assert.ok(event2);
   assert.equal(store.deliveries(peer).find(d => d.id === byOrdinal[1]!.id)!.status, 'cancelled');
   store.close();
+});
+
+test('账本卫生：accepted 行释放 request、eventByDedupe 包装、cancel 清 anchor、wall.public 列迁移', () => {
+  const store = newStore();
+  const peer = 'c2c:user1';
+  store.ensurePeer({ kind: 'c2c', id: 'user1' });
+  const event = store.append(peer, 'received', { text: '嗨' })!;
+  const turn = { id: 't1', episode: 'ep', peer, snapshot: event.seq, jobs: [], allowed: new Set([event.id]) };
+  // ① accepted 后 request 列应清空（唯一读取方是 sending 失败重发，终态行无读取价值）
+  store.draftOne(turn, 0, { type: 'text', text: '在的' }, {}, store.now());
+  const env = store.deliveries(peer)[0]!;
+  store.startSend(env.id, { msg_type: 0, content: '在的' });
+  assert.ok(store.settleSend(env.id, 'accepted', 'pid1'));
+  assert.equal(store.deliveries(peer)[0]!.request, undefined);
+  // ② Mind 不再直触 SQL：eventByDedupe 与 eventByDedupe(peer) 两种取法
+  assert.equal(store.eventByDedupe(`accepted:${env.id}`)!.id, store.eventByDedupe(`accepted:${env.id}`, peer)!.id);
+  assert.equal(store.eventByDedupe('不存在', peer), undefined);
+  // ④ 约定取消后 anchor 键清理；周期约定续期时 anchor 保留
+  const c = store.changeCommitment(peer, { op: 'keep', kind: 'reminder', content: '提醒浇水', due: store.now() + 86400000, sources: [event.id] });
+  const daily = store.changeCommitment(peer, { op: 'keep', kind: 'concern', content: '问早安', due: store.now() + 86400000, recurrence: { unit: 'day', interval: 1, timezone: 'Asia/Shanghai' }, sources: [event.id] });
+  assert.ok(store.get(`anchor:${c.id}`, 0) > 0 && store.get(`anchor:${daily.id}`, 0) > 0);
+  store.changeCommitment(peer, { op: 'cancel', id: c.id, sources: [event.id] });
+  assert.equal(store.get(`anchor:${c.id}`, 0), 0);
+  assert.ok(store.get(`anchor:${daily.id}`, 0) > 0); // 周期约定 complete/cancel 后 anchor 仍被续期读取
+  store.changeCommitment(peer, { op: 'complete', id: daily.id, sources: [event.id] });
+  assert.ok(store.get(`anchor:${daily.id}`, 0) > 0);
+  store.close();
+});
+
+test('wall.public 残留列：旧库启动迁移为幂等 DROP，新库不再有此列', () => {
+  const dir = tmpRoot('atri-test-');
+  const path = join(dir, 'atri.db');
+  const legacy = new DatabaseSync(path);
+  legacy.exec(`CREATE TABLE wall(id TEXT PRIMARY KEY,peer TEXT NOT NULL,author TEXT NOT NULL,text TEXT NOT NULL,path TEXT,at INTEGER NOT NULL,public INTEGER);
+    INSERT INTO wall(id,peer,author,text,path,at,public) VALUES('w1','p','atri','旧作品',NULL,1,1)`);
+  legacy.close();
+  const store = tmpOpen(path); // 构造器执行迁移
+  assert.equal(store.sql("SELECT COUNT(*) n FROM pragma_table_info('wall') WHERE name='public'").get()!.n, 0);
+  assert.equal(store.wall('p')[0]!.text, '旧作品'); // 数据完好
+  store.close();
+  const store2 = tmpOpen(path); // 二次打开幂等
+  assert.equal(store2.sql("SELECT COUNT(*) n FROM pragma_table_info('wall') WHERE name='public'").get()!.n, 0);
+  store2.close();
 });
 
 test('摘要段：保存与合并', () => {
