@@ -79,6 +79,22 @@ test('协议解析：afterPart 越界直接拒绝', () => {
   assert.throws(() => parseThought(JSON.stringify({ parts: [{ type: 'text', text: 'x' }], commitments: [{ op: 'keep', kind: 'promise', content: 'x', due: store.now() + 1000, sources: [received.id], afterPart: 5 }] })), /承诺必须绑定存在的气泡/);
 });
 
+test('协议解析：格式层死错误代码修复，语义层照旧严格', () => {
+  // 单字符串 sources 自动包数组；数字 id 转字符串——无歧义格式错误不重试
+  const fixed = parseThought(JSON.stringify({ parts: [], memories: [{ kind: 'fact', content: 'x', gist: 'x', sources: 'single-id', supersedes: 7 }], intents: [{ reason: 'x', at: 1764000000000 }] }), 'Asia/Shanghai');
+  assert.deepEqual(fixed.memories[0]!.sources, ['single-id']);
+  assert.deepEqual(fixed.memories[0]!.supersedes, ['7']);
+  // 情绪/重要性超界 clamp：主观权重截断比重试便宜
+  const clamped = parseThought(JSON.stringify({ parts: [], feeling: { label: 'x', valence: 3, arousal: '0.7', patience: null, reason: 'r', sources: [] }, memories: [{ kind: 'fact', content: 'x', gist: 'x', sources: [], importance: 1.5 }] }), 'Asia/Shanghai');
+  assert.equal(clamped.feeling!.valence, 1);
+  assert.equal(clamped.feeling!.arousal, 0.7);
+  assert.equal(clamped.feeling!.patience, 0); // 垃圾文本回 fallback
+  assert.equal(clamped.memories[0]!.importance, 1);
+  // 守门点：真垃圾仍然打回（对象混进数组、语义层 evidence 白名单不变）
+  assert.throws(() => parseThought(JSON.stringify({ parts: [], memories: [{ kind: 'fact', content: 'x', gist: 'x', sources: [{ deep: 'id' }] }] })), /memories\.sources 需要文本数组/);
+  assert.throws(() => parseThought(JSON.stringify({ parts: [], intents: [{ reason: 'x', at: '明天下午' }] }), 'Asia/Shanghai'), /时间需要/);
+});
+
 test('协议解析：模型写裸本地时间时按她的时区锚定成毫秒（不再整轮打回）', () => {
   // due 裸时间（今天真实事故：GLM 吐 2026-11-25T20:00:00 被打回三次）
   const withNaive = parseThought(JSON.stringify({ parts: [], commitments: [{ op: 'keep', kind: 'reminder', content: '提醒下课', due: '2026-11-25T20:00:00', sources: [received.id] }] }), 'Asia/Shanghai');

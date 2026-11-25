@@ -253,14 +253,22 @@ export const string = (value: unknown, name: string, max = 4000): string => {
   return value.trim();
 };
 /** 字符串数组校验：name 字段定位进报错——修复轮的模型拿到「sources 需要文本数组」
- *  才知道改哪里，裸「需要文本数组」命中率极低（真实事故：2026-11-25 三连败）。 */
+ *  才知道改哪里，裸「需要文本数组」命中率极低（真实事故：2026-11-25 三连败）。
+ *  格式层容错：单个字符串自动包成单元素数组、数字/布尔 id 转字符串——这些是
+ *  无歧义的死错误，代码修比整轮重试便宜。真数组但混入对象等垃圾仍打回。 */
 export const strings = (value: unknown, name = 'sources', max = 32): string[] => {
-  if (!Array.isArray(value) || value.length > max || value.some(v => typeof v !== 'string')) throw new TypeError(`${name} 需要文本数组`);
-  return [...new Set(value as string[])];
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') value = [value];
+  if (!Array.isArray(value)) throw new TypeError(`${name} 需要文本数组`);
+  const fixed = value.map(v => (typeof v === 'number' || typeof v === 'boolean' ? String(v) : v));
+  if (fixed.length > max || fixed.some(v => typeof v !== 'string')) throw new TypeError(`${name} 需要文本数组`);
+  return [...new Set(fixed)];
 };
+/** 情绪轴：格式层容错——可解析的数字 clamp 进 [-1,1]，垃圾文本用 fallback。
+ *  情绪值是模型的主观呈现不是诚实凭据，超界截断比整轮重试便宜（微信版同款）。 */
 export const axis = (value: unknown, fallback = 0): number => {
   if (value === undefined) return fallback;
-  if (typeof value !== 'number' || !Number.isFinite(value) || Math.abs(value) > 1) throw new TypeError('情绪数值必须在 -1 到 1');
-  return value;
+  if (typeof value === 'number' && Number.isFinite(value)) return Math.max(-1, Math.min(1, value));
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.max(-1, Math.min(1, n)) : fallback;
 };
 export const errorText = (error: unknown): string => error instanceof Error ? error.message : String(error);

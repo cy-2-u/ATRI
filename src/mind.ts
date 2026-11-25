@@ -35,8 +35,9 @@ export function parseThought(raw: string, tz?: string): Thought {
     const m = object(v);
     if (!['fact', 'interpretation', 'identity'].includes(String(m.kind))) throw new TypeError('记忆类型无效');
     const importance = m.importance === undefined ? 0.5 : m.importance;
-    if (typeof importance !== 'number' || !Number.isFinite(importance) || importance < 0 || importance > 1) throw new TypeError('记忆重要性无效');
-    return { kind: m.kind as MemoryInput['kind'], content: string(m.content, '记忆', 3000), gist: string(m.gist, '记忆要旨', 300), slot: optional(m.slot, '事实槽', 100), sources: strings(m.sources, 'memories.sources'), importance, emotion: axis(m.emotion), supersedes: m.supersedes === undefined ? [] : strings(m.supersedes, 'memories.supersedes') };
+    if (typeof importance !== 'number' || !Number.isFinite(importance)) throw new TypeError('记忆重要性无效');
+    const clamped = Math.max(0, Math.min(1, importance)); // 超界 clamp：重要性是主观权重不是诚实凭据，截断比重试便宜
+    return { kind: m.kind as MemoryInput['kind'], content: string(m.content, '记忆', 3000), gist: string(m.gist, '记忆要旨', 300), slot: optional(m.slot, '事实槽', 100), sources: strings(m.sources, 'memories.sources'), importance: clamped, emotion: axis(m.emotion), supersedes: m.supersedes === undefined ? [] : strings(m.supersedes, 'memories.supersedes') };
   });
   const commitments: CommitmentInput[] = array(value.commitments ?? [], 'commitments').map(v => {
     const m = object(v);
