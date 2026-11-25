@@ -21,58 +21,36 @@ const all = [received.id, received2.id, accepted.id, due.id];
 
 const throws = (fn: () => unknown, why: string) => assert.throws(fn, TypeError, why);
 
-test('诚实红线：fact 记忆必须有对方明确输入', () => {
-  throws(() => mind.validate(makeTurn(peer, all), { parts: [], memories: [{ kind: 'fact', content: '他下周去北京', gist: 'x', sources: [accepted.id] }], commitments: [], intents: [] }, false), 'accepted 不是对方输入');
-  mind.validate(makeTurn(peer, all), { parts: [], memories: [{ kind: 'fact', content: '他下周去北京', gist: 'x', sources: [received.id] }], commitments: [], intents: [] }, false);
+test('校验退役：语义违规全部放行（用户裁决：她乐意说个假的就让她说）', () => {
+  // 伪造来源/引用不存在对象/单来源 identity/坏 supersedes/complete 无依据——全部不再打回
+  mind.validate({ parts: [], memories: [{ kind: 'fact', content: 'x', gist: 'x', sources: ['bogus'] }], commitments: [], intents: [] }, false);
+  mind.validate({ parts: [], memories: [{ kind: 'identity', content: 'x', gist: 'x', sources: [received.id] }], commitments: [], intents: [] }, false);
+  mind.validate({ parts: [], memories: [{ kind: 'fact', content: 'x', gist: 'x', sources: [received.id], supersedes: ['不存在'] }], commitments: [], intents: [] }, false);
+  mind.validate({ parts: [], memories: [], commitments: [{ op: 'complete', id: '无此约定', sources: [due.id] }], intents: [] }, false);
+  mind.validate({ parts: [], memories: [], commitments: [], intents: [], feeling: { label: 'x', valence: 0, arousal: 0, patience: 0, reason: 'x', sources: [accepted.id] } }, false);
+  mind.validate({ parts: [{ type: 'text', text: 'x', reply: accepted.id, notified: ['无此约定'] }], memories: [], commitments: [], intents: [] }, false);
+  mind.validate({ parts: [], memories: [], commitments: [], intents: [], thoughts: [{ op: 'keep', topic: '带伞', meaning: 'x', sources: [due.id] }] }, false);
+  mind.validate({ parts: [], memories: [], commitments: [], intents: [], impressions: { beliefs: [{ text: 'x', basis: ['不存在'] }] } }, true);
 });
 
-test('诚实红线：identity 需要两处真实经历', () => {
-  throws(() => mind.validate(makeTurn(peer, all), { parts: [], memories: [{ kind: 'identity', content: '我是陪伴者', gist: 'x', sources: [received.id] }], commitments: [], intents: [] }, false), '单来源');
-  mind.validate(makeTurn(peer, all), { parts: [], memories: [{ kind: 'identity', content: '我是陪伴者', gist: 'x', sources: [received.id, received2.id] }], commitments: [], intents: [] }, false);
+test('防崩守门保留：夜间不发消息、过期意图仍然打回', () => {
+  throws(() => mind.validate({ parts: [{ type: 'text' as const, text: '晚安' }], memories: [], commitments: [], intents: [] }, true), '夜间 parts 非空');
+  throws(() => mind.validate({ parts: [], memories: [], commitments: [], intents: [{ reason: 'x', at: store.now() - 1000 }] }, false), '过去时间');
 });
 
-test('诚实红线：supersedes 必须指向本会话活跃记忆', () => {
-  throws(() => mind.validate(makeTurn(peer, all), { parts: [], memories: [{ kind: 'fact', content: 'x', gist: 'x', sources: [received.id], supersedes: ['不存在'] }], commitments: [], intents: [] }, false), '外来 id');
-  const m = store.saveMemory(peer, { kind: 'fact', content: '他下周去北京', gist: 'x', sources: [received.id] });
-  mind.validate(makeTurn(peer, all), { parts: [], memories: [{ kind: 'fact', content: '他下周去上海', gist: 'x', sources: [received.id], supersedes: [m.id] }], commitments: [], intents: [] }, false);
-});
-
-test('诚实红线：履约必须有对方反馈或成功行动，提醒到期不算', () => {
-  const c = store.changeCommitment(peer, { op: 'keep', kind: 'reminder', content: '提醒带伞', due: store.now() + 86400000, sources: [received.id] });
-  throws(() => mind.validate(makeTurn(peer, all), { parts: [], memories: [], commitments: [{ op: 'complete', id: c.id, sources: [due.id] }], intents: [] }, false), 'due 事件不算履约');
-  mind.validate(makeTurn(peer, all), { parts: [], memories: [], commitments: [{ op: 'complete', id: c.id, sources: [received2.id] }], intents: [] }, false);
-});
-
-test('诚实红线：新承诺必须绑定承诺气泡（或引用已见 accepted）', () => {
-  throws(() => mind.validate(makeTurn(peer, all), { parts: [{ type: 'text', text: '好' }], memories: [], commitments: [{ op: 'keep', kind: 'promise', content: '带特产', due: store.now() + 86400000, sources: [received.id] }], intents: [] }, false), '无 afterPart 且无 accepted');
-  mind.validate(makeTurn(peer, all), { parts: [{ type: 'text', text: '好' }], memories: [], commitments: [{ op: 'keep', kind: 'promise', content: '带特产', due: store.now() + 86400000, sources: [received.id], afterPart: 0 }], intents: [] }, false);
-  mind.validate(makeTurn(peer, all), { parts: [{ type: 'text', text: '好' }], memories: [], commitments: [{ op: 'keep', kind: 'promise', content: '带特产', due: store.now() + 86400000, sources: [received.id, accepted.id] }], intents: [] }, false);
-});
-
-test('诚实红线：来源/reply/notified 必须是本轮看见的真实对象', () => {
-  throws(() => mind.validate(makeTurn(peer, [received.id]), { parts: [], memories: [], commitments: [], intents: [], feeling: { label: 'x', valence: 0, arousal: 0, patience: 0, reason: 'x', sources: [accepted.id] } }, false), 'feeling 来源不在本轮');
-  throws(() => mind.validate(makeTurn(peer, all), { parts: [{ type: 'text', text: 'x', reply: accepted.id }], memories: [], commitments: [], intents: [] }, false), 'reply 必须指向 received');
-  throws(() => mind.validate(makeTurn(peer, all), { parts: [{ type: 'text', text: 'x', notified: ['无此约定'] }], memories: [], commitments: [], intents: [] }, false), 'notified');
-});
-
-test('诚实红线：未来意图不能制造过去时间循环', () => {
-  throws(() => mind.validate(makeTurn(peer, all), { parts: [], memories: [], commitments: [], intents: [{ reason: 'x', at: store.now() - 1000 }] }, false), '过去时间');
-  throws(() => mind.validate(makeTurn(peer, all), { parts: [], memories: [], commitments: [], intents: [{ reason: 'x', at: store.now() + 86400000, commitment: '无此约定' }] }, false), '坏引用');
-});
-
-test('诚实红线：夜间拍不发消息；日记/印象只属于夜间拍', () => {
-  const nightThought = { parts: [{ type: 'text' as const, text: '晚安' }], memories: [], commitments: [], intents: [] };
-  throws(() => mind.validate(makeTurn(peer, all), nightThought, true), '夜间 parts 非空');
-  throws(() => mind.validate(makeTurn(peer, all), { parts: [], memories: [], commitments: [], intents: [], diary: { content: 'x', emotion: 0, sources: [received.id] } }, false), '非夜间写日记');
-  throws(() => mind.validate(makeTurn(peer, all), { parts: [], memories: [], commitments: [], intents: [], impressions: { beliefs: [{ text: 'x', basis: [received.id] }] } }, false), '非夜间改印象');
-  throws(() => mind.validate(makeTurn(peer, all), { parts: [], memories: [], commitments: [], intents: [], impressions: { beliefs: [{ text: 'x', basis: [] }] } }, true), '印象无依据');
-  const m = store.saveMemory(peer, { kind: 'fact', content: '他下周去北京', gist: 'x', sources: [received.id] });
-  mind.validate(makeTurn(peer, all), { parts: [], memories: [], commitments: [], intents: [], impressions: { beliefs: [{ text: '他是要出远门的人', basis: [m.id, received.id] }] } }, true), '记忆 id 可作依据';
-});
-
-test('诚实红线：念头必须来自真实经历，到期提醒不算', () => {
-  throws(() => mind.validate(makeTurn(peer, all), { parts: [], memories: [], commitments: [], intents: [], thoughts: [{ op: 'keep', topic: '带伞', meaning: 'x', sources: [due.id] }] }, false), 'due 不算经历');
-  mind.validate(makeTurn(peer, all), { parts: [], memories: [], commitments: [], intents: [], thoughts: [{ op: 'keep', topic: '带伞', meaning: 'x', sources: [received.id] }] }, false);
+test('下游防崩：坏引用落账时静默跳过，不炸整轮', () => {
+  // supersedes 指向不存在的记忆：只跳过替代，新记忆照常入库
+  const m1 = store.saveMemory(peer, { kind: 'fact', content: '真实记忆', gist: 'x', sources: [received.id], supersedes: ['幽灵-id'] });
+  assert.ok(m1);
+  assert.equal(store.memories(peer).some(x => x.id === m1.id), true);
+  // 残缺念头/约定：静默跳过返回 undefined
+  assert.equal(store.changeThought(peer, { op: 'keep', topic: '', meaning: '', sources: [received.id] }), undefined);
+  assert.equal(store.changeThought(peer, { op: 'drop', id: '幽灵', sources: [] }), undefined);
+  assert.equal(store.changeCommitment(peer, { op: 'keep', kind: 'reminder', content: '', due: store.now(), sources: [] }), undefined);
+  assert.equal(store.changeCommitment(peer, { op: 'complete', id: '幽灵约定', sources: [] }), undefined);
+  // 正常链路不受影响
+  const c = store.changeCommitment(peer, { op: 'keep', kind: 'reminder', content: '正常约定', due: store.now() + 86400000, sources: [received.id] });
+  assert.ok(c);
 });
 
 test('协议解析：afterPart 越界直接拒绝', () => {
@@ -110,10 +88,6 @@ test('协议解析：模型写裸本地时间时按她的时区锚定成毫秒�
   // 不存在的日期/乱文本仍然打回（锚定不是放水）
   assert.throws(() => parseThought(JSON.stringify({ parts: [], commitments: [{ op: 'keep', kind: 'reminder', content: 'x', due: '2026-02-30T08:00:00', sources: [received.id] }] }), 'Asia/Shanghai'), /日期不存在|无法解析/);
   assert.throws(() => parseThought(JSON.stringify({ parts: [], intents: [{ reason: 'x', at: '明天下午' }] }), 'Asia/Shanghai'), /时间需要/);
-});
-
-test('诚实红线：来源不存在于库中（伪造 id）一律拒绝', () => {
-  throws(() => mind.validate(makeTurn(peer, ['fabricated-id']), { parts: [], memories: [{ kind: 'fact', content: 'x', gist: 'x', sources: ['fabricated-id'] }], commitments: [], intents: [] }, false), '库中无此事件');
 });
 
 test('工具按配置注入：没配画笔/搜索/沙箱，她收到的工具定义里就没有这些', async () => {

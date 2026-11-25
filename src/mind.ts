@@ -255,7 +255,7 @@ export class Mind {
         } else if (progressive?.dropped.size) {
           thought.dropped = [...progressive.dropped];
         }
-        this.validate(turn, thought, isNight);
+        this.validate(thought, isNight);
         return thought;
       } catch (error) {
         if (repaired) throw error;
@@ -273,62 +273,15 @@ export class Mind {
     return result;
   }
 
-  validate(turn: Turn, thought: Thought, night: boolean): void {
-    const evidence = (ids: string[]): ReturnType<Store['evidence']> => {
-      if (!ids.length || ids.some(id => !turn.allowed.has(id))) throw new TypeError('来源必须是本轮看见的真实事件 ID');
-      const events = this.store.evidence(turn.peer, ids);
-      if (events.length !== new Set(ids).size) throw new TypeError('来源不属于当前对话');
-      return events;
-    };
+  /** 校验只防崩不拦人（用户裁决 2026-11-25：她乐意说个假的就让她说，不拦）。
+   *  保留：夜间 parts 必须为空（夜间拍的契约前提，违反会让日记/记忆逻辑错乱）、
+   *  过期时间戳（负数 due 会让调度器立刻空转）。
+   *  退役：sources/evidence 白名单、履约依据、reply/notified 引用、supersedes、
+   *  intents.commitment 等全部语义检查——模型引用失效来源照单全收，下游各自容错。 */
+  validate(thought: Thought, night: boolean): void {
     if (night && thought.parts.length) throw new TypeError('夜间整理不发消息：parts 必须为空');
-    const active = this.store.memories(turn.peer);
-    for (const m of thought.memories) {
-      const events = evidence(m.sources);
-      if (m.kind === 'fact' && !events.some(e => e.kind === 'received')) throw new TypeError('事实记忆需要对方明确输入');
-      if (m.kind === 'identity' && new Set(m.sources).size < 2) throw new TypeError('长期自我认识需要两处私聊真实经历');
-      if (m.supersedes?.some(id => !active.some(old => old.id === id && old.peer === turn.peer))) throw new TypeError('修订目标不属于当前会话');
-    }
-    for (const c of thought.commitments) {
-      const events = evidence(c.sources), old = c.id ? this.store.commitment(turn.peer, c.id) : undefined;
-      if (c.id && !old || c.op !== 'keep' && !old) throw new TypeError('约定不存在');
-      if (c.op === 'keep' && !c.id && (!c.content || !c.kind)) throw new TypeError('新约定需要内容和类型');
-      if (c.recurrence && !(c.due ?? old?.dueAt)) throw new TypeError('重复约定需要起始时间');
-      if (c.op === 'complete' && !events.some(e => e.kind === 'received' || e.kind === 'action' && e.data.succeeded === true && e.data.mutates === true)) throw new TypeError('履约需要对方反馈或成功行动，读记录不等于履约');
-      if (c.op === 'keep' && (c.kind ?? old?.kind) === 'promise' && c.afterPart === undefined && !events.some(e => e.kind === 'accepted')) throw new TypeError('新答应的承诺必须绑定承诺气泡');
-    }
-    for (const t of thought.thoughts ?? []) {
-      if (t.op === 'drop') {
-        const target = t.id ? this.store.thoughts(turn.peer).find(x => x.id === t.id) : undefined;
-        if (t.id && !target) throw new TypeError('要放下的念头不存在');
-        continue;
-      }
-      const events = evidence(t.sources);
-      if (!t.topic || !t.meaning) throw new TypeError('新念头需要主题与含义');
-      if (!events.some(e => ['received', 'accepted', 'action', 'diary'].includes(e.kind))) throw new TypeError('念头必须来自真实经历');
-    }
-    if (thought.diary) {
-      if (!night) throw new TypeError('日记只在夜间整理拍写');
-      evidence(thought.diary.sources);
-    }
-    if (thought.impressions) {
-      if (!night) throw new TypeError('对他人的整批认识只在夜间整理拍修订');
-      for (const belief of thought.impressions.beliefs) {
-        if (!belief.basis.length) throw new TypeError('每条认识都要有真实依据');
-        const memoryIds = new Set(this.store.memories(turn.peer).map(m => m.id));
-        for (const id of belief.basis) {
-          if (memoryIds.has(id)) continue;
-          evidence([id]);
-        }
-      }
-    }
-    if (thought.feeling) evidence(thought.feeling.sources);
-    for (const part of thought.parts) {
-      if (part.reply && (!turn.allowed.has(part.reply) || !this.store.evidence(turn.peer, [part.reply]).some(e => e.kind === 'received'))) throw new TypeError('reply 必须引用看见的入站事件');
-      if (part.notified?.some(id => !this.store.commitment(turn.peer, id))) throw new TypeError('提醒引用无效约定');
-    }
     for (const intent of thought.intents) {
       if (instant(intent.at) <= this.store.now()) throw new TypeError('未来意图必须在未来，不能制造过去时间循环');
-      if (intent.commitment && !this.store.commitment(turn.peer, intent.commitment)) throw new TypeError('未来意图引用无效约定');
     }
   }
 }

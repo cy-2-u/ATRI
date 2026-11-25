@@ -317,7 +317,11 @@ export class Runtime {
         }
       }
       kept.forEach((x, k) => {
-        effects[k]!.notified = (x.part.notified ?? []).map(id => { const c = this.store.commitment(turn.peer, id); if (!c) throw new Error('提醒约定不存在'); return { id, version: c.version, due: c.dueAt }; });
+        // 校验退役：提醒引用失效的约定静默剔除（气泡照发，只是那条提醒不再挂）。
+        effects[k]!.notified = (x.part.notified ?? []).flatMap(id => {
+          const c = this.store.commitment(turn.peer, id);
+          return c ? [{ id, version: c.version, due: c.dueAt }] : [];
+        });
       });
       // 气泡节奏：第 2 条起按长度停顿，像在打字。渐进已落账的气泡复用行、续接节奏。
       let lastDue = now;

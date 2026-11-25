@@ -15,9 +15,9 @@ const until = async (fn: () => boolean | Promise<boolean>, ms = 15000, what = '�
   assert.fail(`${what} 超时`);
 };
 
-test('端到端：入站 → 思考 → 校验修复 → 落账 → 预演投递 → 用量入账', async () => {
-  // 假 LLM：OpenAI 兼容渠道。第一次回复有效；第二次埋一个伪造 feeling 来源，
-  // 观察系统能否走修复回路；收到"校验失败"后给有效回复。
+test('端到端：入站 → 思考 → 伪造来源直接放行 → 落账 → 预演投递 → 用量入账', async () => {
+  // 假 LLM：OpenAI 兼容渠道。第一次回复有效；第二次带伪造 feeling 来源——
+  // 校验退役（用户裁决 2026-11-25）：语义违规照单全收，气泡照发，不再有修复回路。
   let calls = 0;
   const llm: Server = createServer((req, res) => {
     if (req.method === 'GET' && (req.url ?? '').endsWith('/models')) {
@@ -35,10 +35,9 @@ test('端到端：入站 → 思考 → 校验修复 → 落账 → 预演投递
         res.end(JSON.stringify({ id: `c${calls}`, choices: [{ index: 0, message: { role: 'assistant', content: '哨兵有效' }, finish_reason: 'stop' }], usage: { prompt_tokens: 10, completion_tokens: 4 } }));
         return;
       }
-      const needsRepair = body.includes('校验失败');
-      const content = needsRepair || calls !== 2
-        ? JSON.stringify({ parts: [{ type: 'text', text: calls === 1 ? '在的，怎么了？' : '好' }] })
-        : JSON.stringify({ parts: [{ type: 'text', text: '坏回复' }], feeling: { label: '平静', valence: 0.1, arousal: 0, patience: 0, reason: '伪造来源', sources: ['bogus-id'] } });
+      const content = calls === 1
+        ? JSON.stringify({ parts: [{ type: 'text', text: '在的，怎么了？' }] })
+        : JSON.stringify({ parts: [{ type: 'text', text: '好' }], feeling: { label: '平静', valence: 0.1, arousal: 0, patience: 0, reason: '伪造来源也放行', sources: ['bogus-id'] } });
       res.setHeader('content-type', 'application/json');
       res.end(JSON.stringify({ id: `c${calls}`, choices: [{ index: 0, message: { role: 'assistant', content }, finish_reason: 'stop' }], usage: { prompt_tokens: 120, completion_tokens: 20 } }));
     });
@@ -78,19 +77,16 @@ test('端到端：入站 → 思考 → 校验修复 → 落账 → 预演投递
       return !!accepted1;
     }, 15000, '第一条回复投递');
     assert.equal(accepted1!.text, '在的，怎么了？');
-    // 第二条：触发校验失败 → 修复回路 → 有效回复
+    // 第二条：伪造来源的回复直接放行（校验退役），气泡照发
     await fetch(`${base}/api/preview`, { method: 'POST', headers: auth, body: JSON.stringify({ text: '再陪我聊两句' }) });
     await until(async () => {
       const list = await (await fetch(`${base}/api/deliveries?peer=c2c:preview`, { headers: { cookie } })).json() as { status: string; part: { text?: string } }[];
       return list.some(d => d.status === 'accepted' && d.part.text === '好');
-    }, 15000, '修复后回复投递');
-    // 坏回复绝不能发出去
-    const all = await (await fetch(`${base}/api/deliveries?peer=c2c:preview`, { headers: { cookie } })).json() as { status: string; part: { text?: string } }[];
-    assert.ok(!all.some(d => d.part.text === '坏回复' && d.status === 'accepted'), '校验失败的输出被投递出去了');
-    // 模型确实被调用 ≥3 次（含修复轮），用量入账
-    assert.ok(calls >= 3, `模型调用次数 ${calls}`);
+    }, 15000, '伪造来源回复放行投递');
+    // 模型被调用 2 次（无修复轮），用量入账
+    assert.ok(calls >= 2, `模型调用次数 ${calls}`);
     const usage = await (await fetch(`${base}/api/usage?days=1`, { headers: { cookie } })).json() as { calls: number };
-    assert.ok(usage.calls >= 3, `usage 入账 ${usage.calls}`);
+    assert.ok(usage.calls >= 2, `usage 入账 ${usage.calls}`);
     // 判据（审计 BUG-2）：预演会话绝不能常驻心跳/夜间拍——那是真金白银的 token
     const jobs = await (await fetch(`${base}/api/jobs`, { headers: { cookie } })).json() as { peer: string; kind: string }[];
     const previewJobs = jobs.filter(j => j.peer === 'c2c:preview');

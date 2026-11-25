@@ -86,7 +86,8 @@ test('念头：同证据去重、drop 退场', () => {
   const dropped = store.changeThought(peer, { op: 'drop', id: t1.id, sources: [] })!;
   assert.equal(dropped.state, 'dropped');
   assert.equal(store.thoughts(peer).find(t => t.id === t1.id)!.state, 'dropped');
-  assert.throws(() => store.changeThought(peer, { op: 'keep', topic: '空 sources', meaning: 'x', sources: [] }));
+  // 校验退役：空 sources 残缺念头静默跳过，不炸整轮
+  assert.equal(store.changeThought(peer, { op: 'keep', topic: '空 sources', meaning: 'x', sources: [] }), undefined);
   store.close();
 });
 
@@ -94,16 +95,16 @@ test('约定：版本化、afterPart 效果在平台接收后立约、履约校�
   const store = newStore();
   const peer = 'c2c:user1';
   const event = store.append(peer, 'received', { text: '明天提醒我开会' })!;
-  const c = store.changeCommitment(peer, { op: 'keep', kind: 'reminder', content: '提醒开会', due: store.now() + 86400000, sources: [event.id] });
+  const c = store.changeCommitment(peer, { op: 'keep', kind: 'reminder', content: '提醒开会', due: store.now() + 86400000, sources: [event.id] })!;
   assert.equal(c.version, 1);
   assert.ok(store.jobs(peer).some(j => j.kind === 'commitment' && j.data.id === c.id));
   // 修改内容 → 版本 +1，旧 job 取消
-  const c2 = store.changeCommitment(peer, { op: 'keep', id: c.id, content: '提醒开产品会', sources: [event.id] });
+  const c2 = store.changeCommitment(peer, { op: 'keep', id: c.id, content: '提醒开产品会', sources: [event.id] })!;
   assert.equal(c2.version, 2);
   assert.equal(c2.content, '提醒开产品会');
   // 周期约定 complete 后续期
-  const daily = store.changeCommitment(peer, { op: 'keep', kind: 'concern', content: '问早安', due: store.now() + 86400000, recurrence: { unit: 'day', interval: 1, timezone: 'Asia/Shanghai' }, sources: [event.id] });
-  const done = store.changeCommitment(peer, { op: 'complete', id: daily.id, sources: [event.id] });
+  const daily = store.changeCommitment(peer, { op: 'keep', kind: 'concern', content: '问早安', due: store.now() + 86400000, recurrence: { unit: 'day', interval: 1, timezone: 'Asia/Shanghai' }, sources: [event.id] })!;
+  const done = store.changeCommitment(peer, { op: 'complete', id: daily.id, sources: [event.id] })!;
   assert.equal(done.status, 'open');
   assert.ok(done.dueAt > store.now());
   store.close();
@@ -150,8 +151,8 @@ test('账本卫生：accepted 行释放 request、eventByDedupe 包装、cancel 
   assert.equal(store.eventByDedupe(`accepted:${env.id}`)!.id, store.eventByDedupe(`accepted:${env.id}`, peer)!.id);
   assert.equal(store.eventByDedupe('不存在', peer), undefined);
   // ④ 约定取消后 anchor 键清理；周期约定续期时 anchor 保留
-  const c = store.changeCommitment(peer, { op: 'keep', kind: 'reminder', content: '提醒浇水', due: store.now() + 86400000, sources: [event.id] });
-  const daily = store.changeCommitment(peer, { op: 'keep', kind: 'concern', content: '问早安', due: store.now() + 86400000, recurrence: { unit: 'day', interval: 1, timezone: 'Asia/Shanghai' }, sources: [event.id] });
+  const c = store.changeCommitment(peer, { op: 'keep', kind: 'reminder', content: '提醒浇水', due: store.now() + 86400000, sources: [event.id] })!;
+  const daily = store.changeCommitment(peer, { op: 'keep', kind: 'concern', content: '问早安', due: store.now() + 86400000, recurrence: { unit: 'day', interval: 1, timezone: 'Asia/Shanghai' }, sources: [event.id] })!;
   assert.ok(store.get(`anchor:${c.id}`, 0) > 0 && store.get(`anchor:${daily.id}`, 0) > 0);
   store.changeCommitment(peer, { op: 'cancel', id: c.id, sources: [event.id] });
   assert.equal(store.get(`anchor:${c.id}`, 0), 0);

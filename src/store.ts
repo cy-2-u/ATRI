@@ -384,11 +384,11 @@ export class Store {
       sources: [...new Set(input.sources)], importance: input.importance ?? 0.5, emotion: input.emotion ?? 0,
       detail: 1, consolidation: 0, interference: 0, status: 'active', createdAt: now, evaluatedAt: now, lastRehearsedAt: 0,
     } satisfies Memory;
-    const replace = new Set(input.supersedes ?? []);
+    const replace = new Set<string>((input.supersedes ?? []).filter(id => existing.some(m => m.id === id)));
     if (value.slot) for (const m of existing) if (m.slot === value.slot) replace.add(m.id);
     for (const id of replace) {
       const old = existing.find(m => m.id === id);
-      if (!old) throw new TypeError('替代记忆不属于可修改范围');
+      if (!old) continue; // 校验退役：引用不存在的记忆只跳过，不打回整轮
       this.sql("UPDATE memories SET status='superseded',value=? WHERE id=?").run(JSON.stringify({ ...old, status: 'superseded' }), id);
     }
     this.writeMemory(value);
@@ -442,15 +442,15 @@ export class Store {
       const now = this.now();
       if (op.op === 'drop') {
         const target = op.id ? this.thoughts(peer).find(t => t.id === op.id) : this.thoughts(peer).find(t => op.topic !== undefined && t.topic === op.topic);
-        if (!target) return undefined;
+        if (!target) return undefined; // 校验退役：放下的念头不存在就当无事发生
         const dropped: ThoughtEntry = { ...target, state: 'dropped', updatedAt: now };
         this.writeThought(dropped);
         return dropped;
       }
       const topic = op.topic ?? '', meaning = op.meaning ?? '';
-      if (!topic || !meaning) throw new TypeError('念头需要主题与含义');
-      const sources = [...new Set(op.sources)].sort();
-      if (!sources.length) throw new TypeError('念头缺少真实依据');
+      if (!topic || !meaning) return undefined; // 校验退役：残缺念头静默跳过，不炸整轮
+      const sources = [...new Set(op.sources ?? [])].sort();
+      if (!sources.length) return undefined; // 空依据放行语义：跳过（念头链路要求可溯源才能日后 drop/重读）
       const evidence = hash(sources);
       const due = op.due === undefined ? undefined : instant(op.due);
       const previous = this.thoughts(peer).find(t => t.topic === topic);
@@ -475,17 +475,18 @@ export class Store {
   commitment(peer: string, id: string): Commitment | undefined { return this.commitments(peer).find(c => c.id === id); }
   private writeCommitment(c: Commitment): void { this.sql('INSERT INTO commitments(id,peer,value) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value').run(c.id, c.peer, JSON.stringify(c)); }
 
-  changeCommitment(peer: string, input: CommitmentInput): Commitment {
+  changeCommitment(peer: string, input: CommitmentInput): Commitment | undefined {
     return this.transaction(() => {
       const old = input.id ? this.commitment(peer, input.id) : this.commitments(peer).find(c => c.status === 'open' && c.content === input.content && c.kind === input.kind);
-      if (input.id && !old || input.op !== 'keep' && !old) throw new TypeError('约定不存在');
+      // 校验退役：引用不存在的约定按新约定处理；complete/cancel 落空就当无事发生。
+      if (input.op !== 'keep' && !old) return undefined;
       if (input.op === 'keep') {
         const dueAt = input.due === undefined ? old?.dueAt ?? 0 : instant(input.due);
         const recurrence = input.recurrence === null ? undefined : input.recurrence ?? old?.recurrence;
-        if (recurrence && !dueAt) throw new TypeError('周期约定需要起始时间');
+        if (recurrence && !dueAt) return undefined; // 周期约定没有起始时间无法排期：跳过不炸
         const changed = !!old && (old.status !== 'open' || dueAt !== old.dueAt || input.content !== undefined && input.content !== old.content || input.kind !== undefined && input.kind !== old.kind || JSON.stringify(recurrence) !== JSON.stringify(old.recurrence));
         const c: Commitment = { id: old?.id ?? randomUUID(), peer, kind: input.kind ?? old?.kind ?? 'concern', content: input.content ?? old?.content ?? '', sources: [...new Set([...(old?.sources ?? []), ...input.sources])], dueAt, recurrence, status: 'open', version: old ? old.version + Number(changed) : 1, notifiedDue: changed ? 0 : old?.notifiedDue ?? 0, createdAt: old?.createdAt ?? this.now() };
-        if (!c.content) throw new TypeError('约定内容不能为空');
+        if (!c.content) return undefined; // 空内容约定无法成立：跳过不炸
         if (changed) this.sql("UPDATE jobs SET state='cancelled' WHERE id=? AND state='pending'").run(`commitment:${old!.id}:${old!.version}`);
         if (!old || changed) this.set(`anchor:${c.id}`, dueAt);
         this.writeCommitment(c);
