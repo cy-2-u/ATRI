@@ -18,5 +18,7 @@ restore.compose.yaml
 /sandbox/
 .idea/
 .vscode/
+# 工作区代理配置（会话级插件开关），机器本地物，不进仓库。
+.zcode/
 .DS_Store
 Thumbs.db

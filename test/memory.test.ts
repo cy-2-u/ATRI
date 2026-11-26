@@ -19,7 +19,7 @@ function fixture() {
   };
 }
 
-test('记忆拒绝伪造来源、其他联系人的来源及把自己的话当对方陈述', () => {
+test('校验退役：伪造来源照单全收（用户裁决），同内容合并照常', () => {
   const { journal, memory, source } = fixture();
   try {
     const input = {
@@ -30,12 +30,20 @@ test('记忆拒绝伪造来源、其他联系人的来源及把自己的话当�
       importance: 0.6,
       emotion: 0.2,
     };
-    assert.throws(() => memory.remember('peer', { ...input, sources: ['missing'] }));
-    assert.throws(() => memory.remember('other', input));
+    // 校验退役（用户裁决 2026-11-26）：伪造来源、跨联系人、回执来源照单全收不拦。
+    const bogus = memory.remember('peer', { ...input, sources: ['missing'] });
+    assert.equal(bogus.kind, 'stated');
+    const cross = memory.remember('other', input);
+    assert.equal(cross.kind, 'stated');
     const turn = journal.begin('peer', 'beat');
     const receipt = journal.receipt(turn, 'read', { text: 'tea' }, true);
-    assert.throws(() => memory.remember('peer', { ...input, sources: [receipt] }));
-    assert.equal(memory.remember('peer', input).kind, 'stated');
+    const viaReceipt = memory.remember('peer', { ...input, sources: [receipt] });
+    assert.equal(viaReceipt.kind, 'stated');
+    // 真来源照常走通，同内容合并成一条。
+    memory.remember('peer', input);
+    const active = journal.memories('peer').filter((item) => item.status === 'active');
+    assert.equal(active.length, 1);
+    assert.ok(active[0]!.sources.includes(source));
   } finally {
     journal.close();
   }

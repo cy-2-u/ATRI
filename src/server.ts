@@ -29,10 +29,14 @@ export interface ServerOptions {
   /** 渠道体检：连通（一发最小消息）、角色生效（system 标记探测）、向量连通。
    *  失败随结果对象返回（{ok:false,error}）——探针的诊断就是它的产出，
    *  不走服务端错误兜底。 */
-  channelProbe(): Promise<
+  channelProbe(
+    channel?: 'primary' | 'fallback',
+  ): Promise<
     { ok: true; latencyMs: number; model: string; format: string } | { ok: false; error: string }
   >;
-  systemProbe(): Promise<{ ok: boolean; reply?: string; error?: string }>;
+  systemProbe(
+    channel?: 'primary' | 'fallback',
+  ): Promise<{ ok: boolean; reply?: string; error?: string }>;
   embeddingProbe(): Promise<
     { ok: true; latencyMs: number; dims: number; model: string } | { ok: false; error: string }
   >;
@@ -301,9 +305,15 @@ ${
   });
 
   // 渠道体检（v5 时代的按钮回归）：走与真实轮次同一套 transport，测的
-  // 就是聊天真正会走的那条路。
-  app.post('/api/test-llm', async () => options.channelProbe());
-  app.post('/api/test-system', async () => options.systemProbe());
+  // 就是聊天真正会走的那条路。body.channel 可选，备用渠道面板测自己的路。
+  const probeChannel = (body: unknown): 'primary' | 'fallback' => {
+    const channel = (body as { channel?: unknown } | undefined)?.channel;
+    if (channel === undefined || channel === null || channel === '') return 'primary';
+    if (channel === 'primary' || channel === 'fallback') return channel;
+    throw new TypeError('channel 必须是 primary 或 fallback');
+  };
+  app.post('/api/test-llm', async (request) => options.channelProbe(probeChannel(request.body)));
+  app.post('/api/test-system', async (request) => options.systemProbe(probeChannel(request.body)));
   app.post('/api/test-embedding', async () => options.embeddingProbe());
 
   // WebDAV 备份：状态给管理页，"立即备份"绕过每日闸门当场跑一轮。
@@ -323,15 +333,21 @@ ${
     }
   });
 
-  // 拉取模型列表（v5 回归）：主渠道必须是 OpenAI 兼容接口才有 /models。
-  app.get('/api/models', async () => {
-    const endpoint = options.settings.get().primary;
-    if (endpoint.format !== 'openai') throw new TypeError('模型列表拉取仅支持 OpenAI 兼容接口');
-    if (!endpoint.apiKey) throw new TypeError('请先保存模型密钥');
-    const base = endpoint.baseUrl.replace(/\/+$/, '');
+  // 拉取模型列表（v5 回归）：OpenAI 兼容接口才有 /models。query.channel
+  // 可选——备用渠道面板拉自己的列表，凭据各走各的。
+  app.get('/api/models', async (request) => {
+    const channel = (request.query as { channel?: string } | undefined)?.channel;
+    if (channel !== undefined && channel !== 'primary' && channel !== 'fallback')
+      throw new TypeError('channel 必须是 primary 或 fallback');
+    const endpoint = options.settings.get();
+    const target = channel === 'fallback' ? endpoint.fallback : endpoint.primary;
+    if (!target) throw new TypeError('请先启用并保存备用渠道');
+    if (target.format !== 'openai') throw new TypeError('模型列表拉取仅支持 OpenAI 兼容接口');
+    if (!target.apiKey) throw new TypeError('请先保存模型密钥');
+    const base = target.baseUrl.replace(/\/+$/, '');
     const url = /\/v\d+$/.test(base) ? `${base}/models` : `${base}/v1/models`;
     const response = await fetch(url, {
-      headers: { authorization: `Bearer ${endpoint.apiKey}` },
+      headers: { authorization: `Bearer ${target.apiKey}` },
       signal: AbortSignal.timeout(15_000),
     });
     // 读一次再用：response.json() 会吃掉 body，错误分支的 text() 只剩空串。

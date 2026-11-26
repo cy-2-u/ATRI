@@ -72,18 +72,11 @@ export class Recollection {
       !finite(input.emotion, -1, 1)
     )
       throw new TypeError('记忆属性无效');
+    // 校验松绑（用户裁决 2026-11-26：她乐意说个假的就让她说，不拦）：来源白名单、
+    // 对方陈述门槛、identity 两来源、supersedes 存在性检查全部摘除——语义违规照单
+    // 全收，坏引用在下游静默跳过（saveMemory 的 replace 过滤），不炸整轮。
+    // 只留格式防崩：内容/要旨非空、枚举与数值域。
     const sources = [...new Set(input.sources)];
-    const evidence = this.journal.evidence(peer, sources);
-    if (!sources.length || evidence.length !== sources.length)
-      throw new TypeError('记忆来源不存在或不属于当前联系人');
-    if (evidence.some((event) => !['received', 'said', 'experienced'].includes(event.kind)))
-      throw new TypeError('记忆只能来自确实发生的经历');
-    if (input.kind === 'stated' && !evidence.some((event) => event.kind === 'received'))
-      throw new TypeError('对方陈述必须有对方消息作为来源');
-    // identity 是"我是谁"：必须立在至少两段真实经历上，防止一次性情绪
-    // 被升格成自我定义；修订走 supersedes，不是随手新增。
-    if (input.kind === 'identity' && new Set(sources).size < 2)
-      throw new TypeError('对自己的认识至少要有两处真实来源支撑');
     const existing = this.journal
       .memories(peer)
       .find(
@@ -93,17 +86,6 @@ export class Recollection {
           memory.kind === input.kind,
       );
     const supersedes = [...new Set(input.supersedes ?? [])];
-    const all = this.journal.memories(peer);
-    if (
-      supersedes.some(
-        (id) =>
-          !all.some(
-            (memory) =>
-              memory.id === id && memory.status === 'active' && memory.id !== existing?.id,
-          ),
-      )
-    )
-      throw new TypeError('替代目标不是有效旧记忆');
     const now = this.now();
     const memory: Memory = existing
       ? {
@@ -255,14 +237,9 @@ export class Recollection {
       throw new TypeError('念头主题和含义无效');
     if (dueAt !== undefined && (!Number.isFinite(dueAt) || dueAt <= this.now()))
       throw new TypeError('期待的时间必须是未来时刻');
+    // 校验松绑（用户裁决 2026-11-26）：来源存在性/白名单门槛摘除——
+    // 语义违规照单全收，不炸整轮；只留格式防崩与未来时刻约束。
     const sources = [...new Set(sourceIds)].sort();
-    const events = this.journal.evidence(peer, sources);
-    if (
-      !sources.length ||
-      events.length !== sources.length ||
-      events.some((event) => !['received', 'said', 'experienced'].includes(event.kind))
-    )
-      throw new TypeError('念头缺少真实依据');
     const evidence = createHash('sha256').update(JSON.stringify(sources)).digest('hex');
     const previous = this.journal.thoughts(peer).find((thought) => thought.topic === topic.trim());
     if (previous?.evidence === evidence) return previous;

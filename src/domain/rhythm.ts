@@ -3,6 +3,103 @@
  *  （睡着时没有"她"在做决定），不是对表达的拦截；醒着的每一拍，说不说、
  *  说几次，都由她自己定。 */
 
+export interface LocalTime {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+  second: number;
+}
+const zoneFormatters = new Map<string, Intl.DateTimeFormat>();
+export function localTime(at: number, timeZone: string): LocalTime {
+  let f = zoneFormatters.get(timeZone);
+  if (!f) {
+    f = new Intl.DateTimeFormat('en-CA', {
+      timeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23',
+    });
+    zoneFormatters.set(timeZone, f);
+  }
+  const parts = Object.fromEntries(
+    f
+      .formatToParts(at)
+      .filter((p) => p.type !== 'literal')
+      .map((p) => [p.type, Number(p.value)]),
+  );
+  return parts as unknown as LocalTime;
+}
+const wallStamp = (p: LocalTime): number =>
+  Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second);
+
+/** 校验本地日历时间；不存在的 DST 时间顺延，重复时间选首次。 */
+export function fromLocal(p: LocalTime, timeZone: string): number {
+  const desired = wallStamp(p);
+  const candidates = new Set<number>();
+  for (const offset of [-36, -12, 0, 12, 36]) {
+    const probe = desired + offset * 3600000;
+    const zoneOffset = wallStamp(localTime(probe, timeZone)) - probe;
+    candidates.add(desired - zoneOffset);
+  }
+  const exact = [...candidates]
+    .filter((c) => wallStamp(localTime(c, timeZone)) === desired)
+    .sort((a, b) => a - b);
+  if (exact.length) return exact[0]!;
+  const after = [...candidates]
+    .filter((c) => wallStamp(localTime(c, timeZone)) > desired)
+    .sort((a, b) => a - b);
+  if (after.length) return after[0]!;
+  throw new TypeError('无法解析本地时间');
+}
+
+/** 时间字段解析：Unix 毫秒、带 Z/时区偏移的 ISO 直通；
+ *  裸本地时间（无时区标记）+ 调用方提供时区时按该时区锚定——模型说墙钟时刻，
+ *  时区换算是代码的职责，不该整轮打回让模型猜 UTC 偏移。无 tz 时维持严格拒绝。 */
+export function instant(value: unknown, tz?: string): number {
+  if (
+    typeof value === 'number' &&
+    Number.isSafeInteger(value) &&
+    value >= 0 &&
+    value <= 8640000000000000
+  )
+    return value;
+  if (
+    typeof value !== 'string' ||
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2})?$/.test(value)
+  )
+    throw new TypeError(
+      '时间需要 Unix 毫秒或带 Z/时区偏移的 ISO 时间（如 2026-07-01T20:00:00+08:00），不能使用无时区日期',
+    );
+  const calendar = value.slice(0, 10);
+  const [y, m, d] = calendar.split('-').map(Number) as [number, number, number];
+  if (m < 1 || m > 12 || d < 1 || d > new Date(Date.UTC(y, m, 0)).getUTCDate())
+    throw new TypeError('日期不存在');
+  if (!value.endsWith('Z') && !/[+-]\d{2}:\d{2}$/.test(value)) {
+    if (!tz)
+      throw new TypeError('时间需要 Unix 毫秒或带 Z/时区偏移的 ISO 时间，不能使用无时区日期');
+    return fromLocal(
+      {
+        year: y,
+        month: m,
+        day: d,
+        hour: Number(value.slice(11, 13)),
+        minute: Number(value.slice(14, 16)),
+        second: Number(value.slice(17, 19) || 0),
+      },
+      tz,
+    );
+  }
+  const at = Date.parse(value);
+  if (!Number.isFinite(at)) throw new TypeError('时间无效');
+  return at;
+}
+
 const minuteFormatters = new Map<string, Intl.DateTimeFormat>();
 /** 本地时钟的当天分钟数（0–1439）：抖动后的睡眠窗不再是整点，判定要用分。 */
 export function minutesOfDay(at: number, timeZone: string): number {

@@ -287,6 +287,141 @@ async function boundedJson(response: Response): Promise<ObjectValue> {
   }
 }
 
+/** SSE 逐帧读取（流式）：data: 行载荷逐段回调（onDelta 即时透传给渐进投递），
+ *  返回全部原始帧供 decodeStream 聚合用量与工具调用。 */
+async function readSseFrames(
+  response: Response,
+  onFrame: (payload: string) => void,
+): Promise<ObjectValue[]> {
+  const reader = response.body?.getReader();
+  if (!reader) throw new RequestError('模型响应为空', 'protocol');
+  const frames: ObjectValue[] = [];
+  let length = 0;
+  let buffer = '';
+  const flush = (payload: string): void => {
+    if (!payload || payload === '[DONE]') return;
+    let frame: ObjectValue;
+    try {
+      frame = object(JSON.parse(payload));
+    } catch {
+      return; // 分片注释帧等非 JSON 载荷：跳过
+    }
+    frames.push(frame);
+    let delta = '';
+    const choice = array(frame.choices)[0];
+    if (typeof choice?.delta?.content === 'string') delta = choice.delta.content;
+    if (frame.type === 'content_block_delta' && typeof frame.delta?.text === 'string')
+      delta = frame.delta.text;
+    for (const candidate of array(frame.candidates)) {
+      for (const part of array(candidate.content?.parts))
+        if (typeof part.text === 'string' && !part.thought) delta += part.text;
+    }
+    if (delta) onFrame(delta);
+  };
+  try {
+    for (;;) {
+      const next = await reader.read();
+      if (next.done) break;
+      length += next.value.length;
+      if (length > 8 * 1024 * 1024) {
+        await reader.cancel();
+        throw new RequestError('模型响应超过 8 MiB', 'protocol');
+      }
+      buffer += new TextDecoder().decode(next.value, { stream: true });
+      let index: number;
+      while ((index = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, index).trim();
+        buffer = buffer.slice(index + 1);
+        if (line.startsWith('data:')) flush(line.slice(5).trim());
+      }
+    }
+    for (const line of buffer.split('\n')) {
+      const trimmed = line.trim();
+      if (trimmed.startsWith('data:')) flush(trimmed.slice(5).trim());
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return frames;
+}
+
+/** 流式帧聚合解码：从 SSE 帧序列提取正文（已在 onFrame 透传）与用量。
+ *  OpenAI 的工具调用增量按 index 拼回完整调用；Anthropic 按
+ *  content_block_start/input_json_delta 拼参数；Gemini 无流式工具增量
+ *  ——走非流式路径。正文为空但有工具调用时不报错。 */
+function decodeStream(endpoint: Endpoint, frames: ObjectValue[]): Completion {
+  let input = 0,
+    output = 0,
+    cached = 0;
+  let text = '';
+  const pendingCalls: { id: string; name: string; raw: string }[] = [];
+  if (endpoint.format === 'openai') {
+    for (const frame of frames) {
+      const choice = array(frame.choices)[0];
+      text += typeof choice?.delta?.content === 'string' ? choice.delta.content : '';
+      const usage = object(frame.usage);
+      input += count(usage.prompt_tokens);
+      output += count(usage.completion_tokens);
+      cached += count(usage.prompt_tokens_details?.cached_tokens);
+    }
+    // 工具调用流式增量：按 index 拼回完整调用。
+    const partial = new Map<number, { id: string; name: string; args: string }>();
+    for (const frame of frames) {
+      for (const call of array(array(frame.choices)[0]?.delta?.tool_calls)) {
+        const slot = partial.get(Number(call.index)) ?? { id: '', name: '', args: '' };
+        if (typeof call.id === 'string') slot.id = call.id;
+        if (typeof call.function?.name === 'string') slot.name = call.function.name;
+        if (typeof call.function?.arguments === 'string') slot.args += call.function.arguments;
+        partial.set(Number(call.index), slot);
+      }
+    }
+    const calls = [...partial.entries()]
+      .sort(([a], [b]) => a - b)
+      .map(([, slot]) => ({
+        id: slot.id || randomUUID(),
+        name: slot.name,
+        arguments: argumentsOf(slot.args),
+      }));
+    text = text
+      .replace(/<think>[\s\S]*?<\/think>/gi, '')
+      .replace(/<\/?think>/gi, '')
+      .trim();
+    if (!text && !calls.length) throw new RequestError('模型没有返回正文或工具调用', 'protocol');
+    if (calls.some((call) => !call.name))
+      throw new RequestError('模型工具调用缺少标识', 'protocol');
+    return {
+      message: { role: 'assistant', content: text, ...(calls.length ? { calls } : {}) },
+      usage: { input, output, cached },
+    };
+  }
+  // Anthropic 流式帧：message_start 带输入用量，message_delta 带输出用量。
+  for (const frame of frames) {
+    if (frame.type === 'message_start') {
+      const usage = object(object(frame.message)?.usage);
+      cached = count(usage.cache_read_input_tokens);
+      input = count(usage.input_tokens) + count(usage.cache_creation_input_tokens) + cached;
+    }
+    if (frame.type === 'message_delta') output = count(object(frame.usage).output_tokens);
+    if (frame.type === 'content_block_start' && object(frame.content_block).type === 'tool_use') {
+      const block = object(frame.content_block);
+      pendingCalls.push({ id: String(block.id), name: String(block.name), raw: '' });
+    }
+    if (frame.type === 'input_json_delta' && pendingCalls.length)
+      pendingCalls.at(-1)!.raw += String(frame.partial_json ?? '');
+  }
+  const calls = pendingCalls.map((call) => ({
+    id: call.id,
+    name: call.name,
+    arguments: argumentsOf(call.raw || '{}'),
+  }));
+  if (!text && !calls.length) throw new RequestError('模型没有返回正文或工具调用', 'protocol');
+  if (calls.some((call) => !call.name)) throw new RequestError('模型工具调用缺少标识', 'protocol');
+  return {
+    message: { role: 'assistant', content: text, ...(calls.length ? { calls } : {}) },
+    usage: { input, output, cached },
+  };
+}
+
 export async function httpTransport(
   endpoint: Endpoint,
   messages: Message[],
@@ -295,6 +430,12 @@ export async function httpTransport(
 ): Promise<Completion> {
   abortCheck(options);
   const request = encode(endpoint, messages, tools);
+  // 流式（渐进投递）：请求体加 stream，OpenAI 显式要 usage 帧；聚合解码走
+  // decodeStream——SSE 整体不是合法 JSON，不能进 boundedJson。
+  if (options.onDelta) {
+    request.body = { ...request.body, stream: true };
+    if (endpoint.format === 'openai') request.body.stream_options = { include_usage: true };
+  }
   const timeout = AbortSignal.timeout(
     Math.max(1, Math.min(endpoint.timeoutMs, options.deadlineAt - Date.now())),
   );
@@ -302,7 +443,11 @@ export async function httpTransport(
   try {
     const response = await fetch(request.url, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', ...request.headers },
+      headers: {
+        'content-type': 'application/json',
+        ...(options.onDelta ? { accept: 'text/event-stream' } : {}),
+        ...request.headers,
+      },
       body: JSON.stringify(request.body),
       signal,
       redirect: 'error',
@@ -326,6 +471,11 @@ export async function httpTransport(
         Number.isFinite(retryAfterMs) ? retryAfterMs : undefined,
       );
     }
+    if (options.onDelta)
+      return decodeStream(
+        endpoint,
+        await readSseFrames(response, (delta) => options.onDelta?.(delta)),
+      );
     return decode(endpoint, await boundedJson(response));
   } catch (error) {
     options.signal?.throwIfAborted();

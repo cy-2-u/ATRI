@@ -90,11 +90,11 @@ test('记忆工具使用当前联系人来源，检索结果不泄露隐藏原�
     assert.ok(JSON.stringify(result).includes('对方喜欢茶'));
     const history = await tools.get('read_history')!.execute({}, options(), turn);
     assert.ok(JSON.stringify(history).includes(source));
-    await assert.rejects(
-      tools
-        .get('remember')!
-        .execute({ content: 'x', gist: 'x', kind: 'stated', sources: ['fake'] }, options(), turn),
-    );
+    // 校验退役（用户裁决 2026-11-26）：伪造来源照单全收不拦。
+    const bogus = await tools
+      .get('remember')!
+      .execute({ content: 'x', gist: 'x', kind: 'stated', sources: ['fake'] }, options(), turn);
+    assert.ok(bogus);
   } finally {
     journal.close();
   }
@@ -197,5 +197,112 @@ test('read_wall 必须在 chat/beat 白名单里：提示牌的引导才不落�
       TOOL_SETS[kind].includes('read_wall'),
       `${kind} 拍看不到 read_wall，提示牌的引导就落空`,
     );
+  }
+});
+
+test('到期时间锚定她的时区：裸本地时间、带偏移 ISO、Unix 毫秒三路全通', async () => {
+  const journal = new Journal(':memory:');
+  try {
+    journal.receive('peer', 'one', '明天提醒我浇水');
+    const turn = journal.begin('peer', 'chat');
+    const source = journal.events('peer')[0]!.id;
+    const tools = new Map(
+      lifeTools(journal, { timezone: () => 'Asia/Shanghai' }).map((t) => [t.definition.name, t]),
+    );
+    // 裸本地时间：GLM 吐无偏移墙钟不再整轮打回——上海 20:00 = UTC 12:00。
+    const bare = (await tools
+      .get('keep_commitment')!
+      .execute(
+        { content: '浇水', kind: 'reminder', sources: source, dueAt: '2026-07-01T20:00:00' },
+        options(),
+        turn,
+      )) as { dueAt: number };
+    assert.equal(bare.dueAt, Date.parse('2026-07-01T12:00:00Z'));
+    // 带偏移 ISO 直通；数字毫秒直通；单字符串 sources 自动包数组。
+    const iso = (await tools
+      .get('keep_commitment')!
+      .execute(
+        { content: '开会', kind: 'reminder', sources: source, dueAt: '2026-07-02T09:00:00+08:00' },
+        options(),
+        turn,
+      )) as { dueAt: number };
+    assert.equal(iso.dueAt, Date.parse('2026-07-02T01:00:00Z'));
+    const ms = (await tools
+      .get('keep_commitment')!
+      .execute(
+        { content: '跑步', kind: 'concern', sources: [source], dueAt: 1751467200000 },
+        options(),
+        turn,
+      )) as { dueAt: number };
+    assert.equal(ms.dueAt, 1751467200000);
+    // dueAt=0：无日期挂念。
+    const none = (await tools
+      .get('keep_commitment')!
+      .execute(
+        { content: '想他', kind: 'concern', sources: source, dueAt: 0 },
+        options(),
+        turn,
+      )) as {
+      dueAt: number;
+    };
+    assert.equal(none.dueAt, 0);
+    // consider 的 dueAt 同样吃墙钟 ISO（明天上午八点，未来时刻）。
+    const thought = (await tools
+      .get('consider')!
+      .execute(
+        { topic: '爬山', meaning: '提醒带水', sources: source, dueAt: '2030-07-03T08:00:00' },
+        options(),
+        turn,
+      )) as { dueAt: number };
+    assert.equal(thought.dueAt, Date.parse('2030-07-03T00:00:00Z'));
+  } finally {
+    journal.close();
+  }
+});
+
+test('坏时间与坏来源报错带字段名：修复轮知道改哪', async () => {
+  const journal = new Journal(':memory:');
+  try {
+    journal.receive('peer', 'one', '提醒我买菜');
+    const turn = journal.begin('peer', 'chat');
+    const source = journal.events('peer')[0]!.id;
+    const tools = new Map(
+      lifeTools(journal, { timezone: () => 'Asia/Shanghai' }).map((t) => [t.definition.name, t]),
+    );
+    // 2 月 30 日：日历上不存在的日期明确打回。
+    await assert.rejects(
+      tools
+        .get('keep_commitment')!
+        .execute(
+          { content: '买菜', kind: 'reminder', sources: source, dueAt: '2026-02-30T10:00:00' },
+          options(),
+          turn,
+        ),
+      /日期不存在/,
+    );
+    // 乱文本带字段定位。
+    await assert.rejects(
+      tools
+        .get('keep_commitment')!
+        .execute(
+          { content: '买菜', kind: 'reminder', sources: source, dueAt: '下周三' },
+          options(),
+          turn,
+        ),
+      /dueAt|时间/,
+    );
+    // sources 混对象：报错点名 sources 字段。
+    await assert.rejects(
+      tools
+        .get('keep_commitment')!
+        .execute(
+          { content: '买菜', kind: 'reminder', sources: [{ id: source }], dueAt: 1751467200000 },
+          options(),
+          turn,
+        ),
+      /sources/,
+    );
+  } finally {
+    journal.close();
   }
 });

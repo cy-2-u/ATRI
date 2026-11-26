@@ -274,33 +274,29 @@ export class Journal {
       )
         return false;
       const thoughts = this.thoughts(turn.peer);
-      if (effects.expressed !== undefined && !Array.isArray(effects.expressed))
-        throw new TypeError('表达念头必须是数组');
-      const expressed = Array.isArray(effects.expressed) ? effects.expressed : [];
-      if (
-        expressed.some(
-          (id) =>
-            typeof id !== 'string' ||
-            !thoughts.some((thought) => thought.id === id && thought.state === 'idle'),
-        )
-      )
-        throw new TypeError('表达效果引用了无效念头');
+      // 校验松绑（用户裁决 2026-11-26：她乐意说个假的就让她说，不拦）：
+      // expressed/asked 引用失效对象不再打回整轮——坏引用静默跳过
+      // （filter 剔除），快照只记真实存在的对象。
+      const expressed = Array.isArray(effects.expressed)
+        ? (effects.expressed as unknown[]).filter(
+            (id) =>
+              typeof id === 'string' &&
+              thoughts.some((thought) => thought.id === id && thought.state === 'idle'),
+          )
+        : [];
       const snapshots = thoughts
         .filter((thought) => expressed.includes(thought.id))
         .map((thought) => ({ id: thought.id, evidence: thought.evidence }));
-      if (effects.asked !== undefined && !Array.isArray(effects.asked))
-        throw new TypeError('问过的约定必须是数组');
-      const asked = Array.isArray(effects.asked) ? effects.asked : [];
-      const commitments = this.commitments(turn.peer);
-      if (
-        asked.some(
-          (id) =>
-            typeof id !== 'string' ||
-            !commitments.some((item) => item.id === id && item.state === 'open' && !item.askedAt),
-        )
-      )
-        throw new TypeError('表达效果引用了无效约定');
-      const askedSnapshots = commitments
+      const asked = Array.isArray(effects.asked)
+        ? (effects.asked as unknown[]).filter(
+            (id) =>
+              typeof id === 'string' &&
+              this.commitments(turn.peer).some(
+                (item) => item.id === id && item.state === 'open' && !item.askedAt,
+              ),
+          )
+        : [];
+      const askedSnapshots = this.commitments(turn.peer)
         .filter((item) => asked.includes(item.id))
         .map((item) => ({ id: item.id, dueAt: item.dueAt }));
       parts.forEach((part, ordinal) => {
@@ -328,6 +324,93 @@ export class Journal {
         "SELECT id,turn_id AS turn,peer,ordinal,part,status FROM kernel_outbox WHERE peer=? AND status='pending' ORDER BY created_at,turn_id,ordinal",
       ).all(peer) as unknown as EnvelopeRow[]
     ).map(toEnvelope);
+  }
+
+  /** 渐进投递的对账读数：思考收口后 runtime 靠 turn 状态区分「渐进已收口
+   *  （ready/done，勿再全量 draft）」与「走全量路径（仍 running）」。 */
+  turnState(turnId: string): string | undefined {
+    const row = this.statement('SELECT state FROM kernel_turns WHERE id=?').get(turnId);
+    return row ? String(row.state) : undefined;
+  }
+
+  /** 渐进投递的单气泡草稿：思考仍在进行（turn running），气泡闭合即入队
+   *  ——投递循环下一圈就能发出去。effects 暂存空（记账字段等全量收口时
+   *  由 finishDraft 绑定），表达效果尚未生效所以 turn 不转 ready。 */
+  draftOne(turn: Turn, ordinal: number, part: Bubble): boolean {
+    return this.transaction(() => {
+      const row = this.statement(
+        'SELECT t.state,t.version,p.version AS current FROM kernel_turns t JOIN kernel_peers p ON p.id=t.peer WHERE t.id=? AND t.peer=?',
+      ).get(turn.id, turn.peer);
+      if (
+        !row ||
+        row.state !== 'running' ||
+        row.version !== row.current ||
+        Number(row.version) !== turn.version
+      )
+        return false;
+      this.statement(
+        "INSERT INTO kernel_outbox(id,turn_id,peer,ordinal,part,status,created_at) VALUES(?,?,?,?,?,'pending',?)",
+      ).run(randomUUID(), turn.id, turn.peer, ordinal, JSON.stringify(part), this.now());
+      return true;
+    });
+  }
+
+  /** 渐进草稿回滚（工具轮）：思考没到最终轮，已入队的气泡全部撤回。
+   *  只撤 pending——已经在发的（sending）撤不动，让它走完自然终态。 */
+  cancelDrafts(turnId: string): void {
+    this.statement("DELETE FROM kernel_outbox WHERE turn_id=? AND status='pending'").run(turnId);
+  }
+
+  /** 渐进收口：思考完成，把本 turn 的表达效果绑定到最后一个气泡上并转
+   *  done（无气泡）/ready（有气泡待发）。与全量 draft 的账面语义一致。 */
+  finishDraft(turn: Turn, effects: Record<string, unknown>): boolean {
+    return this.transaction(() => {
+      const row = this.statement(
+        'SELECT t.state,t.version,p.version AS current FROM kernel_turns t JOIN kernel_peers p ON p.id=t.peer WHERE t.id=? AND t.peer=?',
+      ).get(turn.id, turn.peer);
+      if (
+        !row ||
+        row.state !== 'running' ||
+        row.version !== row.current ||
+        Number(row.version) !== turn.version
+      )
+        return false;
+      const thoughts = this.thoughts(turn.peer);
+      // 校验松绑（用户裁决 2026-11-26）：expressed/asked 坏引用静默剔除。
+      const expressed = Array.isArray(effects.expressed)
+        ? (effects.expressed as unknown[]).filter(
+            (id) =>
+              typeof id === 'string' &&
+              thoughts.some((thought) => thought.id === id && thought.state === 'idle'),
+          )
+        : [];
+      const asked = Array.isArray(effects.asked)
+        ? (effects.asked as unknown[]).filter(
+            (id) =>
+              typeof id === 'string' &&
+              this.commitments(turn.peer).some(
+                (item) => item.id === id && item.state === 'open' && !item.askedAt,
+              ),
+          )
+        : [];
+      const pending = this.pending(turn.peer).filter((envelope) => envelope.turn === turn.id);
+      const last = pending.at(-1);
+      if (last) {
+        const snapshots = thoughts
+          .filter((thought) => expressed.includes(thought.id))
+          .map((thought) => ({ id: thought.id, evidence: thought.evidence }));
+        const askedSnapshots = this.commitments(turn.peer)
+          .filter((item) => asked.includes(item.id))
+          .map((item) => ({ id: item.id, dueAt: item.dueAt }));
+        this.statement(
+          'INSERT INTO kernel_effects(turn_id,value,ordinal) VALUES(?,?,?) ON CONFLICT(turn_id) DO UPDATE SET value=excluded.value,ordinal=excluded.ordinal',
+        ).run(turn.id, JSON.stringify({ effects, snapshots, askedSnapshots }), last.ordinal);
+        this.statement("UPDATE kernel_turns SET state='ready' WHERE id=?").run(turn.id);
+      } else {
+        this.statement("UPDATE kernel_turns SET state='done' WHERE id=?").run(turn.id);
+      }
+      return true;
+    });
   }
 
   /** 发送失败待确认/未收场的件（unknown 封通道，failed 是刚死还没有
@@ -904,6 +987,9 @@ export class Journal {
 
   saveMemory(peer: string, memory: Memory, supersedes: string[] = []): void {
     this.transaction(() => {
+      // 校验退役后的下游防崩：模型可能用不存在的联系人/来源记账（照单全收），
+      // 这里补建 peer 行防外键炸；supersedes 引用不存在的记忆是 no-op 不抛错。
+      this.statement('INSERT OR IGNORE INTO kernel_peers(id) VALUES(?)').run(peer);
       const owner = this.statement('SELECT peer FROM kernel_memories WHERE id=?').get(memory.id);
       if (owner && owner.peer !== peer) throw new Error('不能修改其他联系人的记忆');
       this.statement(

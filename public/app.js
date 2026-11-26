@@ -757,6 +757,11 @@ function fillSystemForm(config) {
     $('fallback-key').value = '';
     $('fallback-key-state').textContent = fallback.hasApiKey ? '（已保存）' : '（未设置）';
     $('fallback-key').placeholder = fallback.hasApiKey ? '••••••••' : '';
+    $('fallback-vision').checked = Boolean(fallback.vision);
+    $('fallback-temp').value = fallback.temperature ?? '';
+    $('fallback-timeout').value = fallback.timeoutMs ?? 45000;
+    $('fallback-max-tokens').value = fallback.maxTokens ?? 3000;
+    $('fallback-retries').value = fallback.retries ?? 2;
   }
   $('web-key').value = '';
   $('web-key-state').textContent = config.hasWebSearchKey ? '（已保存）' : '（未设置）';
@@ -833,12 +838,13 @@ $('save-system').onclick = () =>
         format: fallbackFormat.value,
         model: $('fallback-model').value.trim(),
         baseUrl: $('fallback-url').value.trim(),
-        vision: $('primary-vision').checked,
-        timeoutMs: configCache?.fallback?.timeoutMs ?? primary.timeoutMs,
-        maxTokens: primary.maxTokens,
+        vision: $('fallback-vision').checked,
+        timeoutMs: Number($('fallback-timeout').value),
+        maxTokens: Number($('fallback-max-tokens').value),
         inputTokens: primary.inputTokens,
-        retries: primary.retries,
+        retries: Number($('fallback-retries').value),
       };
+      if ($('fallback-temp').value !== '') fallback.temperature = Number($('fallback-temp').value);
       if ($('fallback-key').value.trim()) fallback.apiKey = $('fallback-key').value.trim();
       body.fallback = fallback;
     } else body.fallback = null;
@@ -916,6 +922,24 @@ $('test-system').onclick = () =>
       !result.ok,
     );
   }, $('test-system'));
+// 备用渠道的体检按钮：同一个端点带 channel 参数，测它自己的路与凭据。
+$('test-llm-fallback').onclick = () =>
+  perform(async () => {
+    const result = await api('/api/test-llm', { method: 'POST', body: { channel: 'fallback' } });
+    if (!result.ok) throw new Error(result.error);
+    show(`备用渠道连通正常：${result.model}（${result.format}）· 延迟 ${result.latencyMs} ms`);
+  }, $('test-llm-fallback'));
+$('test-system-fallback').onclick = () =>
+  perform(async () => {
+    const result = await api('/api/test-system', { method: 'POST', body: { channel: 'fallback' } });
+    if (result.ok === false && result.error) throw new Error(result.error);
+    show(
+      result.ok
+        ? `角色生效：备用渠道支持 system 提示，人设可以正常工作（回复“${result.reply}”）`
+        : `角色不生效：备用渠道丢弃了 system 提示，人设无法工作，建议更换渠道或模型（实际回复“${result.reply}”）`,
+      !result.ok,
+    );
+  }, $('test-system-fallback'));
 $('test-embedding').onclick = () =>
   perform(async () => {
     const result = await api('/api/test-embedding', { method: 'POST' });
@@ -943,16 +967,28 @@ $('backup-now').onclick = () =>
     show(`备份完成：atri-backup/${state.at}`);
   }, $('backup-now'));
 
-// 拉取模型列表（v5 回归）：面板可筛选，点选填入模型框。
+// 拉取模型列表（v5 回归）：面板可筛选，点选填入模型框。主/备渠道各拉
+// 各的列表（凭据不同），面板挂在对应输入框下方，点选回填对应框。
 let fetchedModels = null;
+let modelTargetInput = 'primary-model';
 $('fetch-models').onclick = () =>
   perform(async () => {
     const { models } = await api('/api/models');
     if (!models.length) throw new Error('渠道返回了空模型列表');
     fetchedModels = models;
+    modelTargetInput = 'primary-model';
     renderModelSuggestions();
     $('model-suggestions').hidden = false;
   }, $('fetch-models'));
+$('fetch-models-fallback').onclick = () =>
+  perform(async () => {
+    const { models } = await api('/api/models?channel=fallback');
+    if (!models.length) throw new Error('渠道返回了空模型列表');
+    fetchedModels = models;
+    modelTargetInput = 'fallback-model';
+    renderModelSuggestions();
+    $('model-suggestions').hidden = false;
+  }, $('fetch-models-fallback'));
 function ensureModelPanel() {
   if ($('model-suggestions')) return;
   const panel = document.createElement('div');
@@ -973,6 +1009,9 @@ function ensureModelPanel() {
 function renderModelSuggestions() {
   ensureModelPanel();
   const panel = $('model-suggestions');
+  const input = $(modelTargetInput);
+  // 面板跟着目标输入框走：备用渠道的列表挂到备用模型框下面。
+  input.closest('.field-with-action').after(panel);
   const models = fetchedModels ?? [];
   const query = ($('model-filter').value || '').trim().toLowerCase();
   const filtered = query ? models.filter((m) => m.toLowerCase().includes(query)) : models;
@@ -986,12 +1025,12 @@ function renderModelSuggestions() {
     const item = el(
       'button',
       model,
-      'model-suggestion-item' + (model === $('primary-model').value ? ' current' : ''),
+      'model-suggestion-item' + (model === input.value ? ' current' : ''),
     );
     item.type = 'button';
     item.title = model;
     item.onclick = () => {
-      $('primary-model').value = model;
+      input.value = model;
       panel.hidden = true;
     };
     list.append(item);

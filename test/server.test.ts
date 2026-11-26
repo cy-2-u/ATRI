@@ -7,7 +7,7 @@ import { Mind } from '../src/domain/mind.js';
 import { Runtime } from '../src/runtime/runtime.js';
 import { createServer } from '../src/server.js';
 import { Wall } from '../src/wall.js';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -279,7 +279,75 @@ test('渠道体检端点需要登录，命中注入的探针', async () => {
       headers: { cookie: env.cookie },
     });
     assert.deepEqual(embedding.json(), { ok: true, latencyMs: 1, dims: 3, model: 'm' });
+    // 渠道参数：合法值透传，非法值 400。
+    const fallback = await env.app.inject({
+      method: 'POST',
+      url: '/api/test-llm',
+      headers: { cookie: env.cookie },
+      payload: { channel: 'fallback' },
+    });
+    assert.equal(fallback.statusCode, 200);
+    const bad = await env.app.inject({
+      method: 'POST',
+      url: '/api/test-llm',
+      headers: { cookie: env.cookie },
+      payload: { channel: 'side' },
+    });
+    assert.equal(bad.statusCode, 400);
+    // /api/models：渠道参数校验；备用渠道未配置时报人话。
+    assert.equal(
+      (
+        await env.app.inject({
+          method: 'GET',
+          url: '/api/models?channel=side',
+          headers: { cookie: env.cookie },
+        })
+      ).statusCode,
+      400,
+    );
+    const noFallback = await env.app.inject({
+      method: 'GET',
+      url: '/api/models?channel=fallback',
+      headers: { cookie: env.cookie },
+    });
+    assert.equal(noFallback.statusCode, 400); // TypeError → 400 + error 字段
+    assert.match(noFallback.json().error, /请先启用并保存备用渠道/);
   } finally {
     await env.close();
   }
+});
+
+test('管理页/路由配对：备用渠道按钮在 HTML 与 app.js 两端成对出现', () => {
+  // 静态文件配对测试：单测前端做不到（无浏览器），这里锁「HTML 有按钮、
+  // JS 有绑定」的一致性——历史上 v5 回归就是按钮在 HTML 里丢了 id。
+  const html = readFileSync('public/index.html', 'utf8');
+  const js = readFileSync('public/app.js', 'utf8');
+  // 备用渠道面板的完整绑定面：8 个新字段/按钮 + 原有 4 个输入。
+  const ids = [
+    'fetch-models-fallback',
+    'test-llm-fallback',
+    'test-system-fallback',
+    'fallback-vision',
+    'fallback-temp',
+    'fallback-timeout',
+    'fallback-max-tokens',
+    'fallback-retries',
+    'fallback-model',
+    'fallback-url',
+    'fallback-key',
+    'fallback-format',
+    'fallback-on',
+    'fallback-fields',
+  ];
+  for (const id of ids) {
+    assert.ok(html.includes(`id="${id}"`), `index.html 缺 #${id}（按钮/字段丢失）`);
+    assert.ok(js.includes(`'${id}'`) || js.includes(`"${id}"`), `app.js 未绑定 #${id}`);
+  }
+  // 主渠道的按钮仍要与端点成对：防把端点参数改了忘了 JS。
+  for (const endpoint of ['/api/models', '/api/test-llm', '/api/test-system']) {
+    assert.ok(js.includes(endpoint), `app.js 未调用 ${endpoint}`);
+  }
+  // 备用渠道的拉取必须带渠道参数——不带就是拿主渠道凭据拉备用列表。
+  assert.ok(js.includes('/api/models?channel=fallback'), '备用拉取模型缺 channel 参数');
+  assert.ok(js.includes("channel: 'fallback'"), '备用体检缺 channel 参数');
 });

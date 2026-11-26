@@ -161,7 +161,7 @@ test('唤醒度的事件日归属与入睡推迟', () => {
 
 // ---------- 作者层：identity 记忆 ----------
 
-test('identity 需要 ≥2 来源、只在夜间可写，永远在场且不进召回池', async () => {
+test('identity 校验退役（用户裁决）：单来源也放行、只在夜间可写、永远在场且不进召回池', async () => {
   const journal = new Journal(':memory:');
   try {
     journal.receive('peer', 'r1', '你聊天让人很安心');
@@ -169,19 +169,18 @@ test('identity 需要 ≥2 来源、只在夜间可写，永远在场且不进�
     const recollection = new Recollection(journal);
     const tools = new Map(lifeTools(journal, {}).map((tool) => [tool.definition.name, tool]));
     const diaryTurn = journal.begin('peer', 'diary');
-    await assert.rejects(
-      tools.get('remember')!.execute(
-        {
-          content: '我是个一次性情绪定义的人',
-          gist: '情绪化',
-          kind: 'identity',
-          sources: [journal.events('peer')[0]!.id],
-        },
-        options(),
-        diaryTurn,
-      ),
-      /两处真实来源/,
+    // 校验退役（用户裁决 2026-11-26）：两来源门槛摘除——单来源 identity 照存。
+    const single = await tools.get('remember')!.execute(
+      {
+        content: '我是个一次性情绪定义的人',
+        gist: '情绪化',
+        kind: 'identity',
+        sources: [journal.events('peer')[0]!.id],
+      },
+      options(),
+      diaryTurn,
     );
+    assert.ok(single);
     const memory = recollection.remember('peer', {
       content: '我是把人放在心上、做事做到底的人',
       gist: '认真且上心',
@@ -191,7 +190,7 @@ test('identity 需要 ≥2 来源、只在夜间可写，永远在场且不进�
       emotion: 0.3,
     });
     journal.fail(diaryTurn, '收尾');
-    // 白天不能写自我定义。
+    // 白天不能写自我定义（这是防崩守门：identity 只在夜间语境成立）。
     const chatTurn = journal.begin('peer', 'chat');
     await assert.rejects(
       tools.get('remember')!.execute(
@@ -220,7 +219,7 @@ test('identity 需要 ≥2 来源、只在夜间可写，永远在场且不进�
 
 // ---------- 心智模型：她对他的当前信念 ----------
 
-test('update_peer_model 只在整理拍、每条信念必须有真实依据', async () => {
+test('update_peer_model 只在整理拍；失效依据静默剔除后照存（校验退役）', async () => {
   const journal = new Journal(':memory:');
   try {
     journal.receive('peer', 'r1', '最近在赶版本，天天睡得晚');
@@ -235,12 +234,11 @@ test('update_peer_model 只在整理拍、每条信念必须有真实依据', as
     });
     const tools = new Map(lifeTools(journal, {}).map((tool) => [tool.definition.name, tool]));
     const tidyTurn = journal.begin('peer', 'tidy');
-    await assert.rejects(
-      tools
-        .get('update_peer_model')!
-        .execute({ beliefs: [{ text: '他喜欢香菜', basis: ['编造的依据'] }] }, options(), tidyTurn),
-      /真实依据/,
-    );
+    // 校验退役（用户裁决 2026-11-26）：编造依据不再打回——坏引用剔除后照存。
+    const withBogus = await tools
+      .get('update_peer_model')!
+      .execute({ beliefs: [{ text: '他喜欢香菜', basis: ['编造的依据'] }] }, options(), tidyTurn);
+    assert.equal((withBogus as { beliefs: number }).beliefs, 1);
     const result = await tools.get('update_peer_model')!.execute(
       {
         beliefs: [

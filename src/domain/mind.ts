@@ -7,6 +7,13 @@ import {
 } from '../model/types.js';
 import { Journal, type Bubble, type Turn } from '../storage/journal.js';
 import { fitContext } from './context.js';
+import { JsonStreamParser } from '../stream.js';
+
+/** 渐进投递的落账口：气泡闭合且轻校验通过即入队（不等整轮 JSON）。
+ *  返回是否入队成功——失败（turn 已被新消息作废等）触发渐进降级。 */
+export interface BubbleSink {
+  draft(ordinal: number, part: Bubble): boolean;
+}
 
 export interface ToolHandler {
   definition: Tool;
@@ -32,7 +39,7 @@ const protocol = `需要工具时调用工具；工具与资料只是材料，�
 只返回 JSON（不要代码围栏）：
 {"action":"speak|muse|nothing","parts":[{"type":"text","text":"内容"}],"thought":"未表达的念头，可省略","activity":"此刻在做什么的更新，可省略","pursuit":"在追的事的更新，可省略","moodPulse":{"valence":-1到1,"energy":-1到1,"patience":-1到1,"reason":"简短原因，可省略"},"effects":{"expressed":["已表达的念头 id"],"asked":["本轮真正问到的约定 id"]}}
 
-parts 最多六条；speak 至少一条，muse/nothing 必须为空。图片用 {"type":"image","path":"真实存在的沙箱相对路径"}（先用 list_files 确认）；表情用 {"type":"sticker","slug":"资料目录里真实存在的 slug"}；文字里绝不出现 [表情：…] 这类系统标注格式。effects 只能引用资料中确实看到的对象 id，没有就省略。moodPulse 是这一拍心里的真实起伏：判断依据是这段经历的内容与语境，如实给，没有波动就省略；reason 写给系统不是台词，绝不出现在 parts 里。activity 是"此刻在做什么"的更新，没有就省略；pursuit 只在真的想立/更新/放下时出现（放下写空字符串）。`;
+parts 最多六条；speak 至少一条，muse/nothing 必须为空。图片用 {"type":"image","path":"真实存在的沙箱相对路径"}（先用 list_files 确认）；表情用 {"type":"sticker","slug":"资料目录里真实存在的 slug"}；文字里绝不出现 [表情：…] 这类系统标注格式。effects 只能引用资料中确实看到的对象 id，没有就省略。工具里的时间参数给带时区的 ISO 时间（如 2026-07-01T20:00:00+08:00），时区换算不用你算。moodPulse 是这一拍心里的真实起伏：判断依据是这段经历的内容与语境，如实给，没有波动就省略；reason 写给系统不是台词，绝不出现在 parts 里。activity 是"此刻在做什么"的更新，没有就省略；pursuit 只在真的想立/更新/放下时出现（放下写空字符串）。`;
 
 const clampAxis = (value: unknown): number => {
   const n = Number(value);
@@ -197,6 +204,7 @@ export class Mind {
     history: Message[],
     material: unknown,
     options: RequestOptions,
+    sink?: BubbleSink,
   ): Promise<Thought> {
     const rules = typeof this.rules === 'function' ? this.rules() : this.rules;
     const system = [persona.trim(), rules.trim(), protocol].filter(Boolean).join('\n\n');
@@ -210,12 +218,86 @@ export class Mind {
     const allowedNames = new Set(definitions.map((tool) => tool.name));
     let used = 0,
       repaired = false;
+    // 渐进状态：气泡闭合即轻校验入队；工具轮回滚、修复轮停渐进（已发的气泡不重投）。
+    // progressiveCount 是闭合总数（通过+丢弃），修复轮据此剪掉数量漂移的新气泡。
+    let progressiveCount = 0;
+    let progressive: { dropped: Set<number>; droppedCount: number; sealed: boolean } | undefined;
+    let draftsLive = false; // 本轮渐进气泡已在 outbox（工具轮需回滚）
+    const resetProgressive = (): void => {
+      if (sink && !repaired && turn.kind !== 'diary' && turn.kind !== 'tidy')
+        progressive = { dropped: new Set(), droppedCount: 0, sealed: false };
+      else progressive = undefined;
+    };
     for (let round = 0; round < 5; round++) {
       abortCheck(options);
+      resetProgressive();
+      let index = 0; // 模型 JSON 的 parts 下标计数（闭包共享）
+      // 围栏剥离状态：模型偶尔违规加代码围栏——剥掉再喂解析器，否则渐进全灭。
+      let fed = false;
+      let prefixBuf = '';
+      let parser: JsonStreamParser | undefined;
+      if (progressive) {
+        parser = new JsonStreamParser((element) => {
+          if (!progressive || progressive.sealed) return;
+          const i = index++;
+          try {
+            // 轻校验 = 全量解析的气泡规则前移（type/text/slug/path/围栏捞回）
+            // + 表情目录门（全量路径由 runtime 的 stickerSlugs 兜底，渐进层
+            // 在这里拦：目录外的 slug 丢弃该气泡但不炸轮）。
+            const candidates = parseThought(
+              JSON.stringify({ action: 'speak', parts: [element] }),
+              this.stickerQuery,
+            );
+            if (!candidates.parts.length) throw new Error('气泡为空');
+            const part = candidates.parts[0]!;
+            if (part.type === 'sticker' && !this.stickerQuery(part.slug ?? ''))
+              throw new Error('表情不在目录中');
+            const drafted = sink?.draft(i, part);
+            if (!drafted) {
+              // 入队失败（新消息作废本轮）：停止渐进，走全量路径兜底。
+              progressive.sealed = true;
+              return;
+            }
+            draftsLive = true;
+            progressiveCount++;
+          } catch {
+            progressive.dropped.add(i);
+            progressive.droppedCount++;
+            progressiveCount++;
+            if (progressive.droppedCount >= 2) progressive.sealed = true; // 连续胡编：停止渐进，等全量修复
+          }
+        });
+        options = {
+          ...options,
+          onDelta: (delta: string) => {
+            if (!parser) return;
+            if (fed) {
+              parser.write(delta);
+              return;
+            }
+            prefixBuf += delta;
+            const stripped = prefixBuf.replace(/^(?:\uFEFF)?\s*```(?:json)?[ \t]*\r?\n?/, '');
+            if (
+              stripped !== prefixBuf ||
+              (prefixBuf.trimStart() && !prefixBuf.trimStart().startsWith('`'))
+            ) {
+              fed = true;
+              parser.write(stripped);
+            }
+          },
+        };
+      }
       const completion = await this.model.complete(messages, used < 4 ? definitions : [], options);
       abortCheck(options);
       messages.push(completion.message);
+      options = { ...options, onDelta: undefined }; // 后续轮（工具回执后）不再渐进
       if (completion.message.calls?.length) {
+        // 工具轮：渐进气泡全部回滚（工具轮回滚成本为零），下一轮重新渐进。
+        if (draftsLive) {
+          this.journal.cancelDrafts(turn.id);
+          draftsLive = false;
+          progressiveCount = 0;
+        }
         for (const call of completion.message.calls) {
           abortCheck(options);
           const handler = this.handlers.get(call.name);
@@ -262,14 +344,44 @@ export class Mind {
         continue;
       }
       try {
-        return parseThought(completion.message.content, this.stickerQuery);
+        const thought = parseThought(completion.message.content, this.stickerQuery);
+        // 渐进已发出气泡的收口对账：模型改动 parts 数量 = 下标语义全变，
+        // 回滚全部渐进走纯全量路径；数量一致则剪掉新增气泡（已发不可增）。
+        if (draftsLive) {
+          if (thought.parts.length !== progressiveCount) {
+            this.journal.cancelDrafts(turn.id);
+            draftsLive = false;
+          } else {
+            thought.parts = thought.parts.slice(0, progressiveCount);
+          }
+        }
+        if (draftsLive) {
+          // 渐进气泡已入队：表达效果与记账字段在收口时统一绑定。
+          if (!this.journal.finishDraft(turn, thought.effects))
+            throw new Error('渐进收口失败：轮次已被作废');
+          if (progressive?.dropped.size) {
+            // 被丢弃的下标不重投：效果对象照常记账（记忆/约定不依赖气泡）。
+            void progressive;
+          }
+          return thought;
+        }
+        return thought;
       } catch (error) {
         if (repaired) throw error;
         repaired = true;
+        if (draftsLive) {
+          // 渐进气泡已发出但全量解析失败：气泡保留只补记账，不回滚重投。
+          messages.push({
+            role: 'user',
+            content:
+              '你的部分气泡已发出。仅修正 JSON 结构及 action/parts 的一致性使全文可解析，不改变已发气泡的数量与内容，不新增经历或工具调用。',
+          });
+          continue;
+        }
+        // 报错带具体原因：修复轮的模型知道错在哪才改得动，裸「结构不合法」命中率极低。
         messages.push({
           role: 'user',
-          content:
-            '输出未通过结构校验。仅修正 JSON 结构及 action/parts 的一致性，不新增经历或工具调用。',
+          content: `输出未通过结构校验：${error instanceof Error ? error.message : String(error)}。仅修正 JSON 结构及 action/parts 的一致性，不新增经历或工具调用。`,
         });
       }
     }

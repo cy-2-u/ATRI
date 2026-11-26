@@ -49,6 +49,8 @@ export interface RequestOptions {
   signal?: AbortSignal;
   deadlineAt: number;
   sessionId?: string;
+  /** 渐进投递的增量回调：正文 delta 逐段透传（SSE 流式）。缺席 = 非流式。 */
+  onDelta?: (delta: string) => void;
 }
 
 export interface Model {

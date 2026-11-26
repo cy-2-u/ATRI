@@ -109,14 +109,15 @@ const asResult = async <T>(probe: () => Promise<T>): Promise<T | { ok: false; er
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
   }
 };
-const probeEndpoint = (): Endpoint => {
-  const endpoint = config().primary;
+const probeEndpoint = (channel: 'primary' | 'fallback' = 'primary'): Endpoint => {
+  const endpoint = channel === 'fallback' ? config().fallback : config().primary;
+  if (!endpoint) throw new TypeError('请先启用并保存备用渠道');
   if (!endpoint.apiKey || !endpoint.model) throw new TypeError('请先保存模型名称和 API 密钥');
   return endpoint;
 };
-const channelProbe = () =>
+const channelProbe = (channel: 'primary' | 'fallback' = 'primary') =>
   asResult(async () => {
-    const endpoint = probeEndpoint();
+    const endpoint = probeEndpoint(channel);
     const started = Date.now();
     await httpTransport(endpoint, [{ role: 'user', content: 'hi' }], [], {
       deadlineAt: Date.now() + Math.min(endpoint.timeoutMs, 60_000),
@@ -128,9 +129,9 @@ const channelProbe = () =>
       format: endpoint.format,
     };
   });
-const systemProbe = () =>
+const systemProbe = (channel: 'primary' | 'fallback' = 'primary') =>
   asResult(async () => {
-    const endpoint = { ...probeEndpoint(), maxTokens: 16 };
+    const endpoint = { ...probeEndpoint(channel), maxTokens: 16 };
     const completion = await httpTransport(
       endpoint,
       [
@@ -185,7 +186,14 @@ const mind = new Mind(
   journal,
   // 工具恒注册：搜索单独由 TavilyWeb 现读密钥，沙箱由 Sandbox 现读开关——
   // 启动后才配置的"眼"与"手"不再需要重启进程。
-  lifeTools(journal, { sandbox, web, image: painter, wall, stickers }),
+  lifeTools(journal, {
+    sandbox,
+    web,
+    image: painter,
+    wall,
+    stickers,
+    timezone: () => config().timezone,
+  }),
   // 规则 = 生活律 + 表情目录。目录住在稳定前缀里吃供应商前缀缓存
   // （逐轮 material 里的那份按未缓存计费）；目录变动只废一次缓存。
   // 渲染必须确定性（按 slug 排序、固定格式），字节不稳缓存永远 miss。

@@ -282,6 +282,8 @@ export class Runtime {
     };
     try {
       const material = await this.options.material(turn);
+      // 渐进投递：气泡闭合即入队，与思考并行发出。sink.draft 返回 false
+      // （轮次被新消息作废）时 Mind 自行降级为纯全量路径。
       const thought = await this.mind.think(
         turn,
         this.options.persona(),
@@ -290,19 +292,28 @@ export class Runtime {
         turn.kind === 'diary' || turn.kind === 'tidy' ? [] : await this.history(turn.peer),
         material,
         options,
+        {
+          draft: (ordinal, part) => this.journal.draftOne(turn, ordinal, part),
+        },
       );
       signal.throwIfAborted();
-      // 目录外的表情不是她的表情：静默丢弃，别让一次幻觉变成发不出的死信。
-      const slugs = this.options.stickerSlugs();
-      const parts = thought.parts.filter(
-        (part) => part.type !== 'sticker' || slugs.has(part.slug ?? ''),
-      );
-      if (thought.action === 'speak' && parts.length !== thought.parts.length && !parts.length) {
-        this.journal.fail(turn, '表情不在目录中，气泡全部失效');
-        return;
+      // 渐进已收口的轮次（finishDraft 已绑效果）跳过全量 draft；
+      // 表情白名单的静默过滤只走全量路径（渐进轻校验已做）。
+      if (this.journal.turnState(turn.id) === 'running') {
+        // 目录外的表情不是她的表情：静默丢弃，别让一次幻觉变成发不出的死信。
+        const slugs = this.options.stickerSlugs();
+        const parts = thought.parts.filter(
+          (part) => part.type !== 'sticker' || slugs.has(part.slug ?? ''),
+        );
+        if (thought.action === 'speak' && parts.length !== thought.parts.length && !parts.length) {
+          this.journal.fail(turn, '表情不在目录中，气泡全部失效');
+          return;
+        }
+        this.settleSelf(turn.peer, thought);
+        this.journal.draft(turn, parts, thought.effects);
+      } else {
+        this.settleSelf(turn.peer, thought);
       }
-      this.settleSelf(turn.peer, thought);
-      this.journal.draft(turn, parts, thought.effects);
       if (thought.thought)
         this.journal.appendEvent(turn.peer, turn.id, 'muse', { content: thought.thought });
     } catch (error) {

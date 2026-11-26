@@ -1,5 +1,6 @@
 import type { Journal } from '../storage/journal.js';
 import { Recollection, type PeerBelief } from './memory.js';
+import { instant } from './rhythm.js';
 import type { ToolHandler } from './mind.js';
 import type { Sandbox } from '../sandbox.js';
 import type { WebTools } from '../web.js';
@@ -13,13 +14,26 @@ function text(value: unknown, name: string): string {
 }
 
 function ids(value: unknown): string[] {
+  // 格式层容错：单个字符串自动包成单元素数组、数字/布尔 id 转字符串——
+  // 无歧义的死错误代码修比整轮重试便宜；真数组混对象等垃圾仍打回。
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean')
+    value = [value];
   if (!Array.isArray(value) || value.some((id) => typeof id !== 'string') || value.length > 30)
-    throw new TypeError('sources 必须是最多三十项的来源 ID 数组');
-  return value;
+    throw new TypeError('sources 需要最多三十项的来源 ID 数组');
+  return [...new Set(value as string[])];
+}
+
+/** 约定/念头的到期时刻：Unix 毫秒直通；墙钟 ISO 时间（含裸本地时间）按她的
+ *  时区锚定成毫秒——墙钟归模型，时区换算归代码，模型不猜 UTC 偏移。 */
+function dueAt(value: unknown, timeZone: string): number {
+  const at = instant(value, timeZone);
+  if (at < 0) throw new TypeError('dueAt 不能早于 1970 年');
+  return at;
 }
 
 /** 聊天/心跳工具集（记忆与约定）+ 手（沙箱）+ 眼（联网）+ 画笔 + 日记。
- *  全部工具注册进同一个 Mind，按 turn.kind 的工具集决定本轮谁可用。 */
+ *  全部工具注册进同一个 Mind，按 turn.kind 的工具集决定本轮谁可用。
+ *  timezone 现读：管理面改时区即时生效，不需要重启进程。 */
 export function lifeTools(
   journal: Journal,
   deps: {
@@ -28,9 +42,11 @@ export function lifeTools(
     image?: ImagePainter;
     wall?: Wall;
     stickers?: Stickers;
+    timezone?: () => string;
   },
 ): ToolHandler[] {
   const recollection = new Recollection(journal);
+  const herZone = (): string => deps.timezone?.() ?? 'Asia/Shanghai';
   const tools: ToolHandler[] = [
     {
       definition: {
@@ -153,14 +169,14 @@ export function lifeTools(
       definition: {
         name: 'keep_commitment',
         description:
-          '记下有来源的提醒、承诺或挂念。dueAt 为带明确时区计算出的 Unix 毫秒，无日期挂念用 0；不凭空承诺已完成。',
+          '记下有来源的提醒、承诺或挂念。dueAt 为未来的时刻：带时区的 ISO 时间（如 2026-07-01T20:00:00+08:00）或 Unix 毫秒，无日期挂念用 0；不凭空承诺已完成。',
         parameters: {
           type: 'object',
           properties: {
             content: { type: 'string' },
             kind: { type: 'string', enum: ['reminder', 'concern', 'promise'] },
             sources: { type: 'array', items: { type: 'string' } },
-            dueAt: { type: 'integer', minimum: 0 },
+            dueAt: { description: '未来的时刻：带时区的 ISO 时间或 Unix 毫秒，0 表示无时间' },
             recurring: { type: 'string', enum: ['none', 'yearly'] },
           },
           required: ['content', 'kind', 'sources', 'dueAt'],
@@ -170,8 +186,7 @@ export function lifeTools(
       async execute(args, _options, turn) {
         if (args.kind !== 'reminder' && args.kind !== 'concern' && args.kind !== 'promise')
           throw new TypeError('约定类型无效');
-        if (typeof args.dueAt !== 'number' || !Number.isSafeInteger(args.dueAt) || args.dueAt < 0)
-          throw new TypeError('dueAt 必须是有效 Unix 毫秒');
+        const due = args.dueAt === 0 ? 0 : dueAt(args.dueAt, herZone());
         if (
           args.recurring !== undefined &&
           args.recurring !== 'none' &&
@@ -182,7 +197,7 @@ export function lifeTools(
           content: text(args.content, 'content'),
           kind: args.kind,
           sources: ids(args.sources),
-          dueAt: args.dueAt,
+          dueAt: due,
           recurring: args.recurring ?? 'none',
         });
         return { id: item.id, dueAt: item.dueAt, state: item.state };
@@ -203,14 +218,8 @@ export function lifeTools(
         },
       },
       async execute(args, _options, turn) {
-        const sources = ids(args.sources);
-        const evidence = journal.evidence(turn.peer, sources);
-        if (
-          !sources.length ||
-          evidence.length !== new Set(sources).size ||
-          evidence.some((event) => !['received', 'experienced'].includes(event.kind))
-        )
-          throw new TypeError('了结约定必须有对方反馈或实际行动依据');
+        // 校验松绑（用户裁决 2026-11-26）：履约依据门槛摘除——她乐意了结就让她
+        // 了结，引用失效来源照单全收；resolveCommitment 落空返回 false 不炸轮。
         return { resolved: journal.resolveCommitment(turn.peer, text(args.id, 'id')) };
       },
     },
@@ -218,32 +227,31 @@ export function lifeTools(
       definition: {
         name: 'consider',
         description:
-          '保留尚未表达的念头；带 dueAt（未来的 Unix 毫秒）就是你在期待的事，材料里会有倒计时。相同主题和证据不会反复重新激活已表达念头。',
+          '保留尚未表达的念头；带 dueAt（未来的时刻：带时区的 ISO 时间或 Unix 毫秒）就是你在期待的事，材料里会有倒计时。相同主题和证据不会反复重新激活已表达念头。',
         parameters: {
           type: 'object',
           properties: {
             topic: { type: 'string' },
             meaning: { type: 'string' },
             sources: { type: 'array', items: { type: 'string' } },
-            dueAt: { type: 'integer', minimum: 0 },
+            dueAt: {
+              description:
+                '未来的时刻：带时区的 ISO 时间（如 2026-07-01T20:00:00+08:00）或 Unix 毫秒',
+            },
           },
           required: ['topic', 'meaning', 'sources'],
           additionalProperties: false,
         },
       },
       async execute(args, _options, turn) {
-        let dueAt: number | undefined;
-        if (args.dueAt !== undefined) {
-          if (typeof args.dueAt !== 'number' || !Number.isSafeInteger(args.dueAt) || args.dueAt < 0)
-            throw new TypeError('dueAt 必须是有效 Unix 毫秒');
-          dueAt = args.dueAt;
-        }
+        const due =
+          args.dueAt === undefined || args.dueAt === 0 ? undefined : dueAt(args.dueAt, herZone());
         const thought = recollection.consider(
           turn.peer,
           text(args.topic, 'topic'),
           text(args.meaning, 'meaning'),
           ids(args.sources),
-          dueAt,
+          due,
         );
         return { id: thought.id, state: thought.state, dueAt: thought.dueAt ?? 0 };
       },
@@ -282,9 +290,9 @@ export function lifeTools(
           if (!raw || typeof raw !== 'object') throw new TypeError('信念必须是对象');
           const item = raw as { text?: unknown; basis?: unknown };
           const content = text(item.text, 'text').slice(0, 160);
-          const basis = ids(item.basis);
-          if (!basis.length || journal.supports(turn.peer, basis) !== basis.length)
-            throw new TypeError('每一条认识都必须有真实依据（消息、事件或记忆 ID）');
+          // 校验松绑（用户裁决 2026-11-26）：依据存在性门槛摘除——失效引用
+          // 静默跳过（filter 剔除）后照存，不炸整轮整理拍。
+          const basis = ids(item.basis).filter((id) => journal.supports(turn.peer, [id]) === 1);
           beliefs.push({ text: content, basis: [...new Set(basis)] });
         }
         const model = { beliefs, updatedAt: Date.now() };
@@ -352,17 +360,10 @@ export function lifeTools(
           if (!section || typeof section !== 'object') throw new TypeError('日记段必须是对象');
           const item = section as { content?: unknown; sources?: unknown; emotion?: unknown };
           const content = text(item.content, 'content').slice(0, 2000);
-          const sources = ids(item.sources);
-          const evidence = journal.evidence(turn.peer, sources);
-          if (
-            !sources.length ||
-            evidence.length !== new Set(sources).size ||
-            evidence.some((event) => !['received', 'said', 'experienced'].includes(event.kind))
-          )
-            throw new TypeError('日记段缺少真实来源');
-          const emotion = item.emotion === undefined ? 0 : Number(item.emotion);
-          if (!Number.isFinite(emotion) || emotion < -1 || emotion > 1)
-            throw new TypeError('emotion 必须在 -1 到 1 之间');
+          // 校验松绑（用户裁决 2026-11-26）：日记来源门槛摘除——她写的日记
+          // 不因引用问题被拒；sources 留档不校验。情绪轴超界 clamp（主观权重非诚实凭据）。
+          const emotionRaw = item.emotion === undefined ? 0 : Number(item.emotion);
+          const emotion = Number.isFinite(emotionRaw) ? Math.max(-1, Math.min(1, emotionRaw)) : 0;
           const id = journal.appendEvent(turn.peer, turn.id, 'diary', { content, emotion });
           written.push({ id, emotion });
         }
