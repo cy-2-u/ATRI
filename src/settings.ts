@@ -16,11 +16,15 @@ export interface EmbeddingConfig {
   model: string;
 }
 
-/** 她的画笔：OpenAI 兼容 images/generations 端点。 */
+/** 她的画笔：OpenAI 兼容 images/generations 端点，GPT 与 NAI 双引擎
+ *  各存一套凭据（切换零重填）。NAI 走 rinko 兼容中转，请求体多一层
+ *  parameters（步数免费档 28 封顶），提示词格式也不同（danbooru tag）。 */
 export interface ImageConfig {
+  engine: 'gpt' | 'nai';
   baseUrl: string;
   apiKey: string;
   model: string;
+  nai?: { baseUrl: string; apiKey: string; model: string; steps: number };
 }
 
 /** WebDAV 每日备份的目的地：地址/账号/密码，填齐即启用。 */
@@ -184,10 +188,19 @@ function embeddingConfig(
 function imageConfig(value: unknown, previous: ImageConfig | undefined): ImageConfig | undefined {
   if (value === null) return undefined;
   const patch = record(value ?? {});
-  const merged = { baseUrl: '', apiKey: '', model: '', ...(previous ?? {}), ...patch };
+  const merged = {
+    engine: 'gpt' as string,
+    baseUrl: '',
+    apiKey: '',
+    model: '',
+    ...(previous ?? {}),
+    ...patch,
+  };
   for (const key of ['baseUrl', 'apiKey', 'model'] as const)
     if (merged[key] !== undefined && merged[key] !== '' && typeof merged[key] !== 'string')
       throw new TypeError(`image.${key} 必须是字符串`);
+  if (merged.engine !== 'gpt' && merged.engine !== 'nai')
+    throw new TypeError("image.engine 必须是 'gpt' 或 'nai'");
   if (!merged.model && !merged.apiKey) return undefined;
   if (!merged.model || !merged.apiKey) throw new TypeError('画图需要 model 与 apiKey 同时配置');
   // baseUrl 留空保持旧值（前端另有"退主渠道地址"的兜底，这里守 API 直调）。
@@ -204,10 +217,51 @@ function imageConfig(value: unknown, previous: ImageConfig | undefined): ImageCo
     url.hash
   )
     throw new TypeError('画图地址必须是无凭据的 HTTP 地址');
+  // NAI 子配置：只校验提交了的字段——空 = 没配（engine 切 nai 时前端先填）。
+  let nai: ImageConfig['nai'];
+  const rawNai =
+    patch.nai === undefined ? (previous?.nai ? { ...previous.nai } : undefined) : patch.nai;
+  if (rawNai !== undefined && rawNai !== null) {
+    const naiPatch = record(rawNai);
+    const naiMerged = { baseUrl: '', apiKey: '', model: '', steps: 28, ...(naiPatch ?? {}) };
+    for (const key of ['baseUrl', 'apiKey', 'model'] as const)
+      if (
+        naiMerged[key] !== undefined &&
+        naiMerged[key] !== '' &&
+        typeof naiMerged[key] !== 'string'
+      )
+        throw new TypeError(`image.nai.${key} 必须是字符串`);
+    if (naiMerged.model && naiMerged.apiKey) {
+      if (!String(naiMerged.baseUrl).trim()) {
+        if (!previous?.nai?.baseUrl) throw new TypeError('请填写 NAI 画图服务地址');
+        naiMerged.baseUrl = previous.nai.baseUrl;
+      }
+      const naiUrl = new URL(String(naiMerged.baseUrl));
+      if (
+        !['http:', 'https:'].includes(naiUrl.protocol) ||
+        naiUrl.username ||
+        naiUrl.password ||
+        naiUrl.search ||
+        naiUrl.hash
+      )
+        throw new TypeError('NAI 画图地址必须是无凭据的 HTTP 地址');
+      const steps = Number(naiMerged.steps);
+      if (!Number.isInteger(steps) || steps < 1 || steps > 28)
+        throw new TypeError('image.nai.steps 必须是 1–28 的整数（免费档 28 步封顶）');
+      nai = {
+        baseUrl: naiUrl.toString().replace(/\/+$/, ''),
+        apiKey: String(naiMerged.apiKey),
+        model: String(naiMerged.model),
+        steps,
+      };
+    }
+  }
   return {
+    engine: merged.engine as ImageConfig['engine'],
     baseUrl: url.toString().replace(/\/+$/, ''),
     apiKey: String(merged.apiKey),
     model: String(merged.model),
+    ...(nai ? { nai } : {}),
   };
 }
 
@@ -277,6 +331,7 @@ export class Settings {
     const image =
       env.IMAGE_MODEL && env.IMAGE_API_KEY
         ? {
+            engine: 'gpt' as const,
             baseUrl: env.IMAGE_BASE_URL || primary.baseUrl,
             apiKey: env.IMAGE_API_KEY,
             model: env.IMAGE_MODEL,
@@ -433,7 +488,20 @@ export class Settings {
           }
         : null,
       image: image
-        ? { baseUrl: image.baseUrl, model: image.model, hasApiKey: Boolean(image.apiKey) }
+        ? {
+            engine: image.engine,
+            baseUrl: image.baseUrl,
+            model: image.model,
+            hasApiKey: Boolean(image.apiKey),
+            nai: image.nai
+              ? {
+                  baseUrl: image.nai.baseUrl,
+                  model: image.nai.model,
+                  steps: image.nai.steps,
+                  hasApiKey: Boolean(image.nai.apiKey),
+                }
+              : null,
+          }
         : null,
       webdav: webdav
         ? { url: webdav.url, user: webdav.user, hasPassword: Boolean(webdav.password) }

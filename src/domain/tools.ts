@@ -505,8 +505,13 @@ export function lifeTools(
     tools.push({
       definition: {
         name: 'draw_image',
-        description:
-          '把想画的东西画成一张真实图片文件（存在你的 pictures/ 目录里）。想给他看就用 {"type":"image","path":"pictures/文件名"} 发送。画得慢（最多两分钟）；画不成如实说。',
+        // 提示词格式随引擎走：注册时静态求值会锁死引擎，改为读取时动态
+        // 求值——管理页切换引擎后她下一拍就拿对新格式（beta 实测技巧）。
+        get description() {
+          return painter.engine === 'nai'
+            ? '调用 NAI 画图生成一张真实图片文件（存在你的 pictures/ 目录里）。prompt 必须是英文 danbooru tag 串：逗号分隔的英文标签（如 1girl, white hair, looking at viewer, smile, simple background），质量词开头（best quality, masterpiece），复合概念拆成独立 tag，角色名用官方英文 tag；禁止中文、禁止自然句子、禁止引号内对话。想给他看就用 {"type":"image","path":"pictures/文件名"} 发送。画得慢（最多两分钟）；画不成如实说。'
+            : '把想画的东西画成一张真实图片文件（存在你的 pictures/ 目录里）。想给他看就用 {"type":"image","path":"pictures/文件名"} 发送。画得慢（最多两分钟）；画不成如实说。';
+        },
         parameters: {
           type: 'object',
           properties: { prompt: { type: 'string' } },

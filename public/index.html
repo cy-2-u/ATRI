@@ -470,19 +470,47 @@
                   ></label
                 >
                 <div id="image-fields">
-                  <div class="grid-2">
-                    <label class="field"
-                      ><span>画图模型</span><input id="image-model" type="text"
-                    /></label>
-                    <label class="field"
-                      ><span>画图地址（留空复用主渠道）</span><input id="image-url" type="text"
-                    /></label>
-                  </div>
-                  <label class="field">
-                    <span>画图密钥<span id="image-key-state" class="hint"></span></span>
-                    <input id="image-key" type="password" autocomplete="new-password" />
+                  <label class="field"
+                    ><span>画图引擎</span>
+                    <div class="dropdown-host" id="image-engine"></div>
                   </label>
-                  <p class="hint">OpenAI 兼容 images 接口（gpt-image、即梦、SD 兼容端点等）。</p>
+                  <div id="image-gpt-fields">
+                    <div class="grid-2">
+                      <label class="field"
+                        ><span>画图模型</span><input id="image-model" type="text"
+                      /></label>
+                      <label class="field"
+                        ><span>画图地址（留空复用主渠道）</span><input id="image-url" type="text"
+                      /></label>
+                    </div>
+                    <label class="field">
+                      <span>画图密钥<span id="image-key-state" class="hint"></span></span>
+                      <input id="image-key" type="password" autocomplete="new-password" />
+                    </label>
+                    <p class="hint">OpenAI 兼容 images 接口（gpt-image、即梦、SD 兼容端点等）。</p>
+                  </div>
+                  <div id="image-nai-fields" hidden>
+                    <div class="grid-2">
+                      <label class="field"
+                        ><span>NAI 模型（默认 4.5-full）</span
+                        ><input id="image-nai-model" type="text"
+                      /></label>
+                      <label class="field"
+                        ><span>NAI 步数（免费上限 28）</span
+                        ><input id="image-nai-steps" type="number" min="1" max="28" value="28"
+                      /></label>
+                    </div>
+                    <label class="field"
+                      ><span>NAI 地址</span><input id="image-nai-url" type="text"
+                    /></label>
+                    <label class="field">
+                      <span>NAI 密钥<span id="image-nai-key-state" class="hint"></span></span>
+                      <input id="image-nai-key" type="password" autocomplete="new-password" />
+                    </label>
+                    <p class="hint">
+                      NAI 用英文 danbooru tag 串作画，免费档自动收口（单张/28 步/纯文生图）。
+                    </p>
+                  </div>
                 </div>
               </div>
               <div class="card">

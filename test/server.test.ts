@@ -350,4 +350,17 @@ test('管理页/路由配对：备用渠道按钮在 HTML 与 app.js 两端成�
   // 备用渠道的拉取必须带渠道参数——不带就是拿主渠道凭据拉备用列表。
   assert.ok(js.includes('/api/models?channel=fallback'), '备用拉取模型缺 channel 参数');
   assert.ok(js.includes("channel: 'fallback'"), '备用体检缺 channel 参数');
+  // 画笔双引擎：两套字段组与切换下拉在 HTML/JS 两端成对。
+  for (const id of [
+    'image-engine',
+    'image-gpt-fields',
+    'image-nai-fields',
+    'image-nai-model',
+    'image-nai-steps',
+    'image-nai-url',
+    'image-nai-key',
+  ]) {
+    assert.ok(html.includes(`id="${id}"`), `index.html 缺 #${id}（画笔字段丢失）`);
+    assert.ok(js.includes(`'${id}'`) || js.includes(`"${id}"`), `app.js 未绑定 #${id}`);
+  }
 });

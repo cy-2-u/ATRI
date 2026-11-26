@@ -73,9 +73,11 @@ const web = new TavilyWeb(() => config().webSearchKey);
 // 画笔与搜索/向量一样恒注册，工具内部现读配置与开关——管理页中途
 // 配好画图渠道后，她下一拍就长出画笔，不用重启。
 const painter = new ImagePainter(() => ({
+  engine: config().image?.engine ?? 'gpt',
   baseUrl: config().image?.baseUrl ?? '',
   apiKey: config().image?.apiKey ?? '',
   model: config().image?.model ?? '',
+  nai: config().image?.nai,
 }));
 const embeddings = new EmbeddingClient(() => ({
   baseUrl: config().embedding?.baseUrl ?? '',

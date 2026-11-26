@@ -728,6 +728,11 @@ const FORMAT_OPTIONS = [
 ];
 const primaryFormat = createDropdown('primary-format', FORMAT_OPTIONS);
 const fallbackFormat = createDropdown('fallback-format', FORMAT_OPTIONS);
+const IMAGE_ENGINE_OPTIONS = [
+  { value: 'gpt', label: 'GPT（自然语言提示）' },
+  { value: 'nai', label: 'NAI（danbooru tag）' },
+];
+const imageEngine = createDropdown('image-engine', IMAGE_ENGINE_OPTIONS);
 
 function fillSystemForm(config) {
   // 轮询每 4 秒到系统页就会走到这里：无守卫的重填会把正在输入的密钥
@@ -777,11 +782,20 @@ function fillSystemForm(config) {
   const image = config.image;
   $('image-on').checked = Boolean(image);
   $('image-fields').hidden = !image;
+  imageEngine.value = image?.engine === 'nai' ? 'nai' : 'gpt';
+  $('image-gpt-fields').hidden = imageEngine.value !== 'gpt';
+  $('image-nai-fields').hidden = imageEngine.value !== 'nai';
   $('image-model').value = image?.model ?? '';
   $('image-url').value = image?.baseUrl ?? '';
   $('image-key').value = '';
   $('image-key-state').textContent = image?.hasApiKey ? '（已保存）' : '（未设置）';
   $('image-key').placeholder = image?.hasApiKey ? '••••••••' : '';
+  $('image-nai-model').value = image?.nai?.model ?? 'nai-diffusion-4-5-full';
+  $('image-nai-steps').value = image?.nai?.steps ?? 28;
+  $('image-nai-url').value = image?.nai?.baseUrl ?? '';
+  $('image-nai-key').value = '';
+  $('image-nai-key-state').textContent = image?.nai?.hasApiKey ? '（已保存）' : '（未设置）';
+  $('image-nai-key').placeholder = image?.nai?.hasApiKey ? '••••••••' : '';
   const webdav = config.webdav;
   $('webdav-on').checked = Boolean(webdav);
   $('webdav-fields').hidden = !webdav;
@@ -805,6 +819,12 @@ $('embedding-on').onchange = () => {
 $('image-on').onchange = () => {
   $('image-fields').hidden = !$('image-on').checked;
 };
+// 引擎切换：两套字段组显隐（配置各存一套，切换零重填）。
+const syncImageFields = () => {
+  $('image-gpt-fields').hidden = imageEngine.value !== 'gpt';
+  $('image-nai-fields').hidden = imageEngine.value !== 'nai';
+};
+imageEngine.onchange = syncImageFields;
 $('webdav-on').onchange = () => {
   $('webdav-fields').hidden = !$('webdav-on').checked;
 };
@@ -868,9 +888,11 @@ $('save-system').onclick = () =>
     }
     if (!$('image-on').checked) body.image = null;
     else {
+      const engine = imageEngine.value === 'nai' ? 'nai' : 'gpt';
       const model = $('image-model').value.trim();
       if (!model) throw new Error('启用画笔需要填写画图模型');
       body.image = {
+        engine,
         model,
         baseUrl:
           $('image-url').value.trim() ||
@@ -879,6 +901,17 @@ $('save-system').onclick = () =>
           '',
         ...($('image-key').value.trim() ? { apiKey: $('image-key').value.trim() } : {}),
       };
+      // NAI 子配置：填了模型+密钥才算配（空 = 后端保持旧值/忽略）。
+      const naiModel = $('image-nai-model').value.trim();
+      const naiKey = $('image-nai-key').value.trim();
+      if (naiModel && (naiKey || configCache?.image?.nai?.hasApiKey)) {
+        body.image.nai = {
+          model: naiModel,
+          baseUrl: $('image-nai-url').value.trim() || configCache?.image?.nai?.baseUrl || '',
+          steps: Math.min(28, Math.max(1, Number($('image-nai-steps').value) || 28)),
+          ...(naiKey ? { apiKey: naiKey } : {}),
+        };
+      }
     }
     // WebDAV：开关关 = 关闭备份；开着沿用旧值（密码留空保持已存的）。
     if (!$('webdav-on').checked) body.webdav = null;
