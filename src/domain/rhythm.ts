@@ -124,8 +124,10 @@ export function localMidnightOf(at: number, timeZone: string): number {
   return at - minutesOfDay(at, timeZone) * 60000;
 }
 
-/** 当天睡眠窗口的生理抖动：按本地日期哈希把入睡与醒来时刻各平移
- *  ±45 分钟。同一天内稳定，跨天缓慢变化——她不会每天在同一分钟睡着。
+/** 当天睡眠窗口的生理抖动：按本地日期哈希把入睡时刻平移 ±45 分钟，
+ *  醒来时刻随长度守恒平移。同一天内稳定，跨天缓慢变化——她不会每天
+ *  在同一分钟睡着。只抖入睡点、窗口长度不变：两端独立抖会把短窗
+ *  （入睡-醒来 < 90 分钟）翻成跨午夜，睡眠判定大面积反转（beta 实测）。
  *  startMin === endMin 仍表示整日不眠，抖动不得凭空造出睡眠窗。
  *  出口把两端都归一到 0–1439：午夜附近的配置抖出负值时，未归一的
  *  endMin 会让跨午夜判定的凌晨分支恒假，凌晨被误判为醒。 */
@@ -142,10 +144,9 @@ export function jitteredSleepWindow(
   }
   const unsigned = hash >>> 0;
   const normalize = (value: number) => ((value % 1440) + 1440) % 1440;
-  return {
-    startMin: normalize(startMin + ((unsigned % 91) - 45)),
-    endMin: normalize(endMin + ((Math.floor(unsigned / 91) % 91) - 45)),
-  };
+  const length = normalize(endMin - startMin);
+  const start = normalize(startMin + ((unsigned % 91) - 45));
+  return { startMin: start, endMin: normalize(start + length) };
 }
 
 /** 分钟版睡眠判定：startMin === endMin 仍为不眠；跨午夜窗口同规则。 */

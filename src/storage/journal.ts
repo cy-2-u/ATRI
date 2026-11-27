@@ -2,7 +2,7 @@ import { DatabaseSync, type StatementSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 import type { Memory, PeerModel, ThoughtEntry } from '../domain/memory.js';
 import { evolveSelf, initialSelf, projectSelf, type SelfState } from '../domain/state.js';
-import { nextYearAfter, type Commitment } from '../domain/commitment.js';
+import { nextOccurrence, nextYearAfter, type Commitment } from '../domain/commitment.js';
 import type { MoodPulse } from '../domain/mood.js';
 
 export interface Bubble {
@@ -138,6 +138,11 @@ export function createSchema(sql: DatabaseSync): void {
         id TEXT PRIMARY KEY, author TEXT NOT NULL, text TEXT NOT NULL,
         image TEXT, created_at INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS kernel_tool_runs (
+        id TEXT PRIMARY KEY, peer TEXT NOT NULL, turn_id TEXT NOT NULL,
+        signature TEXT NOT NULL, status TEXT NOT NULL, result TEXT, at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS kernel_tool_runs_at ON kernel_tool_runs(at);
     `);
   // 早期库没有 last_error 列：幂等补齐（CREATE TABLE 对已有库不生效）。
   const outboxCols = sql.prepare('PRAGMA table_info(kernel_outbox)').all() as { name: string }[];
@@ -407,7 +412,35 @@ export class Journal {
         ).run(turn.id, JSON.stringify({ effects, snapshots, askedSnapshots }), last.ordinal);
         this.statement("UPDATE kernel_turns SET state='ready' WHERE id=?").run(turn.id);
       } else {
-        this.statement("UPDATE kernel_turns SET state='done' WHERE id=?").run(turn.id);
+        // 气泡已被并行投递泵全部领走（#4）：无 pending 可绑。按"是否仍有
+        // 在途件"分两路——仍有 sending/unknown/failed 的先落未提交效果行，
+        // 由 commitEffects 在送达时结算（与全量路径账面语义一致）；全部
+        // 已送达的就地直接结算，效果不因泵先发而丢账。
+        const rows = this.statement(
+          'SELECT ordinal,status FROM kernel_outbox WHERE turn_id=? ORDER BY ordinal',
+        ).all(turn.id) as unknown as { ordinal: number; status: string }[];
+        const maxOrdinal = rows.length ? Number(rows.at(-1)!.ordinal) : 0;
+        const snapshots = thoughts
+          .filter((thought) => expressed.includes(thought.id))
+          .map((thought) => ({ id: thought.id, evidence: thought.evidence }));
+        const askedSnapshots = this.commitments(turn.peer)
+          .filter((item) => asked.includes(item.id))
+          .map((item) => ({ id: item.id, dueAt: item.dueAt }));
+        const value = JSON.stringify({ effects, snapshots, askedSnapshots });
+        if (rows.length && rows.some((row) => String(row.status) !== 'sent')) {
+          this.statement(
+            'INSERT INTO kernel_effects(turn_id,value,ordinal) VALUES(?,?,?) ON CONFLICT(turn_id) DO UPDATE SET value=excluded.value,ordinal=excluded.ordinal',
+          ).run(turn.id, value, maxOrdinal);
+          this.statement("UPDATE kernel_turns SET state='ready' WHERE id=?").run(turn.id);
+        } else if (rows.length) {
+          this.statement(
+            'INSERT OR REPLACE INTO kernel_effects(turn_id,value,ordinal) VALUES(?,?,?)',
+          ).run(turn.id, value, maxOrdinal);
+          this.commitEffects(turn.id, turn.peer, maxOrdinal);
+          this.statement("UPDATE kernel_turns SET state='done' WHERE id=?").run(turn.id);
+        } else {
+          this.statement("UPDATE kernel_turns SET state='done' WHERE id=?").run(turn.id);
+        }
       }
       return true;
     });
@@ -471,53 +504,61 @@ export class Journal {
         this.statement(
           "INSERT INTO kernel_events(id,peer,turn_id,kind,content,created_at) VALUES(?,?,?,'said',?,?)",
         ).run(id, String(row.peer), String(row.turn_id), String(row.part), this.now());
-        this.statement(
-          'UPDATE kernel_effects SET committed_at=COALESCE(committed_at,?) WHERE turn_id=? AND ordinal=?',
-        ).run(this.now(), String(row.turn_id), Number(row.ordinal));
         this.setSetting('self', evolveSelf(this.self(), this.now(), { kind: 'delivered' }));
-        const effect = this.statement(
-          'SELECT value FROM kernel_effects WHERE turn_id=? AND ordinal=?',
-        ).get(String(row.turn_id), Number(row.ordinal));
-        if (effect) {
-          const value = JSON.parse(String(effect.value)) as {
-            snapshots: { id: string; evidence: string }[];
-            askedSnapshots: { id: string; dueAt: number }[];
-          };
-          for (const thought of this.thoughts(String(row.peer)))
-            if (
-              thought.state === 'idle' &&
-              value.snapshots.some(
-                (snapshot) => snapshot.id === thought.id && snapshot.evidence === thought.evidence,
-              )
-            )
-              this.saveThought(String(row.peer), {
-                ...thought,
-                state: 'expressed',
-                updatedAt: this.now(),
-              });
-          for (const item of this.commitments(String(row.peer)))
-            if (
-              item.state === 'open' &&
-              !item.askedAt &&
-              value.askedSnapshots.some(
-                (snapshot) => snapshot.id === item.id && snapshot.dueAt === item.dueAt,
-              )
-            )
-              this.statement('UPDATE kernel_commitments SET value=? WHERE id=? AND peer=?').run(
-                JSON.stringify({ ...item, askedAt: this.now() }),
-                item.id,
-                String(row.peer),
-              );
-          this.refreshReminder(String(row.peer), 0);
-        }
+        this.commitEffects(String(row.turn_id), String(row.peer), Number(row.ordinal));
       }
       const unresolved = this.statement(
         "SELECT id FROM kernel_outbox WHERE turn_id=? AND status IN ('pending','sending','unknown')",
       ).get(String(row.turn_id));
+      // 只收口 ready（全量/渐进已绑定效果的终态）。running 不得抢标 done：
+      // 投递泵会在思考收口（finishDraft）之前发完渐进气泡，此时 turn 仍
+      // running——标了 done 收口校验就永远失败，整轮被误判作废。
       if (!unresolved)
-        this.statement("UPDATE kernel_turns SET state='done' WHERE id=?").run(String(row.turn_id));
+        this.statement("UPDATE kernel_turns SET state='done' WHERE id=? AND state='ready'").run(
+          String(row.turn_id),
+        );
       return true;
     });
+  }
+
+  /** 效果对账提交：气泡送达（status='sent'）时把该气泡绑定的表达效果落账
+   *  ——expressed 快照转 expressed、asked 约定盖 askedAt、提醒冷却重置。
+   *  从 delivery 内联逻辑抽出（#4 泵送拆分：runtime 排干循环只管发送，
+   *  账面动作收拢在这一个入口），语义与抽出前逐行一致。 */
+  private commitEffects(turnId: string, peer: string, ordinal: number): void {
+    const effect = this.statement(
+      'SELECT value FROM kernel_effects WHERE turn_id=? AND ordinal=?',
+    ).get(turnId, ordinal);
+    if (!effect) return;
+    this.statement(
+      'UPDATE kernel_effects SET committed_at=COALESCE(committed_at,?) WHERE turn_id=? AND ordinal=?',
+    ).run(this.now(), turnId, ordinal);
+    const value = JSON.parse(String(effect.value)) as {
+      snapshots: { id: string; evidence: string }[];
+      askedSnapshots: { id: string; dueAt: number }[];
+    };
+    for (const thought of this.thoughts(peer))
+      if (
+        thought.state === 'idle' &&
+        value.snapshots.some(
+          (snapshot) => snapshot.id === thought.id && snapshot.evidence === thought.evidence,
+        )
+      )
+        this.saveThought(peer, { ...thought, state: 'expressed', updatedAt: this.now() });
+    for (const item of this.commitments(peer))
+      if (
+        item.state === 'open' &&
+        !item.askedAt &&
+        value.askedSnapshots.some(
+          (snapshot) => snapshot.id === item.id && snapshot.dueAt === item.dueAt,
+        )
+      )
+        this.statement('UPDATE kernel_commitments SET value=? WHERE id=? AND peer=?').run(
+          JSON.stringify({ ...item, askedAt: this.now() }),
+          item.id,
+          peer,
+        );
+    this.refreshReminder(peer, 0);
   }
 
   /** 悬置过久的 unknown 发送按失败收场：unknown 封住投递通道（blocked），
@@ -558,6 +599,44 @@ export class Journal {
         );
       return id;
     });
+  }
+
+  /** mutates 工具幂等（#5，beta tool_runs 语义）：id = episode:signature
+   *  （episode 是"同一批输入触发的思考"，main 里即 turn 版本锚定的这轮）
+   *  ——同一轮里同参数重复调用直接回放缓存结果，draw 重试不重画。
+   *  running 态出现在恢复路径（崩溃/重启）时由 recover 改判 unknown，
+   *  回放时带 uncertain 注记：副作用已发生与否不可知，禁止盲目重做。 */
+  toolStart(
+    id: string,
+    peer: string,
+    turnId: string,
+    signature: string,
+  ): { status: string; result?: unknown } | undefined {
+    return this.transaction(() => {
+      const existing = this.statement('SELECT status,result FROM kernel_tool_runs WHERE id=?').get(
+        id,
+      );
+      if (existing) {
+        const status = String(existing.status);
+        return {
+          status,
+          ...(existing.result ? { result: JSON.parse(String(existing.result)) } : {}),
+        };
+      }
+      this.statement(
+        "INSERT INTO kernel_tool_runs(id,peer,turn_id,signature,status,at) VALUES(?,?,?,?, 'running',?)",
+      ).run(id, peer, turnId, signature, this.now());
+      return undefined;
+    });
+  }
+
+  toolFinish(id: string, status: string, result: unknown): void {
+    this.statement('UPDATE kernel_tool_runs SET status=?,result=?,at=? WHERE id=?').run(
+      status,
+      JSON.stringify(result ?? null),
+      this.now(),
+      id,
+    );
   }
 
   /** 通用事件写入（日记段等模型产出的持久记录）。 */
@@ -1070,7 +1149,7 @@ export class Journal {
       !Number.isFinite(input.dueAt) ||
       input.dueAt < 0 ||
       !['reminder', 'concern', 'promise'].includes(input.kind) ||
-      !['none', 'yearly'].includes(input.recurring)
+      !['none', 'day', 'week', 'month', 'year'].includes(input.recurring)
     )
       throw new TypeError('约定内容或时间无效');
     const evidence = this.evidence(peer, input.sources);
@@ -1108,8 +1187,14 @@ export class Journal {
     const value = this.commitments(peer).find((item) => item.id === id && item.state === 'open');
     if (!value) return false;
     return this.transaction(() => {
-      if (value.recurring === 'yearly') {
-        value.dueAt = nextYearAfter(value.dueAt, this.now());
+      if (value.recurring !== 'none') {
+        // 周期约定了结即续期：day/week/month/year 各按日历递进（月末
+        // clamp 到月末），nextYearAfter 是 year 的旧实现，统一走
+        // nextOccurrence（day/week 用加法，month/year 用月份算术）。
+        value.dueAt =
+          value.recurring === 'year'
+            ? nextYearAfter(value.dueAt, this.now())
+            : nextOccurrence(value.dueAt, value.recurring, this.now());
         value.askedAt = 0;
       } else value.state = 'resolved';
       this.statement('UPDATE kernel_commitments SET value=? WHERE id=? AND peer=?').run(
@@ -1276,6 +1361,12 @@ export class Journal {
         "INSERT INTO kernel_jobs(peer,kind,due_at) SELECT peer,kind,? FROM kernel_turns WHERE state='running' ON CONFLICT(peer,kind) DO NOTHING",
       ).run(this.now());
       this.statement("UPDATE kernel_turns SET state='interrupted' WHERE state='running'").run();
+      // 崩溃时 running 中的 mutates 工具副作用不可知：改判 unknown，
+      // 回放时带 uncertain 注记。tool_runs 是计量不是经历，7 天即清。
+      this.statement(
+        "UPDATE kernel_tool_runs SET status='unknown',result=? WHERE status='running'",
+      ).run(JSON.stringify({ error: '执行中断，不能假定未产生副作用' }));
+      this.statement('DELETE FROM kernel_tool_runs WHERE at<?').run(this.now() - 7 * 86_400_000);
     });
   }
 

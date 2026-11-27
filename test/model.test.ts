@@ -98,6 +98,84 @@ test('用户取消不重试、不调用备用、不增加失败计数', async ()
   assert.equal(env.router.status().failures, 0);
 });
 
+test('流式探测自愈：400+stream 切流式重试并永久记住，非流式 400 不触发', async () => {
+  const persisted: string[] = [];
+  const modes: string[] = [];
+  const env = setup(async (config, _messages, _tools, options) => {
+    modes.push(options.onDelta ? 'stream' : 'plain');
+    if (config.model === 'primary' && !options.onDelta)
+      throw new RequestError(
+        '模型渠道返回 HTTP 400',
+        'http',
+        400,
+        undefined,
+        'streaming is required for this model',
+      );
+    return completion();
+  });
+  // 主渠道非流式 400（错误体点名 stream）→ 本轮切流式重试成功，探测结果持久化。
+  assert.equal((await env.router.complete(messages, [], env.options())).channel, 'primary');
+  assert.deepEqual(modes, ['plain', 'stream']);
+  assert.equal(persisted.length, 0); // setup 未接 streamPersist，只验证内存记忆
+  // 下一轮直接流式起步（渠道偏好已被记住）。
+  await env.router.complete(messages, [], env.options());
+  assert.deepEqual(modes, ['plain', 'stream', 'stream']);
+  // 非 stream 的 400 不触发切换：重试耗尽走 fallback。
+  const plain: string[] = [];
+  const env2 = setup(async (config, _messages, _tools, options) => {
+    plain.push(options.onDelta ? 'stream' : 'plain');
+    if (config.model === 'primary')
+      throw new RequestError('模型渠道返回 HTTP 400', 'http', 400, undefined, 'invalid model');
+    return completion();
+  });
+  assert.equal((await env2.router.complete(messages, [], env2.options())).channel, 'fallback');
+  assert.ok(!plain.includes('stream'));
+});
+
+test('流式探测自愈：streamPersist 持久化与 streamRestore 重启恢复', async () => {
+  const saved = new Map<string, boolean>();
+  let now = 1000;
+  const routes = { primary: endpoint('primary'), fallback: endpoint('fallback') };
+  let firstCall = true;
+  const router = new ModelRouter(
+    () => routes,
+    async (_config, _messages, _tools, options) => {
+      if (firstCall && !options.onDelta) {
+        firstCall = false;
+        throw new RequestError('模型渠道返回 HTTP 400', 'http', 400, undefined, 'stream required');
+      }
+      return completion();
+    },
+    {
+      now: () => now,
+      sleep: async () => {},
+      streamRestore: (fingerprint) => saved.get(fingerprint) ?? false,
+      streamPersist: (fingerprint) => saved.set(fingerprint, true),
+    },
+  );
+  const options = { deadlineAt: now + 30_000 };
+  // 首轮：非流式 400+stream → 切流式重试成功 + 持久化。
+  assert.equal((await router.complete(messages, [], options)).channel, 'primary');
+  assert.equal(saved.size, 1);
+  // 模拟重启：新路由器从持久层恢复，直接流式起步且一次成功。
+  let restoredCalls = 0;
+  const reborn = new ModelRouter(
+    () => routes,
+    async (_config, _messages, _tools, options) => {
+      restoredCalls++;
+      assert.ok(options.onDelta, '恢复后应直接流式');
+      return completion();
+    },
+    {
+      now: () => now,
+      sleep: async () => {},
+      streamRestore: (fingerprint) => saved.get(fingerprint) ?? false,
+    },
+  );
+  assert.equal((await reborn.complete(messages, [], options)).channel, 'primary');
+  assert.equal(restoredCalls, 1);
+});
+
 test('主渠道能力或预算不匹配可走备用，不污染故障计数', async () => {
   let calls = 0;
   const env = setup(async () => {

@@ -41,7 +41,7 @@ export interface SandboxResult {
   /** 是否因超时限被终止；已有部分输出仍会返回。 */
   timedOut: boolean;
   /** 实际跑的是哪条隔离路径，UI 据此如实展示。 */
-  isolation: 'nsjail' | 'directory';
+  isolation: 'persistent-workshop' | 'nsjail' | 'directory';
 }
 
 export interface SandboxOptions {
@@ -61,6 +61,15 @@ export interface SandboxOptions {
   timeZone?: () => string;
   /** 沙箱命令是否可联网；默认独立空网络命名空间。 */
   network: () => boolean;
+  /** 她的窝的镜像（#7 常驻沙箱）：配置了才启用 docker 常驻容器模式
+   *  （如 'node:24-slim'）。固定名常驻、restart unless-stopped 崩溃自拉
+   *  起、可写层跨轮保留（她攒的环境不丢）、cap 全卸+no-new-privileges+
+   *  pids/内存/CPU 三限——不占内存不越界。未配置走 nsjail 兜底。 */
+  dockerImage?: () => string | undefined;
+  /** 常驻容器挂载的作品目录（宿主机真实路径）；缺省用沙箱 root。
+   *  compose 部署时传卷在宿主的挂载点，容器内 /data 里的嵌套 docker
+   *  才能看见同一份作品。 */
+  dockerWorks?: () => string | undefined;
 }
 
 class SandboxQuotaError extends Error {}
@@ -367,11 +376,17 @@ export class Sandbox {
     if (!trimmed) throw new Error('命令不能为空');
     if (trimmed.length > 4000) throw new Error('命令过长');
     this.assertWithinQuota();
+    // 隔离优先级：她的窝（docker 常驻，环境跨轮保留）→ nsjail → 拒绝。
+    // 退化为宿主 shell 不是"降级隔离"，是带着数据库与全部密钥的任意
+    // 代码执行——三个都不给时宁可拒绝。
+    const image = this.options.dockerImage?.();
+    if (image) return this.dockerRun(image, trimmed, started, signal);
     const useNsjail = await this.nsjailAvailable();
     if (!useNsjail && !this.allowDirectoryFallback)
       throw new Error(
         '当前主机无法使用 nsjail 命名空间隔离，沙箱命令已拒绝执行。' +
-          '请部署在支持 user namespace 的 Linux 主机，或在开发环境显式开启目录回退。',
+          '请部署在支持 user namespace 的 Linux 主机，配置 ATRI_SANDBOX_IMAGE 启用常驻容器，' +
+          '或在开发环境显式开启目录回退。',
       );
     const result = await this.spawn(
       useNsjail ? this.nsjailArgs(trimmed) : this.fallbackArgs(trimmed),
@@ -382,6 +397,132 @@ export class Sandbox {
     // 一条命令能一口气建很多文件：跑完再查，超了就让下一次调用被拦。
     if (result.ok) this.assertWithinQuota();
     return result;
+  }
+
+  /** 她的窝（#7，beta persistent-workshop 语义）：固定名常驻容器。inspect
+   *  核对镜像与网络——不匹配就 rm -f 重建（配置改了，旧窝不配再住）；
+   *  没在跑就 start（主机重启后 Docker 自动拉起 unless-stopped 的容器，
+   *  手动 stop 的也要在 start 时扶起来）。执行走 exec + 容器内 timeout
+   *  ——exec 客户端断开不影响容器内裁决，进程不悬挂。 */
+  private async dockerRun(
+    image: string,
+    command: string,
+    started: number,
+    signal?: AbortSignal,
+  ): Promise<SandboxResult> {
+    const name = 'atri-sandbox';
+    const network = this.options.network();
+    const works = this.options.dockerWorks?.() ?? this.root;
+    const tz = this.options.timeZone?.() || process.env.TZ || 'UTC';
+    const spec = [
+      '--restart',
+      'unless-stopped',
+      '--cap-drop=ALL',
+      '--security-opt=no-new-privileges',
+      '--pids-limit=64',
+      '--memory=512m',
+      '--cpus=1',
+      '--network',
+      network ? 'bridge' : 'none',
+      '--mount',
+      `type=bind,src=${works},dst=/work`,
+      '--workdir=/work',
+      '--env',
+      `TZ=${tz}`,
+    ];
+    let existing: { running: boolean; image: string; network: string } | undefined;
+    try {
+      const info = JSON.parse(await this.capture('docker', ['inspect', name])) as {
+        State?: { Running?: unknown };
+        Config?: { Image?: unknown };
+        HostConfig?: { NetworkMode?: unknown };
+      }[];
+      const node = info[0] ?? {};
+      existing = {
+        running: Boolean(node.State?.Running),
+        image: String(node.Config?.Image ?? ''),
+        network: String(node.HostConfig?.NetworkMode ?? ''),
+      };
+    } catch {
+      existing = undefined; // 容器不存在 / docker 不可用：走新建
+    }
+    const wantNetwork = network ? 'bridge' : 'none';
+    if (!existing || existing.image !== image || existing.network !== wantNetwork) {
+      if (existing) await this.capture('docker', ['rm', '-f', name]);
+      await this.capture('docker', ['run', '-d', ...spec, image, 'sleep', 'infinity']);
+    } else if (!existing.running) {
+      await this.capture('docker', ['start', name]);
+    }
+    // 配额对 docker 模式同样生效：写完就查，超了让下一次调用被拦。
+    // timeoutMs=0（不限时）时容器内不装 timeout——ceil(0)=0 会让
+    // "不限时"变成 1 秒被杀；此时外层 deadline 兜底（2147483647ms 上限）。
+    const limitMs = this.commandTimeoutMs;
+    const seconds = limitMs > 0 ? Math.max(1, Math.ceil(limitMs / 1000)) : 0;
+    const deadline = AbortSignal.any([
+      signal ?? new AbortController().signal,
+      AbortSignal.timeout(limitMs > 0 ? limitMs : 2_147_483_647),
+    ]);
+    let stdout = '',
+      stderr = '',
+      timedOut = false;
+    const cap = (chunk: Buffer, current: string): string =>
+      current.length >= this.outputLimit
+        ? current
+        : (current + chunk.toString('utf8')).slice(0, this.outputLimit);
+    return await new Promise<SandboxResult>((resolvePromise) => {
+      const inner = seconds > 0 ? ['timeout', `${seconds}s`] : [];
+      const child = spawn('docker', ['exec', name, ...inner, 'sh', '-c', command], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+      });
+      const finish = (code: number | null) => {
+        if (deadline.aborted && !timedOut) timedOut = true;
+        resolvePromise({
+          ok: code === 0 && !deadline.aborted,
+          code,
+          stdout,
+          stderr,
+          truncated: stdout.length >= this.outputLimit || stderr.length >= this.outputLimit,
+          durationMs: Date.now() - started,
+          timedOut,
+          isolation: 'persistent-workshop',
+        });
+      };
+      deadline.addEventListener(
+        'abort',
+        () => {
+          timedOut = true;
+          stderr = cap(Buffer.from('\n命令超时，已被终止。'), stderr);
+          this.kill(child.pid);
+        },
+        { once: true },
+      );
+      child.stdout.on('data', (b: Buffer) => (stdout = cap(b, stdout)));
+      child.stderr.on('data', (b: Buffer) => (stderr = cap(b, stderr)));
+      child.on('error', (error) => {
+        stderr += `\n容器执行不可用：${error.message}`;
+        finish(null);
+      });
+      child.on('close', finish);
+    });
+  }
+
+  /** 跑一个 docker 命令并收 stdout（inspect 解析 / rm / run / start 都用它）：
+   *  非零退出或 docker 缺席都抛错——她的窝建不起来就交给上层降级路径。 */
+  private capture(bin: string, args: string[]): Promise<string> {
+    return new Promise((resolvePromise, reject) => {
+      const child = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+      let out = '',
+        err = '';
+      child.stdout.on('data', (c: Buffer) => (out += c.toString('utf8')));
+      child.stderr.on('data', (c: Buffer) => (err += c.toString('utf8')));
+      child.on('error', (error) => reject(new Error(`docker 不可用：${error.message}`)));
+      child.on('close', (code) =>
+        code === 0
+          ? resolvePromise(out)
+          : reject(new Error(err.trim() || `docker ${args[0]} 退出码 ${code}`)),
+      );
+    });
   }
 
   /** nsjail 参数：mount/pid/ipc/uts/user 命名空间（命令内是 PID 1），
@@ -507,12 +648,19 @@ export class Sandbox {
 
   /** 设置页展示的隔离真相。 */
   async isolationInfo(): Promise<{
-    level: 'nsjail' | 'directory';
+    level: 'persistent-workshop' | 'nsjail' | 'directory';
     note: string;
     network: string;
   }> {
     const wantsNetwork = this.options.network();
     const network = wantsNetwork ? '已启用（共享容器网络）' : '已禁用（独立网络命名空间）';
+    const image = this.options.dockerImage?.();
+    if (image)
+      return {
+        level: 'persistent-workshop',
+        note: `她的窝：固定名常驻容器（${image}），restart unless-stopped 崩溃自拉起，可写层跨轮保留——她攒的环境不丢。cap 全卸、no-new-privileges、pids/内存/CPU 三限，作品目录 bind 挂载，数据库与密钥不可见。`,
+        network,
+      };
     if (process.platform === 'win32')
       return {
         level: 'directory',
@@ -524,7 +672,7 @@ export class Sandbox {
       level: nsjail ? 'nsjail' : 'directory',
       note: nsjail
         ? 'nsjail 命名空间隔离：独立 mount/pid/ipc/uts/user 命名空间，系统目录只读挂载，沙箱目录是唯一可写路径，应用目录与数据库已被空 tmpfs 遮蔽。'
-        : 'nsjail 不可用：沙箱命令会被拒绝执行，避免以 API 进程权限直接运行。请检查内核 user namespace 或容器权限。',
+        : 'nsjail 不可用：沙箱命令会被拒绝执行，避免以 API 进程权限直接运行。请检查内核 user namespace、容器权限，或配置 ATRI_SANDBOX_IMAGE 启用常驻容器。',
       network,
     };
   }

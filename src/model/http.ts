@@ -261,6 +261,29 @@ export function decode(endpoint: Endpoint, data: ObjectValue): Completion {
   };
 }
 
+/** 有界读取响应体（错误体诊断用）：超限即取消，绝不吞下未知大小的响应。 */
+async function readBounded(response: Response, limit: number): Promise<Uint8Array> {
+  const reader = response.body?.getReader();
+  if (!reader) return new Uint8Array();
+  const chunks: Uint8Array[] = [];
+  let length = 0;
+  try {
+    for (;;) {
+      const next = await reader.read();
+      if (next.done) break;
+      length += next.value.length;
+      if (length > limit) {
+        await reader.cancel();
+        throw new RequestError('响应体超过读取上限', 'protocol');
+      }
+      chunks.push(next.value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return Buffer.concat(chunks);
+}
+
 async function boundedJson(response: Response): Promise<ObjectValue> {
   const reader = response.body?.getReader();
   if (!reader) throw new RequestError('模型响应为空', 'protocol');
@@ -463,12 +486,22 @@ export async function httpTransport(
             ),
           )
         : undefined;
-      await response.body?.cancel();
+      // 400 错误体留给上层判别：渠道"不支持流式"的拒绝会点名 stream——
+      // 这是流式探测自愈的确定性证据（400+stream → 本轮切流式重试）。
+      let body: string | undefined;
+      if (response.status === 400) {
+        try {
+          body = Buffer.from(await readBounded(response, 64 * 1024)).toString('utf8');
+        } catch {
+          body = undefined; // 错误体读不到就只报状态码
+        }
+      } else await response.body?.cancel();
       throw new RequestError(
         `模型渠道返回 HTTP ${response.status}`,
         'http',
         response.status,
         Number.isFinite(retryAfterMs) ? retryAfterMs : undefined,
+        body,
       );
     }
     if (options.onDelta)

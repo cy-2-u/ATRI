@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Journal } from '../src/storage/journal.js';
-import { nextYearAfter } from '../src/domain/commitment.js';
+import { nextOccurrence, nextYearAfter } from '../src/domain/commitment.js';
 
 test('多年离线的周年安排直接滚到未来，闰日取平年二月末', () => {
   assert.equal(
@@ -104,7 +104,7 @@ test('约定来源隔离，周年解决后续期，普通挂念解决后退场',
       kind: 'reminder' as const,
       sources: [source],
       dueAt: Date.UTC(2020, 1, 29),
-      recurring: 'yearly' as const,
+      recurring: 'year' as const,
     };
     assert.throws(() => journal.keepCommitment('peer', { ...input, sources: ['fake'] }));
     const yearly = journal.keepCommitment('peer', input);
@@ -125,6 +125,74 @@ test('约定来源隔离，周年解决后续期，普通挂念解决后退场',
     assert.equal(
       journal.commitments('peer').find((item) => item.id === concern.id)!.state,
       'resolved',
+    );
+  } finally {
+    journal.close();
+  }
+});
+
+test('nextOccurrence：day/week 加法递进，month/year 月份算术 + 月末 clamp', () => {
+  const anchor = Date.UTC(2026, 0, 31, 9, 30); // 1月31日 09:30
+  // day/week 保持时分秒；了结发生在发生时刻，下一次严格更晚。
+  assert.equal(nextOccurrence(anchor, 'day', anchor), Date.UTC(2026, 1, 1, 9, 30));
+  assert.equal(
+    nextOccurrence(anchor, 'day', Date.UTC(2026, 1, 1, 9, 30)),
+    Date.UTC(2026, 1, 2, 9, 30),
+  );
+  assert.equal(
+    nextOccurrence(anchor, 'week', Date.UTC(2026, 1, 1, 9, 30)),
+    Date.UTC(2026, 1, 7, 9, 30),
+  );
+  // 1/31 + 1 月 → 2/28（clamp），+ 2 月 → 3/31（恢复）。
+  assert.equal(nextOccurrence(anchor, 'month', anchor), Date.UTC(2026, 1, 28, 9, 30));
+  assert.equal(
+    nextOccurrence(anchor, 'month', Date.UTC(2026, 1, 28, 9, 30)),
+    Date.UTC(2026, 2, 31, 9, 30),
+  );
+  // 闰日年：2/29 → 平年 2/28，闰年 2/29。
+  const leap = Date.UTC(2024, 1, 29, 12);
+  assert.equal(nextOccurrence(leap, 'year', leap), Date.UTC(2025, 1, 28, 12));
+  assert.equal(nextOccurrence(leap, 'year', Date.UTC(2025, 1, 28, 12)), Date.UTC(2026, 1, 28, 12));
+  // 落后多年的锚点直接跳到未来。
+  assert.equal(nextOccurrence(leap, 'year', Date.UTC(2026, 5, 1)), Date.UTC(2027, 1, 28, 12));
+});
+
+test('周期约定 day/week/month：了结自动续期，askedAt 清零', () => {
+  const now = Date.UTC(2026, 10, 13);
+  const journal = new Journal(':memory:', () => now);
+  try {
+    journal.receive('peer', 'one', '建个习惯');
+    const source = journal.events('peer')[0]!.id;
+    const base = {
+      content: '浇水',
+      kind: 'reminder' as const,
+      sources: [source],
+      dueAt: now,
+      recurring: 'none' as const,
+    };
+    for (const [unit, next] of [
+      ['day', now + 86_400_000],
+      ['week', now + 7 * 86_400_000],
+      ['month', Date.UTC(2026, 11, 13)],
+    ] as const) {
+      const item = journal.keepCommitment('peer', {
+        ...base,
+        content: `浇水${unit}`,
+        recurring: unit,
+      });
+      assert.equal(journal.resolveCommitment('peer', item.id), true);
+      const stored = journal.commitments('peer').find((c) => c.id === item.id)!;
+      assert.equal(stored.dueAt, next, unit);
+      assert.equal(stored.state, 'open', unit);
+      assert.equal(stored.askedAt, 0, unit);
+    }
+    // 无效周期拒绝。
+    assert.throws(() =>
+      journal.keepCommitment('peer', {
+        ...base,
+        content: '坏周期',
+        recurring: ' fortnightly' as never,
+      }),
     );
   } finally {
     journal.close();

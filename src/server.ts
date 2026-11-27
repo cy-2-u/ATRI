@@ -1,5 +1,5 @@
 import Fastify from 'fastify';
-import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { readFileSync, existsSync, statSync } from 'node:fs';
 import { gzipSync } from 'node:zlib';
 import { resolve, sep, extname } from 'node:path';
@@ -55,8 +55,6 @@ export interface ServerOptions {
   secureCookie?: boolean;
 }
 
-const digest = (value: string) => createHash('sha256').update(value).digest();
-
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
@@ -74,7 +72,12 @@ export function createServer(options: ServerOptions) {
   const app = Fastify({ logger: false, bodyLimit: 256 * 1024, trustProxy: false });
   const sessions = new Map<string, number>();
   const attempts = new Map<string, { count: number; resetAt: number }>();
-  const passwordHash = digest(options.password);
+  // 管理密码摘要用 scrypt 而不是裸 sha256：不存库（每次启动从 env 重算，
+  // 换算法零迁移），登录路径多花 ~100ms——恰好是暴力破解的减速带，与
+  // 8 次/分限速叠加后在线爆破成本翻四个数量级。
+  const passwordHash = scryptSync(options.password, 'atri-admin', 32);
+  const checkPassword = (value: string): boolean =>
+    timingSafeEqual(scryptSync(value, 'atri-admin', 32), passwordHash);
   // cookie 里带的是会话令牌本身，不是"是否登录"布尔：过期/未知令牌在
   // sessions 里查不到，两种门禁（API 401、页面渲染表单）共用这一个事实。
   const sessionToken = (request: { headers: { cookie?: string } }) =>
@@ -272,10 +275,7 @@ ${
     const attempt = attempts.get(request.ip) ?? { count: 0, resetAt: now + 60_000 };
     if (attempt.count >= 8) return reply.code(429).send({ error: '登录过于频繁' });
     const body = request.body as { password?: unknown } | undefined;
-    if (
-      typeof body?.password !== 'string' ||
-      !timingSafeEqual(digest(body.password), passwordHash)
-    ) {
+    if (typeof body?.password !== 'string' || !checkPassword(body.password)) {
       attempt.count++;
       if (attempts.size >= 1024 && !attempts.has(request.ip))
         attempts.delete(attempts.keys().next().value!);

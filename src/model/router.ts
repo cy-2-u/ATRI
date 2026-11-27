@@ -35,6 +35,10 @@ export interface RouterOptions {
   random?: () => number;
   restore?: (fingerprint: string) => Circuit | undefined;
   persist?: (fingerprint: string, circuit: Circuit) => void;
+  /** 渠道流式偏好的持久读写字段（#8 流式探测自愈）：缺省走内存。
+   *  restore 返回 'required' 表示该渠道已被探测出"必须流式"。 */
+  streamRestore?: (fingerprint: string) => boolean | undefined;
+  streamPersist?: (fingerprint: string) => void;
   observe?: (event: {
     channel: Channel;
     model: string;
@@ -55,6 +59,9 @@ export class ModelRouter implements Model {
   private state?: State;
   private readonly now: () => number;
   private readonly sleep: NonNullable<RouterOptions['sleep']>;
+  /** 已知必须流式的渠道指纹（#8 流式探测自愈，beta streamProbeKey 语义）。
+   *  每进程查一次持久层，探测命中后写回并更新内存集合。 */
+  private readonly streamRequired = new Set<string>();
 
   constructor(
     private readonly routes: () => Routes,
@@ -65,10 +72,22 @@ export class ModelRouter implements Model {
     this.sleep = options.sleep ?? ((ms, signal) => delay(ms, undefined, { signal }));
   }
 
-  private current(endpoint: Endpoint): State {
-    const fingerprint = createHash('sha256')
+  private fingerprint(endpoint: Endpoint): string {
+    return createHash('sha256')
       .update(JSON.stringify([endpoint.format, endpoint.baseUrl, endpoint.model, endpoint.apiKey]))
       .digest('hex');
+  }
+
+  private streamIsRequired(endpoint: Endpoint): boolean {
+    const fingerprint = this.fingerprint(endpoint);
+    if (!this.streamRequired.has(fingerprint) && this.options.streamRestore?.(fingerprint)) {
+      this.streamRequired.add(fingerprint);
+    }
+    return this.streamRequired.has(fingerprint);
+  }
+
+  private current(endpoint: Endpoint): State {
+    const fingerprint = this.fingerprint(endpoint);
     if (this.state?.fingerprint !== fingerprint) {
       const restored = this.options.restore?.(fingerprint);
       this.state = {
@@ -103,16 +122,38 @@ export class ModelRouter implements Model {
   ): Promise<Completion> {
     checkRequest(endpoint, messages, tools);
     let failure: unknown;
+    // 流式探测自愈（#8）：已知"必须流式"的渠道直接流式起步；非流式被
+    // 400+stream 拒绝时本轮切流式重试一次并永久记住（beta streamProbe
+    // 语义——只有这种确定性证据才写回，探测错误 ≠ 不支持）。
+    let stream = this.streamIsRequired(endpoint);
     for (let index = 0; index <= endpoint.retries; index++) {
       abortCheck(options, this.now());
       try {
-        const completion = await this.transport(endpoint, messages, tools, options);
+        const completion = await this.transport(
+          endpoint,
+          messages,
+          tools,
+          stream ? { ...options, onDelta: options.onDelta ?? (() => undefined) } : options,
+        );
         abortCheck(options, this.now());
         const result = { ...completion, channel, model: endpoint.model };
         this.options.observe?.({ channel, model: endpoint.model, completion: result });
         return result;
       } catch (error) {
         options.signal?.throwIfAborted();
+        // 渠道点名要流式：切流式重试（不计入 retries 的失败链），永久记住。
+        if (
+          !stream &&
+          error instanceof RequestError &&
+          error.status === 400 &&
+          (error.body ?? '').toLowerCase().includes('stream')
+        ) {
+          stream = true;
+          this.streamRequired.add(this.fingerprint(endpoint));
+          this.options.streamPersist?.(this.fingerprint(endpoint));
+          index--; // 重试不消耗正式重试额度
+          continue;
+        }
         if (this.now() >= options.deadlineAt) throw error;
         failure = error;
         if (!(error instanceof RequestError) || !error.retryable || index >= endpoint.retries)

@@ -696,7 +696,16 @@ export class LifeMaterial {
           item.askedAt > 0
             ? '已问过一次；对方汇报结果时用 resolve_commitment 了结，不要再次追问'
             : '还没问过',
-        recurring: item.recurring === 'yearly' ? '每年循环' : undefined,
+        recurring:
+          item.recurring === 'day'
+            ? '每天循环，了结自动续到明天'
+            : item.recurring === 'week'
+              ? '每周循环，了结自动续到下周'
+              : item.recurring === 'month'
+                ? '每月循环，了结自动续到下月'
+                : item.recurring === 'year'
+                  ? '每年循环，了结自动续到明年'
+                  : undefined,
       }));
     const story = this.selfStory(peer);
     const him = this.himModel(peer, now, timeZone);

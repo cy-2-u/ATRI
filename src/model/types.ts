@@ -63,6 +63,9 @@ export class RequestError extends Error {
     readonly kind: 'transport' | 'http' | 'protocol' | 'budget' | 'capability',
     readonly status?: number,
     readonly retryAfterMs?: number,
+    /** 渠道拒绝时的原始响应体（流式探测自愈用）：400 + 错误体含 "stream"
+     *  是"此渠道必须流式"的确定性证据，探测错误 ≠ 不支持。 */
+    readonly body?: string,
   ) {
     super(message);
     this.name = 'RequestError';

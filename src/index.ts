@@ -20,7 +20,7 @@ import {
   sleepDayKeyOf,
 } from './domain/rhythm.js';
 import { evolveCloseness, seedCloseness } from './domain/relation.js';
-import { Runtime } from './runtime/runtime.js';
+import { Runtime, reactionDelay } from './runtime/runtime.js';
 import { WechatBridge } from './wechat/bridge.js';
 import { Stickers } from './stickers.js';
 import { Sandbox } from './sandbox.js';
@@ -68,6 +68,11 @@ const sandbox = new Sandbox(sandboxDir, {
   memoryLimitMb: () => config().sandbox.memoryLimitMb,
   timeZone: () => config().timezone,
   network: () => config().sandbox.network,
+  // 她的窝（#7 常驻沙箱）：ATRI_SANDBOX_IMAGE 配置了镜像即启用 docker
+  // 常驻容器模式；ATRI_SANDBOX_WORKS 是宿主侧的作品目录真实路径
+  // （compose 部署时 docker exec 在嵌套容器里，bind 挂载必须指宿主路径）。
+  dockerImage: () => process.env.ATRI_SANDBOX_IMAGE || undefined,
+  dockerWorks: () => process.env.ATRI_SANDBOX_WORKS || undefined,
 });
 const web = new TavilyWeb(() => config().webSearchKey);
 // 画笔与搜索/向量一样恒注册，工具内部现读配置与开关——管理页中途
@@ -185,6 +190,11 @@ const embeddingProbe = () =>
   });
 
 const router = new ModelRouter(() => settings.routes(), httpTransport, {
+  // 流式探测自愈（#8）：渠道"必须流式"的结论落 kernel_settings，重启不丢。
+  // 键带渠道指纹（格式+地址+模型+密钥），换渠道自动失效。
+  streamRestore: (fingerprint) =>
+    journal.setting<string | undefined>(`probe:stream:${fingerprint}`, undefined) === 'required',
+  streamPersist: (fingerprint) => journal.setSetting(`probe:stream:${fingerprint}`, 'required'),
   observe: ({ channel, model, completion, error }) => {
     if (completion)
       journal.recordUsage(
@@ -300,6 +310,12 @@ const bridge = new WechatBridge(journal, onError, {
   vision: () => config().primary.vision,
 });
 
+/** 半句等待：他的消息明显没说完（逗号/顿号/连词/省略号收尾）时多等一拍，
+ *  等下文合并进来再一起答，而不是对着半句话抢答。beta 的 trailingDebounce。 */
+const TRAILING =
+  /[,，、;；:：…]$|然后$|就是$|不过$|但是$|可是$|因为$|所以$|而且$|或者$|还是$|再说$|毕竟$/;
+const trailingDebounce = (text: string): number => (TRAILING.test(text.trimEnd()) ? 2000 : 0);
+
 // 下一拍：人格节拍 + 抖动 + 睡眠窗。心跳关掉就不再排拍。
 const nextBeat = (): number | undefined => {
   const c = config();
@@ -331,15 +347,24 @@ const runtime = new Runtime(journal, mind, {
   timeoutMs: () => config().turnTimeoutMs,
   // 睡着的她收不到消息：睡眠窗内到达的话推迟到醒来——深夜秒回是机器，
   // 人早上才看到凌晨的消息。醒来也不必整点爬起来拿手机：加几分钟随机
-  // 的赖床。白天消息照旧只走 debounce。
-  incomingDue: () => {
+  // 的赖床。白天消息照旧只走 debounce；半句话（连词/逗号收尾）多等
+  // 两秒，下文合并进来一起答，不对着半句抢答。
+  incomingDue: (content: string) => {
     const c = config();
-    const due = Date.now() + c.debounceMs;
+    const due = Date.now() + c.debounceMs + trailingDebounce(content);
     const wake = nextWakeAfter(due, c.timezone, c.sleepStart, c.sleepEnd, tonightArousal());
     return wake > due ? wake + Math.floor(Math.random() * 12 * 60_000) : due;
   },
   concurrency: () => config().concurrency,
   pacing: () => true,
+  // 开口反应（beta reactionMs 语义）：首气泡发送前的一小段"她想了一下"
+  // ——热对话（两分钟内有来往）0.8–2s，冷启动/心跳 1–4s。与思考并行，
+  // 不串行加时；`conversation(peer, 1)` 只取最近一条的 created_at，每轮
+  // 一次 16 字节行读，开销可忽略。
+  reactionMs: (peer: string) => {
+    const last = journal.conversation(peer, 1).at(-1)?.created_at;
+    return reactionDelay(last, Date.now());
+  },
   stickerSlugs: () => new Set(stickers.list().map((item) => item.slug)),
   vision: () => config().primary.vision,
   readFile: (_peer: string, path: string, maxBytes: number) =>

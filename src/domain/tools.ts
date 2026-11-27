@@ -164,6 +164,7 @@ export function lifeTools(
         });
         return { id: memory.id, status: memory.status };
       },
+      mutates: true,
     },
     {
       definition: {
@@ -177,7 +178,7 @@ export function lifeTools(
             kind: { type: 'string', enum: ['reminder', 'concern', 'promise'] },
             sources: { type: 'array', items: { type: 'string' } },
             dueAt: { description: '未来的时刻：带时区的 ISO 时间或 Unix 毫秒，0 表示无时间' },
-            recurring: { type: 'string', enum: ['none', 'yearly'] },
+            recurring: { type: 'string', enum: ['none', 'day', 'week', 'month', 'year'] },
           },
           required: ['content', 'kind', 'sources', 'dueAt'],
           additionalProperties: false,
@@ -189,8 +190,7 @@ export function lifeTools(
         const due = args.dueAt === 0 ? 0 : dueAt(args.dueAt, herZone());
         if (
           args.recurring !== undefined &&
-          args.recurring !== 'none' &&
-          args.recurring !== 'yearly'
+          !['none', 'day', 'week', 'month', 'year'].includes(String(args.recurring))
         )
           throw new TypeError('重复周期无效');
         const item = journal.keepCommitment(turn.peer, {
@@ -198,10 +198,11 @@ export function lifeTools(
           kind: args.kind,
           sources: ids(args.sources),
           dueAt: due,
-          recurring: args.recurring ?? 'none',
+          recurring: (args.recurring as 'none' | 'day' | 'week' | 'month' | 'year') ?? 'none',
         });
         return { id: item.id, dueAt: item.dueAt, state: item.state };
       },
+      mutates: true,
     },
     {
       definition: {
@@ -222,6 +223,7 @@ export function lifeTools(
         // 了结，引用失效来源照单全收；resolveCommitment 落空返回 false 不炸轮。
         return { resolved: journal.resolveCommitment(turn.peer, text(args.id, 'id')) };
       },
+      mutates: true,
     },
     {
       definition: {
@@ -255,6 +257,7 @@ export function lifeTools(
         );
         return { id: thought.id, state: thought.state, dueAt: thought.dueAt ?? 0 };
       },
+      mutates: true,
     },
     {
       definition: {
@@ -299,6 +302,7 @@ export function lifeTools(
         journal.savePeerModel(turn.peer, model);
         return { beliefs: beliefs.length };
       },
+      mutates: true,
     },
     {
       definition: {
@@ -324,6 +328,7 @@ export function lifeTools(
         journal.setSetting(`notes:${turn.peer}`, content.trim());
         return { saved: true };
       },
+      mutates: true,
     },
     {
       definition: {
@@ -369,6 +374,7 @@ export function lifeTools(
         }
         return { written };
       },
+      mutates: true,
     },
   ];
   if (deps.sandbox) {
@@ -390,6 +396,7 @@ export function lifeTools(
           const result = await sandbox.run(text(args.command, 'command'), options.signal);
           return result;
         },
+        mutates: true,
       },
       {
         definition: {
@@ -408,6 +415,7 @@ export function lifeTools(
             typeof args.content === 'string' ? args.content : '',
           );
         },
+        mutates: true,
       },
       {
         definition: {
@@ -452,6 +460,7 @@ export function lifeTools(
         async execute(args) {
           return sandbox.delete(text(args.path, 'path'), args.recursive === true);
         },
+        mutates: true,
       },
     );
   }
@@ -533,6 +542,7 @@ export function lifeTools(
           note: '画好了，在 pictures/ 里；想给他看就发 image 气泡',
         };
       },
+      mutates: true,
     });
   }
   // 留言墙需要手：贴图是沙箱文件的快照，没有手就没有图。
@@ -572,6 +582,7 @@ export function lifeTools(
         );
         return { posted: true, at: note.at, note: '已贴上墙。想看墙上还有什么，用 read_wall。' };
       },
+      mutates: true,
     });
     tools.push({
       definition: {

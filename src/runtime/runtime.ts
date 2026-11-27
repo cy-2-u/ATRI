@@ -20,13 +20,19 @@ export interface RuntimeOptions {
   onComposing?(peer: string, active: boolean): Promise<void>;
   onError(error: unknown): void;
   timeoutMs: number | (() => number);
-  /** 入站消息的可用时刻；缺省 now+debounce。注入时完全接管——睡眠窗
-   *  把深夜消息推迟到醒来是装配层的事，内核不懂时区与睡眠。 */
-  incomingDue?(): number;
+  /** 入站消息的可用时刻；参数是这条消息的文本（半句判定用）。缺省
+   *  now+debounce。注入时完全接管——睡眠窗把深夜消息推迟到醒来、
+   *  半句话多等一拍，都是装配层的事，内核不懂时区与语感。 */
+  incomingDue?(content: string): number;
   debounceMs?: number | (() => number);
   concurrency: number | (() => number);
   /** 气泡间隔的行走时间：第 2 条起按长度停顿，像在打字。 */
   pacing: boolean | (() => boolean);
+  /** 开口反应时长：思考产出首个气泡后到发送前停顿的一小段（她"想了
+   *  一下"才说，与思考并行不串行）。装配层按对话账面算热冷注入
+   *  （reactionDelay：2 分钟内有来往 0.8–2s，冷启动/心跳 1–4s）；
+   *  不注入则气泡闭合即发（测试直连）。 */
+  reactionMs?(peer: string): number;
   /** 当前可用的表情 slug（发送前校验，目录外的贴纸不投递）。 */
   stickerSlugs(): Set<string>;
   /** 视觉开启时，历史里的图片以 data URI 随消息注入。 */
@@ -60,6 +66,33 @@ function pacingMs(part: Bubble, random: () => number = Math.random): number {
   return Math.round(base * (0.85 + random() * 0.3));
 }
 
+/** 开口反应时长（beta reactionMs 语义）：2 分钟内有来往 0.8–2s（热对话，
+ *  接得快），冷启动/心跳 1–4s（她想了一下才说）。热冷判定读对话账面的
+ *  最近一条 created_at，received/said 都算来往。 */
+export function reactionDelay(
+  lastContactAt: number | undefined,
+  now: number,
+  random: () => number = Math.random,
+): number {
+  const warm = lastContactAt !== undefined && now - lastContactAt < 120_000;
+  return Math.round(warm ? 800 + random() * 1200 : 1000 + random() * 3000);
+}
+
+/** 气泡清洗：即时聊天把 markdown 原样显示（**加粗**、`代码`、# 标题），
+ *  模型偶尔夹带的排版符号会变成字面噪声；句末句号在即时聊天里是疏离感，
+ *  连续句号收敛成一个后整体剥掉——「好。」变成「好」，省略号保留。
+ *  只剥表面记号不动内容。beta 实测的私聊质感。 */
+export function cleanBubbleText(text: string): string {
+  const cleaned = text
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/^>\s?/gm, '')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/(^|\s)\*([^*\s][^*]*)\*(?=\s|$|[。，！？、,.!?])/g, '$1$2')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/~~([^~]+)~~/g, '$1');
+  return cleaned.replace(/[。]+$/u, '').trimEnd();
+}
+
 export class Runtime {
   private readonly active = new Map<
     string,
@@ -90,7 +123,7 @@ export class Runtime {
       peer,
       key,
       content,
-      this.options.incomingDue?.() ?? Date.now() + numeric(this.options.debounceMs ?? 0),
+      this.options.incomingDue?.(content) ?? Date.now() + numeric(this.options.debounceMs ?? 0),
     );
     if (accepted) {
       this.active.get(peer)?.controller.abort();
@@ -196,7 +229,6 @@ export class Runtime {
   }
 
   private async work(peer: string, signal: AbortSignal): Promise<void> {
-    const envelopes = this.journal.blocked(peer) ? [] : this.journal.pending(peer);
     // "输入中"的生命周期 = 从她开始想到气泡说出口：思考（含主动拍）一
     // 开始就显示——想的时候就是在打字（v3 语义）；气泡到达前清除；多气
     // 泡之间重新显示并按长度停顿。夜里独处的 diary/tidy 不显示。
@@ -213,21 +245,37 @@ export class Runtime {
     const pacingOn =
       typeof this.options.pacing === 'function' ? this.options.pacing() : this.options.pacing;
     let first = true;
-    for (const envelope of envelopes) {
-      if (signal.aborted || this.stopped) return;
+    /** 发送 pending 队首件（pacing/开口反应/清洗/落账一条龙）。返回 false
+     *  表示停止发送：unknown 封通道、领件失败或被打断。 */
+    const tryDeliver = async (): Promise<boolean> => {
+      const envelope = this.journal.pending(peer)[0];
+      if (!envelope) return true;
       if (pacingOn && !first) {
         // 气泡间隔在占用发送位之前进行：被取消就保持待发，下次接着发。
         await composing(true);
         await delay(pacingMs(envelope.part), signal);
-        if (signal.aborted || this.stopped) return;
+        if (signal.aborted || this.stopped) return false;
+      }
+      if (first && this.options.reactionMs) {
+        // 首气泡的开口反应（她"想了一下"才说）：与思考并行时这是免费的
+        // 停顿——生成还在进行，不串行加时；等 think 收口后才走到这里
+        // （全量路径）就是一小段人类节奏的延迟。
+        await delay(Math.max(0, this.options.reactionMs(peer)), signal);
+        if (signal.aborted || this.stopped) return false;
       }
       await composing(false);
-      if (!this.journal.startDelivery(envelope.id)) return;
+      if (!this.journal.startDelivery(envelope.id)) return false;
       first = false;
+      // 发送前的同一把清洗尺：渐进与全量路径的气泡都在这里去 markdown
+      // 记号与句末句号——洗的是投递面，账面（历史/回执）保留原样可核实。
+      const part =
+        envelope.part.type === 'text'
+          ? { ...envelope.part, text: cleanBubbleText(envelope.part.text ?? '') }
+          : envelope.part;
       let status: 'sent' | 'unknown' | 'failed';
       let reason: string | undefined;
       try {
-        const result = await this.options.send(peer, envelope.part);
+        const result = await this.options.send(peer, part);
         if (Array.isArray(result)) [status, reason] = result;
         else status = result;
       } catch (error) {
@@ -237,8 +285,35 @@ export class Runtime {
       this.journal.delivery(envelope.id, status, reason);
       // 只有 unknown（服务器可能已投递）才停发后面的气泡——继续发可能
       // 造成乱序重复；failed 是确定性死亡，同轮后续气泡照发。
-      if (status === 'unknown') return;
-    }
+      return status !== 'unknown';
+    };
+    /** 排干当前 pending。返回 false 表示发送链被打断（unknown/领件失败），
+     *  调用方据此决定是否继续后续动作。 */
+    const drain = async (): Promise<boolean> => {
+      while (!signal.aborted && !this.stopped && this.journal.pending(peer).length)
+        if (!(await tryDeliver())) return false;
+      return true;
+    };
+    // 投递泵（#4）：与思考并行跑，渐进气泡闭合即入队、泵立刻领发——
+    // 生成与投递重叠，这是渐进投递的完整意图（beta 双泵的最小等价物）。
+    // 40ms 是空队列的歇息粒度，一整轮思考的空转开销可忽略。
+    let pumping = false;
+    const pump = async (): Promise<void> => {
+      pumping = true;
+      try {
+        while (pumping && !signal.aborted && !this.stopped) {
+          if (!this.journal.pending(peer).length) {
+            await delay(40, signal);
+            continue;
+          }
+          if (!(await tryDeliver())) return;
+        }
+      } finally {
+        pumping = false;
+      }
+    };
+    // 先清上一轮的残件（前次 work 中断没发完的件），发链断了就整段让路。
+    if (!(await drain())) return;
     if (signal.aborted || this.stopped) return;
     const job = this.journal.jobs().find((job) => job.peer === peer && job.due_at <= Date.now());
     if (!job) return;
@@ -248,11 +323,18 @@ export class Runtime {
     // true 也必须等待：火后不管的 true 走网络慢了会迟到——false 清完指示
     // 它才到，把指示重新点亮，气泡发完了"输入中"还挂着。
     if (showsTyping) await composing(true);
+    const pumpPromise = pump();
     try {
       await this.think(turn, signal);
     } finally {
+      // 停泵并排干本轮残件：think 返回时泵可能停在歇息点上；收尾 drain
+      // 把渐进已入队未领的尾巴与全量 draft 的气泡一次发完。失败的思考
+      // 不回滚已入队的气泡——已经说出口（或已入队）的话是真话。
+      pumping = false;
+      await pumpPromise.catch(() => undefined);
+      await drain();
       // 没有就绪气泡（决定不说/失败/被打断）时把指示收掉，别让"输入中"
-      // 挂死；有气泡则由下一轮投递在到达前清除。
+      // 挂死；有气泡则刚被 drain 发完，指示已在发送前清过。
       if (showsTyping && !this.journal.pending(peer).length) await composing(false);
     }
   }

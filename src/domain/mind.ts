@@ -5,9 +5,22 @@ import {
   type RequestOptions,
   type Tool,
 } from '../model/types.js';
+import { createHash } from 'node:crypto';
 import { Journal, type Bubble, type Turn } from '../storage/journal.js';
 import { fitContext } from './context.js';
 import { JsonStreamParser } from '../stream.js';
+
+/** 参数规范化（beta canonical 语义）：键排序递归序列化——模型把同一参数
+ *  换个键序重发也命中同一签名，幂等不被键序击穿。 */
+function canonicalArgs(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalArgs).join(',')}]`;
+  if (value && typeof value === 'object')
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([key, item]) => `${JSON.stringify(key)}:${canonicalArgs(item)}`)
+      .join(',')}}`;
+  return JSON.stringify(value);
+}
 
 /** 渐进投递的落账口：气泡闭合且轻校验通过即入队（不等整轮 JSON）。
  *  返回是否入队成功——失败（turn 已被新消息作废等）触发渐进降级。 */
@@ -17,6 +30,10 @@ export interface BubbleSink {
 
 export interface ToolHandler {
   definition: Tool;
+  /** 有真实副作用的工具（画图/写文件/执行命令/发墙/记账）：同一轮里
+   *  同参数重复调用回放缓存结果而不是重跑——draw 重试不重画。纯读工具
+   *  不标，重跑无害。 */
+  mutates?: boolean;
   execute(
     arguments_: Record<string, unknown>,
     options: RequestOptions,
@@ -313,11 +330,54 @@ export class Mind {
             };
           else {
             used++;
-            try {
-              result = await handler.execute(call.arguments, options, turn);
-              succeeded = true;
-            } catch (error) {
-              result = { error: error instanceof Error ? error.message : '工具执行失败' };
+            // mutates 幂等（#5）：签名 = 工具名 + 参数规范化（键排序），
+            // id = 本轮 episode 锚定——同轮同参直接回放，重试不重画。
+            // 纯读工具每次真跑（读最新状态）。中断恢复的 running 态已由
+            // recover 改判 unknown，回放结果带 uncertain 注记。
+            const mutates = handler.mutates === true;
+            const signature = mutates
+              ? createHash('sha256')
+                  .update(`${call.name}:${canonicalArgs(call.arguments)}`)
+                  .digest('hex')
+              : '';
+            const runId = mutates ? `${turn.id}:${signature}` : '';
+            let replayed = false;
+            if (mutates) {
+              const previous = this.journal.toolStart(runId, turn.peer, turn.id, signature);
+              if (previous) {
+                result =
+                  previous.status === 'unknown'
+                    ? {
+                        error:
+                          '上次执行结果未知（可能已完成也可能中断），不能假定未产生副作用，禁止盲目重做；需要重做请换参数',
+                        ...(previous.result &&
+                        typeof previous.result === 'object' &&
+                        !Array.isArray(previous.result)
+                          ? { ...previous.result }
+                          : {}),
+                        uncertain: true,
+                      }
+                    : (previous.result ?? {
+                        error: '上次执行成功但结果未留存，不能自动重复副作用',
+                      });
+                succeeded = previous.status === 'ok';
+                replayed = true;
+              }
+            }
+            if (!replayed) {
+              try {
+                result = await handler.execute(call.arguments, options, turn);
+                succeeded = true;
+              } catch (error) {
+                result = { error: error instanceof Error ? error.message : '工具执行失败' };
+              }
+              if (mutates)
+                this.journal.toolFinish(
+                  runId,
+                  // 已被取消：副作用是否发生不可知，挂 unknown 而不是 ok。
+                  succeeded && options.signal?.aborted ? 'unknown' : succeeded ? 'ok' : 'failed',
+                  result,
+                );
             }
           }
           // 工具可能已在取消前产生真实副作用，先留回执再响应取消。

@@ -14,6 +14,12 @@ services:
       ATRI_SANDBOX_DIR: /sandbox
       ATRI_BIND: 0.0.0.0
       ATRI_PORT: 3000
+      # 她的窝（#7 常驻沙箱）：配置镜像即启用 docker 常驻容器执行——
+      # 固定名 atri-sandbox、崩溃自拉起、可写层跨轮保留（她攒的环境
+      # 不丢）、cap 全卸 + pids/内存/CPU 三限。WORKS 必须指宿主侧
+      # 路径：嵌套 docker 的 bind 挂载发生在宿主。留空走 nsjail 兜底。
+      ATRI_SANDBOX_IMAGE: ''
+      ATRI_SANDBOX_WORKS: ''
     ports:
       - '${ATRI_BIND:-127.0.0.1}:${ATRI_PORT:-3000}:3000'
     volumes:
