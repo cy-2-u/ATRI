@@ -78,6 +78,28 @@ const NSJAIL = '/usr/local/bin/nsjail';
 const SANDBOX_PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
 const SANDBOX_LANG = process.env.LANG || 'C.UTF-8';
 
+/** 她的窝的 run spec：单独导出为纯函数——测试锁真身而不是手抄副本。 */
+export function dockerSpec(name: string, network: boolean, works: string, tz: string): string[] {
+  return [
+    '--name',
+    name,
+    '--restart',
+    'unless-stopped',
+    '--cap-drop=ALL',
+    '--security-opt=no-new-privileges',
+    '--pids-limit=64',
+    '--memory=512m',
+    '--cpus=1',
+    '--network',
+    network ? 'bridge' : 'none',
+    '--mount',
+    `type=bind,src=${works},dst=/work`,
+    '--workdir=/work',
+    '--env',
+    `TZ=${tz}`,
+  ];
+}
+
 /** 沙箱命令的环境：一切秘密（模型密钥、管理密码、SQLite 路径）刻意
  *  缺席，漏出来的 printenv 不会进聊天。HOME 指向可写暂存目录：npm/git
  *  需要可写缓存，空 HOME 会让 #!/usr/bin/env node 直接失效。 */
@@ -414,22 +436,7 @@ export class Sandbox {
     const network = this.options.network();
     const works = this.options.dockerWorks?.() ?? this.root;
     const tz = this.options.timeZone?.() || process.env.TZ || 'UTC';
-    const spec = [
-      '--restart',
-      'unless-stopped',
-      '--cap-drop=ALL',
-      '--security-opt=no-new-privileges',
-      '--pids-limit=64',
-      '--memory=512m',
-      '--cpus=1',
-      '--network',
-      network ? 'bridge' : 'none',
-      '--mount',
-      `type=bind,src=${works},dst=/work`,
-      '--workdir=/work',
-      '--env',
-      `TZ=${tz}`,
-    ];
+    const spec = dockerSpec(name, network, works, tz);
     let existing: { running: boolean; image: string; network: string } | undefined;
     try {
       const info = JSON.parse(await this.capture('docker', ['inspect', name])) as {

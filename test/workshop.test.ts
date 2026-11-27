@@ -4,7 +4,7 @@ import { spawn as realSpawn } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Sandbox } from '../src/sandbox.js';
+import { Sandbox, dockerSpec } from '../src/sandbox.js';
 
 // 她的窝（#7 常驻沙箱）的行为面：锁生命周期决策的汇报与不变式，
 // 不碰真 docker——真 docker 交互只在配置 ATRI_SANDBOX_IMAGE 的生产冒烟。
@@ -52,23 +52,10 @@ test('配置 dockerImage 后 isolationInfo 汇报 persistent-workshop', async ()
 test('dockerRun 决策链：inspect 缺容器 → run -d → exec timeout', async () => {
   // 决策链是纯函数逻辑，抽出来锁不变式：容器缺失建、镜像漂移重建、
   // 网络配置漂移重建、已在跑不重建。这里直接以真 Sandbox + 真 docker
-  // 冒烟只在 Linux 生产进行；单测锁 spec 数组的关键旗子。
-  const spec = [
-    '--restart',
-    'unless-stopped',
-    '--cap-drop=ALL',
-    '--security-opt=no-new-privileges',
-    '--pids-limit=64',
-    '--memory=512m',
-    '--cpus=1',
-    '--network',
-    'none',
-    '--mount',
-    'type=bind,src=/works,dst=/work',
-    '--workdir=/work',
-    '--env',
-    'TZ=Asia/Shanghai',
-  ];
+  // 冒烟只在 Linux 生产进行；单测锁 spec 真身（dockerSpec 导出函数）
+  // ——手抄副本是套套逻辑，--name 丢失它抓不到，CI 冒烟已实证。
+  const spec = dockerSpec('atri-sandbox', false, '/works', 'Asia/Shanghai');
+  assert.equal(spec[spec.indexOf('--name') + 1], 'atri-sandbox');
   assert.ok(spec.includes('--restart') && spec.includes('unless-stopped'));
   assert.ok(spec.includes('--cap-drop=ALL'));
   assert.ok(spec.includes('--security-opt=no-new-privileges'));
