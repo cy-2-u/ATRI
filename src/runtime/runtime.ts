@@ -38,7 +38,11 @@ export interface RuntimeOptions {
   /** 视觉开启时，历史里的图片以 data URI 随消息注入。 */
   vision(): boolean;
   readFile(peer: string, path: string, maxBytes: number): Promise<Buffer | undefined>;
-  /** 定时时钟：模拟与测试注入假钟，生产留空用真实定时器。 */
+  /** 定时时钟：模拟与测试注入假钟，生产留空用真实定时器。注入时
+   *  work() 内部的全部延迟（气泡间隔/开口反应/泵歇息）也走假钟——
+   *  否则月度模拟里 40ms 真实歇息永远不过去，泵停在歇息点上，下一
+   *  条入站消息把 pending 气泡 cancel 成死账（ready turn 无人认领，
+   *  整月停摆）。 */
   clock?: TimerClock;
 }
 
@@ -52,6 +56,22 @@ const delay = (ms: number, signal?: AbortSignal): Promise<void> =>
       'abort',
       () => {
         clearTimeout(timer);
+        resolve();
+      },
+      { once: true },
+    );
+  });
+const instant = (): Promise<void> => Promise.resolve();
+/** 假钟版延迟：登记进注入钟，模拟推进假时间时自然到期——work() 内部
+ *  延迟必须与调度同一时钟，否则月度模拟里真实 40ms 歇息永远不过去。 */
+const clockDelay = (clock: TimerClock, ms: number, signal?: AbortSignal): Promise<void> =>
+  new Promise((resolve) => {
+    if (signal?.aborted) return resolve();
+    const id = clock.set(() => resolve(), ms);
+    signal?.addEventListener(
+      'abort',
+      () => {
+        clock.clear(id);
         resolve();
       },
       { once: true },
@@ -240,10 +260,13 @@ export class Runtime {
           () => undefined,
           () => undefined,
         ),
-        delay(8000),
+        pause0(8000),
       ]);
     const pacingOn =
       typeof this.options.pacing === 'function' ? this.options.pacing() : this.options.pacing;
+    // work 内部延迟统一走注入钟（有 clock 才注入；生产留空走真钟）。
+    const pause = this.options.clock ? clockDelay.bind(null, this.options.clock) : delay;
+    const pause0 = this.options.clock ? instant : delay;
     let first = true;
     /** 发送 pending 队首件（pacing/开口反应/清洗/落账一条龙）。返回 false
      *  表示停止发送：unknown 封通道、领件失败或被打断。 */
@@ -253,14 +276,14 @@ export class Runtime {
       if (pacingOn && !first) {
         // 气泡间隔在占用发送位之前进行：被取消就保持待发，下次接着发。
         await composing(true);
-        await delay(pacingMs(envelope.part), signal);
+        await pause(pacingMs(envelope.part), signal);
         if (signal.aborted || this.stopped) return false;
       }
       if (first && this.options.reactionMs) {
         // 首气泡的开口反应（她"想了一下"才说）：与思考并行时这是免费的
         // 停顿——生成还在进行，不串行加时；等 think 收口后才走到这里
         // （全量路径）就是一小段人类节奏的延迟。
-        await delay(Math.max(0, this.options.reactionMs(peer)), signal);
+        await pause(Math.max(0, this.options.reactionMs(peer)), signal);
         if (signal.aborted || this.stopped) return false;
       }
       await composing(false);
@@ -303,7 +326,7 @@ export class Runtime {
       try {
         while (pumping && !signal.aborted && !this.stopped) {
           if (!this.journal.pending(peer).length) {
-            await delay(40, signal);
+            await pause(40, signal);
             continue;
           }
           if (!(await tryDeliver())) return;
