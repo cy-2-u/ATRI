@@ -938,41 +938,30 @@ $('save-system').onclick = () =>
 // ---------- 渠道体检（v5 时代的按钮回归） ----------
 // 探针失败随 200 返回 {ok:false,error}——诊断信息就是产出，不走报错兜底。
 
+// 渠道体检一键双测：服务端并行跑连通 + system 哨兵，toast 两行齐报。
+const probeReport = (result, label) => {
+  if (!result.ok) throw new Error(result.error);
+  const p = result.persona;
+  const personaLine =
+    p.ok === false && p.error
+      ? `角色探测失败：${p.error}`
+      : p.ok
+        ? '角色生效'
+        : '角色不生效：该渠道丢弃了 system 提示，人设无法工作，建议更换渠道或模型';
+  show(`${label}：${result.model} · 延迟 ${result.latencyMs} ms；${personaLine}`, !p.ok);
+};
 $('test-llm').onclick = () =>
   perform(async () => {
-    const result = await api('/api/test-llm', { method: 'POST' });
-    if (!result.ok) throw new Error(result.error);
-    show(`模型连通正常：${result.model}（${result.format}）· 延迟 ${result.latencyMs} ms`);
+    probeReport(await api('/api/test-llm', { method: 'POST' }), '模型连通正常');
   }, $('test-llm'));
-$('test-system').onclick = () =>
-  perform(async () => {
-    const result = await api('/api/test-system', { method: 'POST' });
-    if (result.ok === false && result.error) throw new Error(result.error);
-    show(
-      result.ok
-        ? `角色生效：该渠道支持 system 提示，人设可以正常工作（回复“${result.reply}”）`
-        : `角色不生效：该渠道丢弃了 system 提示，人设无法工作，建议更换渠道或模型（实际回复“${result.reply}”）`,
-      !result.ok,
-    );
-  }, $('test-system'));
 // 备用渠道的体检按钮：同一个端点带 channel 参数，测它自己的路与凭据。
 $('test-llm-fallback').onclick = () =>
   perform(async () => {
-    const result = await api('/api/test-llm', { method: 'POST', body: { channel: 'fallback' } });
-    if (!result.ok) throw new Error(result.error);
-    show(`备用渠道连通正常：${result.model}（${result.format}）· 延迟 ${result.latencyMs} ms`);
-  }, $('test-llm-fallback'));
-$('test-system-fallback').onclick = () =>
-  perform(async () => {
-    const result = await api('/api/test-system', { method: 'POST', body: { channel: 'fallback' } });
-    if (result.ok === false && result.error) throw new Error(result.error);
-    show(
-      result.ok
-        ? `角色生效：备用渠道支持 system 提示，人设可以正常工作（回复“${result.reply}”）`
-        : `角色不生效：备用渠道丢弃了 system 提示，人设无法工作，建议更换渠道或模型（实际回复“${result.reply}”）`,
-      !result.ok,
+    probeReport(
+      await api('/api/test-llm', { method: 'POST', body: { channel: 'fallback' } }),
+      '备用渠道连通正常',
     );
-  }, $('test-system-fallback'));
+  }, $('test-llm-fallback'));
 $('test-embedding').onclick = () =>
   perform(async () => {
     const result = await api('/api/test-embedding', { method: 'POST' });

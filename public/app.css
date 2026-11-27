@@ -1170,6 +1170,13 @@ input.check,
     gap: 12px;
     min-width: 0;
   }
+
+  /* 人设页左列拉两倍宽：她是谁是全页最大的编辑面，窄栏写长人格太憋屈；
+     高度不动（min-height 460px 照旧），只横向舒展。 */
+  .view[data-panel='persona'] .settings-columns {
+    max-width: 1800px;
+    grid-template-columns: minmax(0, 2fr) minmax(320px, 400px);
+  }
 }
 
 /* 人设卡撑满列高：人格框是全页最大的编辑面，右列节律卡有多高它就有多

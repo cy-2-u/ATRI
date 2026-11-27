@@ -46,8 +46,13 @@ async function fixture() {
     bridge,
     stickers,
     webConfigured: () => false,
-    channelProbe: async () => ({ ok: true, latencyMs: 1, model: 'm', format: 'openai' }),
-    systemProbe: async () => ({ ok: true, reply: 'SYSTEMOK' }),
+    channelProbe: async () => ({
+      ok: true,
+      latencyMs: 1,
+      model: 'm',
+      format: 'openai',
+      persona: { ok: true, reply: 'SYSTEMOK' },
+    }),
     embeddingProbe: async () => ({ ok: true, latencyMs: 1, dims: 3, model: 'm' }),
     staticRoot: '.',
     assetsRoot: '.',
@@ -256,7 +261,7 @@ test('人工确认未知送达走统一提交路径，重复确认返回冲突',
   }
 });
 
-test('渠道体检端点需要登录，命中注入的探针', async () => {
+test('渠道体检端点需要登录，命中注入的探针（一键双测含角色结果）', async () => {
   const env = await fixture();
   try {
     assert.equal((await env.app.inject({ method: 'POST', url: '/api/test-llm' })).statusCode, 401);
@@ -266,13 +271,24 @@ test('渠道体检端点需要登录，命中注入的探针', async () => {
       headers: { cookie: env.cookie },
     });
     assert.equal(llm.statusCode, 200);
-    assert.deepEqual(llm.json(), { ok: true, latencyMs: 1, model: 'm', format: 'openai' });
-    const system = await env.app.inject({
-      method: 'POST',
-      url: '/api/test-system',
-      headers: { cookie: env.cookie },
+    assert.deepEqual(llm.json(), {
+      ok: true,
+      latencyMs: 1,
+      model: 'm',
+      format: 'openai',
+      persona: { ok: true, reply: 'SYSTEMOK' },
     });
-    assert.deepEqual(system.json(), { ok: true, reply: 'SYSTEMOK' });
+    // /api/test-system 已并入 test-llm 的双测：端点退役（404 由 fastify 默认给）。
+    assert.equal(
+      (
+        await env.app.inject({
+          method: 'POST',
+          url: '/api/test-system',
+          headers: { cookie: env.cookie },
+        })
+      ).statusCode,
+      404,
+    );
     const embedding = await env.app.inject({
       method: 'POST',
       url: '/api/test-embedding',
@@ -322,11 +338,10 @@ test('管理页/路由配对：备用渠道按钮在 HTML 与 app.js 两端成�
   // JS 有绑定」的一致性——历史上 v5 回归就是按钮在 HTML 里丢了 id。
   const html = readFileSync('public/index.html', 'utf8');
   const js = readFileSync('public/app.js', 'utf8');
-  // 备用渠道面板的完整绑定面：8 个新字段/按钮 + 原有 4 个输入。
+  // 备用渠道面板的完整绑定面：拉取/体检按钮 + 全字段输入。
   const ids = [
     'fetch-models-fallback',
     'test-llm-fallback',
-    'test-system-fallback',
     'fallback-vision',
     'fallback-temp',
     'fallback-timeout',
@@ -343,8 +358,11 @@ test('管理页/路由配对：备用渠道按钮在 HTML 与 app.js 两端成�
     assert.ok(html.includes(`id="${id}"`), `index.html 缺 #${id}（按钮/字段丢失）`);
     assert.ok(js.includes(`'${id}'`) || js.includes(`"${id}"`), `app.js 未绑定 #${id}`);
   }
+  // 一键双测后 test-system 退役：HTML 不得再有测试角色按钮，JS 不得再调旧端点。
+  assert.ok(!html.includes('test-system'), 'test-system 按钮应已随双测合并移除');
+  assert.ok(!js.includes('/api/test-system'), '/api/test-system 端点应已退役');
   // 主渠道的按钮仍要与端点成对：防把端点参数改了忘了 JS。
-  for (const endpoint of ['/api/models', '/api/test-llm', '/api/test-system']) {
+  for (const endpoint of ['/api/models', '/api/test-llm']) {
     assert.ok(js.includes(endpoint), `app.js 未调用 ${endpoint}`);
   }
   // 备用渠道的拉取必须带渠道参数——不带就是拿主渠道凭据拉备用列表。

@@ -338,6 +338,9 @@ export interface MaterialDeps {
   sandboxEnabled(): boolean;
   /** 她的工作目录清单（沙箱开着才给）：写过的东西浮回来，才连成生活。 */
   sandboxFiles?(): Promise<{ name: string; kind: string; size: number }[] | undefined>;
+  /** 她画过的图（pictures/ 清单，沙箱开着才给）：想再发同一张时直接发
+   *  path 不重画——她得先知道自己有什么，才会复用（beta 实测省 token）。 */
+  sandboxPictures?(): Promise<{ name: string; at: number }[] | undefined>;
   webConfigured(): boolean;
   vision(): boolean;
   /** 画笔可用（画图渠道配置了且沙箱开着——图要落进沙箱才能发）。 */
@@ -704,6 +707,12 @@ export class LifeMaterial {
     // 心跳拍是"没人在等她"的拍：给她属于自己的时间与自己的文件清单，
     // 写过的东西浮回来，生活才连得起来。
     const workdir = turn.kind === 'beat' ? await this.deps.sandboxFiles?.() : undefined;
+    // 她画过的图：对话与心跳都给——想再发同一张直接发 path 不重画；
+    // 只有知道自己画布上有什么，复用才会发生。日记拍不需要。
+    const gallery =
+      turn.kind === 'chat' || turn.kind === 'beat'
+        ? await this.deps.sandboxPictures?.()
+        : undefined;
     // 防撞车指纹：近两天她主动开过的口。同一话头换个说法再来就是机器人。
     const openers =
       turn.kind === 'beat' ? journal.recentBeatOpeners(peer, now - 48 * 3_600_000) : [];
@@ -721,6 +730,14 @@ export class LifeMaterial {
       abilities: this.abilities(),
       ...(turn.kind === 'beat' ? { yourTime: YOUR_TIME_NOTE } : {}),
       ...(workdir?.length ? { workdir: workdir.slice(0, 30) } : {}),
+      ...(gallery?.length
+        ? {
+            gallery: {
+              note: '你画过的图（pictures/ 目录，想再发同一张时用 image 气泡直接发 path，不必重画；画布上没有的才调 draw_image）',
+              files: gallery.slice(-40).map((f) => `pictures/${f.name}`),
+            },
+          }
+        : {}),
       ...(openers.length
         ? {
             recentOpeners: `你近两天主动说过的话头（别再用同样的主题或句式开场）：${openers.join(' / ')}`,

@@ -117,40 +117,55 @@ const probeEndpoint = (channel: 'primary' | 'fallback' = 'primary'): Endpoint =>
   if (!endpoint.apiKey || !endpoint.model) throw new TypeError('请先保存模型名称和 API 密钥');
   return endpoint;
 };
+// 渠道体检：一个请求并行双测——连通（一发最小消息测延迟）+ 角色生效
+// （system 哨兵）。两个探测互不依赖，Promise.all 各自捕获失败，一边死
+// 不吞另一边的诊断。识图探测不搬（beta 有，main 的 vision 勾选手动维护，
+// 探测改配置越权）。
+type PersonaProbe = { ok: boolean; reply: string } | { ok: false; error: string };
 const channelProbe = (channel: 'primary' | 'fallback' = 'primary') =>
   asResult(async () => {
     const endpoint = probeEndpoint(channel);
     const started = Date.now();
-    await httpTransport(endpoint, [{ role: 'user', content: 'hi' }], [], {
-      deadlineAt: Date.now() + Math.min(endpoint.timeoutMs, 60_000),
-    });
+    const [connectivity, persona] = await Promise.all([
+      httpTransport(endpoint, [{ role: 'user', content: 'hi' }], [], {
+        deadlineAt: Date.now() + Math.min(endpoint.timeoutMs, 60_000),
+      }).then(
+        () => undefined as { ok: true } | undefined,
+        (error: unknown) => error,
+      ),
+      httpTransport(
+        { ...endpoint, maxTokens: 16 },
+        [
+          {
+            role: 'system',
+            content:
+              '这是一次系统提示测试。无论用户说什么，你的回复必须且只能是以 SYSTEMOK 开头的内容。',
+          },
+          { role: 'user', content: '你好呀，今天天气怎么样？随便聊聊' },
+        ],
+        [],
+        { deadlineAt: Date.now() + Math.min(endpoint.timeoutMs, 60_000) },
+      ).then(
+        (completion): PersonaProbe => {
+          const reply = completion.message.content.trim();
+          return {
+            ok: reply.toUpperCase().startsWith('SYSTEMOK'),
+            reply: reply.slice(0, 80) || '（空回复）',
+          };
+        },
+        (error: unknown): PersonaProbe => ({
+          ok: false,
+          error: String(error instanceof Error ? error.message : error),
+        }),
+      ),
+    ]);
+    if (connectivity) throw connectivity; // 连通是底线：死了就只有错误信息
     return {
       ok: true as const,
       latencyMs: Date.now() - started,
       model: endpoint.model,
       format: endpoint.format,
-    };
-  });
-const systemProbe = (channel: 'primary' | 'fallback' = 'primary') =>
-  asResult(async () => {
-    const endpoint = { ...probeEndpoint(channel), maxTokens: 16 };
-    const completion = await httpTransport(
-      endpoint,
-      [
-        {
-          role: 'system',
-          content:
-            '这是一次系统提示测试。无论用户说什么，你的回复必须且只能是以 SYSTEMOK 开头的内容。',
-        },
-        { role: 'user', content: '你好呀，今天天气怎么样？随便聊聊' },
-      ],
-      [],
-      { deadlineAt: Date.now() + Math.min(endpoint.timeoutMs, 60_000) },
-    );
-    const reply = completion.message.content.trim();
-    return {
-      ok: reply.toUpperCase().startsWith('SYSTEMOK'),
-      reply: reply.slice(0, 80) || '（空回复）',
+      persona,
     };
   });
 const embeddingProbe = () =>
@@ -253,6 +268,17 @@ const material = new LifeMaterial({
       return (await sandbox.list('.')).entries;
     } catch {
       return undefined;
+    }
+  },
+  // 她画过的图：pictures/ 清单（最近 40 张）——画布上有什么浮回来，
+  // 想再发同一张直接发 path，不重画（beta 实测的 token 节约）。
+  sandboxPictures: async () => {
+    if (!sandbox.enabled) return undefined;
+    try {
+      const { entries } = await sandbox.list('pictures');
+      return entries.filter((e) => e.kind === 'file').map((e) => ({ name: e.name, at: 0 }));
+    } catch {
+      return undefined; // 还没画过第一张：目录不存在，正常
     }
   },
   webConfigured: () => Boolean(config().webSearchKey),
@@ -381,7 +407,6 @@ const app = createServer({
   webConfigured: () => Boolean(config().webSearchKey),
   onConfigChange: () => ensureRecurringJobs(),
   channelProbe,
-  systemProbe,
   embeddingProbe,
   backup,
   staticRoot: join(root, 'public'),

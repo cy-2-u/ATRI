@@ -26,17 +26,20 @@ export interface ServerOptions {
   webConfigured(): boolean;
   /** 配置落库后回调：心跳开关打开时这里立刻补种她的下一拍，不等维护定时器。 */
   onConfigChange?: () => void;
-  /** 渠道体检：连通（一发最小消息）、角色生效（system 标记探测）、向量连通。
-   *  失败随结果对象返回（{ok:false,error}）——探针的诊断就是它的产出，
-   *  不走服务端错误兜底。 */
-  channelProbe(
-    channel?: 'primary' | 'fallback',
-  ): Promise<
-    { ok: true; latencyMs: number; model: string; format: string } | { ok: false; error: string }
+  /** 渠道体检：一个请求并行双测（连通延迟 + system 角色哨兵）。persona
+   *  是角色探测结果；连通死亡时整体 {ok:false,error}。失败随结果对象
+   *  返回（{ok:false,error}）——探针的诊断就是它的产出，不走服务端
+   *  错误兜底。 */
+  channelProbe(channel?: 'primary' | 'fallback'): Promise<
+    | {
+        ok: true;
+        latencyMs: number;
+        model: string;
+        format: string;
+        persona: { ok: boolean; reply: string } | { ok: false; error: string };
+      }
+    | { ok: false; error: string }
   >;
-  systemProbe(
-    channel?: 'primary' | 'fallback',
-  ): Promise<{ ok: boolean; reply?: string; error?: string }>;
   embeddingProbe(): Promise<
     { ok: true; latencyMs: number; dims: number; model: string } | { ok: false; error: string }
   >;
@@ -313,7 +316,6 @@ ${
     throw new TypeError('channel 必须是 primary 或 fallback');
   };
   app.post('/api/test-llm', async (request) => options.channelProbe(probeChannel(request.body)));
-  app.post('/api/test-system', async (request) => options.systemProbe(probeChannel(request.body)));
   app.post('/api/test-embedding', async () => options.embeddingProbe());
 
   // WebDAV 备份：状态给管理页，"立即备份"绕过每日闸门当场跑一轮。
